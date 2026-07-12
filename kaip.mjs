@@ -298,30 +298,43 @@ async function cmdPair({ flags }) {
     console.log(c.warn('secretos rotados: los móviles emparejados dejan de entrar Y de descifrar.\n'));
   }
 
+  const { apkPath } = await import('./lib/server.mjs');
+  const { render } = await import('./lib/qr.mjs');
+
   const conf = serverConfig();
   const p = pairingPayload(port, conf.publicUrl || null);
 
-  console.log(c.bold('emparejar el móvil') + c.muted('  — esto va dentro del QR\n'));
-  console.log('  ' + c.accent(JSON.stringify(p)));
-  console.log('\n' + c.muted('  url:    ') + p.url + (p.tunnel ? c.ok('   (túnel: funciona desde fuera)') : ''));
-  console.log(c.muted('  en casa:') + ' ' + (p.lan ?? '—'));
-
   if (!p.tunnel) {
-    console.log('\n' + c.warn('  ⚠ no hay túnel activo: esa dirección solo vale en tu wifi.'));
-    console.log(c.muted('    levántalo con: ') + c.accent('kaip serve'));
+    console.log(c.warn('⚠ no hay túnel activo: el móvil solo llegará estando en tu wifi.'));
+    console.log(c.muted('  levántalo con: ') + c.accent('kaip serve') + '\n');
   }
 
-  // The key is why the tunnel is safe. It goes from this screen to that phone by QR and
-  // never travels the wire it protects.
-  console.log('\n' + c.muted('  la clave de cifrado va en el QR y NO viaja por el túnel:'));
-  console.log(c.muted('  la escaneas de tu propia pantalla, así que Cloudflare nunca la ve.'));
+  // Two codes, in the order you need them. Downloading the app cannot require the token —
+  // that would be a lock whose key is inside the box.
+  console.log(c.bold('1. descarga la app') + c.muted('  — escanea esto con la cámara'));
+  if (apkPath()) {
+    console.log('\n' + render(`${p.url}/apk`));
+    console.log(c.muted(`   ${p.url}/apk\n`));
+  } else {
+    console.log(c.muted('\n   (todavía no hay APK compilado: ') + c.accent('kaip app build') + c.muted(')\n'));
+  }
 
-  console.log('\n' + c.muted('  perdiste el móvil → ') + c.accent('kaip pair --reset'));
+  console.log(c.bold('2. empareja') + c.muted('  — escanea esto DESDE la app'));
+  console.log('\n' + render(JSON.stringify(p)));
+
+  console.log(c.muted('\n   host:  ') + p.host);
+  console.log(c.muted('   url:   ') + p.url + (p.tunnel ? c.ok('   (funciona desde cualquier red)') : ''));
+  console.log(c.muted('   casa:  ') + (p.lan ?? '—'));
+
+  // The key is why the tunnel is safe, and why it must go by QR and not down the wire.
+  console.log('\n' + c.muted('   la clave de cifrado viaja DENTRO de ese QR, no por el túnel:'));
+  console.log(c.muted('   la escaneas de tu propia pantalla, así que Cloudflare nunca la ve.'));
+  console.log(c.muted('   perdiste el móvil → ') + c.accent('kaip pair --reset'));
 
   const { devices = [] } = conf;
   if (devices.length) {
-    console.log('\n' + c.muted('  emparejados:'));
-    for (const d of devices) console.log(`    ${d.name}  ${c.muted(d.url)}`);
+    console.log('\n' + c.muted('   emparejados:'));
+    for (const d of devices) console.log(`     ${d.name}  ${c.muted(d.url)}`);
   }
 }
 

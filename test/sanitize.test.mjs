@@ -12,9 +12,15 @@ import { fileURLToPath } from 'node:url';
 // Este test es el cerrojo: si alguien vuelve a incrustar una ruta personal, salta aquí.
 
 const REPO = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const SKIP_DIRS = new Set(['.git', 'node_modules', 'data', 'out', '.tasks']);
+// Lo que no va al repo tampoco se escanea. Las carpetas de compilación de Gradle están
+// LLENAS de rutas absolutas de la máquina que compiló — es normal y por eso están en el
+// .gitignore. Escanearlas solo produce falsas alarmas que enseñan a ignorar este test.
+const SKIP_DIRS = new Set([
+  '.git', 'node_modules', 'data', 'out', '.tasks',
+  'build', '.gradle',
+]);
 // Datos del usuario: viven en disco pero están en .gitignore, no se publican.
-const SKIP_FILES = new Set(['projects.json', 'programados.jsonl']);
+const SKIP_FILES = new Set(['projects.json', 'programados.jsonl', 'local.properties']);
 const SCAN_EXT = new Set(['.mjs', '.js', '.json', '.md', '.cmd', '.sh', '.yml', '.txt', '']);
 
 // Marcadores de sitio: no son datos personales, son plantillas.

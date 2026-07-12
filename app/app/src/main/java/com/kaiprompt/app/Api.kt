@@ -1,0 +1,135 @@
+package com.kaiprompt.app
+
+import java.io.BufferedReader
+import java.net.HttpURLConnection
+import java.net.URL
+
+/**
+ * Talking to your PC.
+ *
+ * Plain HttpURLConnection — no OkHttp. The API is six endpoints and one event stream; a
+ * networking library would be more code than the thing it wraps.
+ *
+ * Every call asks for a sealed answer (`x-kaip-enc: 1`), so what crosses Cloudflare is an
+ * envelope they have no key to. The unsealing happens here, at the edge of the app.
+ */
+class Api(private val pairing: Pairing) {
+
+    class Down(message: String) : Exception(message)
+    class Unauthorized : Exception("el PC no reconoce este móvil. Vuelve a emparejar.")
+
+    /**
+     * The tunnel first, the home address as a fallback.
+     *
+     * Both are tried because they fail in opposite situations: the tunnel is down when the
+     * PC just restarted `kaip serve` (a quick tunnel gets a new URL every time), and the LAN
+     * address is unreachable the moment you leave the house. Trying both means the app keeps
+     * working in the case the other one would have broken.
+     */
+    private val bases: List<String> = listOfNotNull(pairing.url, pairing.lan).distinct()
+
+    fun state(): State = State.parse(get("/api/state"))
+
+    fun job(id: String): String = get("/api/job/$id")
+
+    fun chat(ref: String): Chat = Chat.parse(get("/api/job/$ref/chat"))
+
+    /** Tell the PC where to knock when a launch finishes. */
+    fun registerDevice(url: String, name: String) {
+        post("/api/device", """{"url":${quote(url)},"name":${quote(name)}}""")
+    }
+
+    /** Is the PC even on? The only call that needs no token. */
+    fun ping(): Boolean = try {
+        bases.any { base ->
+            open("$base/api/ping", auth = false).let { c ->
+                val ok = c.responseCode == 200
+                c.disconnect()
+                ok
+            }
+        }
+    } catch (_: Exception) {
+        false
+    }
+
+    // --- the wire ---------------------------------------------------------------
+    private fun get(path: String): String = attempt { base ->
+        val c = open("$base$path")
+        readBody(c)
+    }
+
+    private fun post(path: String, body: String): String = attempt { base ->
+        val c = open("$base$path")
+        c.requestMethod = "POST"
+        c.doOutput = true
+        c.setRequestProperty("content-type", "application/json")
+        c.outputStream.use { it.write(body.toByteArray()) }
+        readBody(c)
+    }
+
+    /** Try each address in turn; only give up when they have all failed. */
+    private fun <T> attempt(block: (String) -> T): T {
+        var last: Exception? = null
+        for (base in bases) {
+            try {
+                return block(base)
+            } catch (e: Unauthorized) {
+                throw e                       // a bad token will be bad on every address
+            } catch (e: Exception) {
+                last = e
+            }
+        }
+        throw Down(
+            "no llego a ${pairing.host}.\n" +
+                "¿está el PC encendido y con \"kaip serve\" corriendo?\n" +
+                (last?.message ?: "")
+        )
+    }
+
+    private fun open(url: String, auth: Boolean = true): HttpURLConnection =
+        (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 8000
+            readTimeout = 15000
+            if (auth) {
+                setRequestProperty("authorization", "Bearer ${pairing.token}")
+                setRequestProperty("x-kaip-enc", "1")     // seal it: Cloudflare is listening
+            }
+        }
+
+    private fun readBody(c: HttpURLConnection): String {
+        val code = c.responseCode
+        if (code == 401) throw Unauthorized()
+
+        val stream = if (code in 200..299) c.inputStream else c.errorStream
+        val body = stream?.bufferedReader()?.use(BufferedReader::readText).orEmpty()
+        c.disconnect()
+
+        if (code !in 200..299) throw Down("el PC respondió $code: ${body.take(200)}")
+
+        // The 401 above is deliberately NOT sealed by the server, so the reason is readable.
+        // Everything else is, and this is where it stops being Cloudflare's business.
+        return if (Crypto.isSealed(body)) Crypto.open(body, pairing.key) else body
+    }
+
+    /**
+     * The live feed. One line at a time, blocking — the caller runs it off the main thread
+     * and closes it by cancelling the coroutine.
+     */
+    fun events(onEvent: (String) -> Unit) {
+        val base = bases.first()
+        val c = open("$base/api/events?token=${pairing.token}&enc=1")
+        c.readTimeout = 0                                // an SSE stream is meant to go quiet
+
+        c.inputStream.bufferedReader().use { reader ->
+            while (true) {
+                val line = reader.readLine() ?: break
+                if (!line.startsWith("data:")) continue  // ':' comments are keep-alives
+                val payload = line.removePrefix("data:").trim()
+                if (payload.isEmpty()) continue
+                onEvent(if (Crypto.isSealed(payload)) Crypto.open(payload, pairing.key) else payload)
+            }
+        }
+    }
+
+    private fun quote(s: String) = "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+}

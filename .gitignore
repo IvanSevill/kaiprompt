@@ -7,3 +7,9 @@ node_modules/
 
 # Notas y tareas locales (rutas personales)
 .tasks/
+
+# Android: cada maquina genera lo suyo
+app/local.properties
+app/.gradle/
+app/build/
+app/app/build/
