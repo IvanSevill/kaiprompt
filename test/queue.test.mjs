@@ -6,8 +6,74 @@ import path from 'node:path';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-queue-'));
 process.env.PROGRAM_PROMPT_HOME = TMP;
-const { loadQueue, loadSessions, saveProjects, saveQueue } = await import('../lib/store.mjs');
-const { addJob, clearFinished, jobDetails, removeJobs } = await import('../lib/queue.mjs');
+const { loadQueue, loadSessions, saveProjects, saveQueue, saveSessions } = await import('../lib/store.mjs');
+const {
+  addJob, clearFinished, jobDetails, removeJobs, suggestDirs, suggestTargets,
+} = await import('../lib/queue.mjs');
+
+// --- conversaciones recomendadas --------------------------------------------
+// Reutilizar un target es el mayor ahorro de tokens de la herramienta: el lanzamiento
+// retoma una sesión que YA tiene el contexto cargado. Por eso el asistente las ofrece
+// en vez de obligarte a recordar el nombre.
+
+test('suggestTargets: propone las sesiones ya existentes, la más reciente primero', () => {
+  saveQueue([]);
+  saveSessions({
+    vieja: { sessionId: 's-vieja', adapter: 'claude', updatedAt: 1000 },
+    reciente: { sessionId: 's-reciente', adapter: 'claude', updatedAt: 9000 },
+  });
+
+  const s = suggestTargets();
+  assert.deepEqual(s.map((x) => x.target), ['reciente', 'vieja']);
+  assert.equal(s[0].sessionId, 's-reciente');
+  assert.equal(s[0].upcoming, false);
+});
+
+test('suggestTargets: incluye targets que aún no han corrido, marcados como "upcoming"', () => {
+  // Encadenar trabajo sobre un lanzamiento que todavía no ha salido es un caso real.
+  saveSessions({});
+  saveQueue([{
+    id: 'j1', target: 'manana', prompt: 'x', status: 'pending',
+    createdAt: 5000, sessionId: null, adapter: 'claude',
+  }]);
+
+  const [s] = suggestTargets();
+  assert.equal(s.target, 'manana');
+  assert.equal(s.upcoming, true, 'aún no tiene sesión');
+  assert.equal(s.jobs, 1);
+});
+
+test('suggestTargets: un target con sesión Y jobs sale una sola vez, no duplicado', () => {
+  saveSessions({ fixes: { sessionId: 's-fixes', adapter: 'claude', updatedAt: 1000 } });
+  saveQueue([
+    { id: 'j1', target: 'fixes', status: 'done', createdAt: 2000, finishedAt: 3000, sessionId: 's-fixes', adapter: 'claude', prompt: 'a' },
+    { id: 'j2', target: 'fixes', status: 'pending', createdAt: 4000, sessionId: null, adapter: 'claude', prompt: 'b' },
+  ]);
+
+  const s = suggestTargets();
+  assert.equal(s.length, 1);
+  assert.equal(s[0].jobs, 2);
+  assert.equal(s[0].sessionId, 's-fixes');
+  assert.equal(s[0].upcoming, false);
+});
+
+test('suggestTargets: sin nada, lista vacía (no revienta)', () => {
+  saveSessions({}); saveQueue([]);
+  assert.deepEqual(suggestTargets(), []);
+});
+
+test('suggestDirs: junta los alias de proyectos y las carpetas ya usadas, sin repetir', () => {
+  saveProjects({ _base: 'C:/base', miapp: 'C:/base/MiApp' });
+  saveQueue([
+    { id: 'j1', dir: 'C:/base/MiApp', status: 'done', createdAt: 5000, adapter: 'claude', prompt: 'a' },
+    { id: 'j2', dir: 'C:/otra', status: 'done', createdAt: 9000, adapter: 'claude', prompt: 'b' },
+  ]);
+
+  const dirs = suggestDirs();
+  assert.equal(dirs.filter((d) => d.dir === 'C:/base/MiApp').length, 1, 'sin duplicar');
+  assert.equal(dirs[0].dir, 'C:/otra', 'la más reciente primero');
+  assert.equal(dirs.find((d) => d.dir === 'C:/base/MiApp').label, 'miapp', 'conserva el alias');
+});
 
 test('addJob: crea un job pending y lo mete en la cola', () => {
   saveQueue([]);

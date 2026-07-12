@@ -8,7 +8,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
-  MAX_QUOTA_RETRIES, isQuotaExhausted, parseResetAt, planRetry, quotaVerdict, resetFromUsage,
+  MAX_QUOTA_RETRIES, isQuotaExhausted, parseResetAt, planRetry, quotaVerdict, readUsage,
+  resetFromUsage, sessionQuota,
 } from '../lib/quota.mjs';
 
 // El mensaje real que mató el lanzamiento de anoche.
@@ -74,20 +75,69 @@ test('parseResetAt: sin hora en el texto → null (no inventamos)', () => {
 });
 
 // --- el archivo de claude-usage ----------------------------------------------
+// Forma REAL del fichero (la que escribe la statusline): anidado bajo rate_limits,
+// y resets_at en epoch SEGUNDOS, no ISO.
+const usageFile = (obj) => {
+  const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'pp-quota-')), 'usage.json');
+  fs.writeFileSync(f, JSON.stringify(obj));
+  return f;
+};
+const secs = (ms) => Math.floor(ms / 1000);
+
+test('readUsage: lee la forma real (rate_limits + epoch en segundos)', () => {
+  const reset = Date.now() + 3600_000;
+  const f = usageFile({
+    updatedAt: secs(Date.now()),
+    rate_limits: {
+      five_hour: { used_percentage: 47, resets_at: secs(reset) },
+      seven_day: { used_percentage: 25, resets_at: secs(reset + 86400_000) },
+    },
+  });
+  const u = readUsage(f);
+  assert.equal(u.session.usedPct, 47);
+  assert.equal(u.session.freePct, 53, 'lo que queda, que es lo que se pinta');
+  assert.equal(Math.abs(u.session.resetsAt - reset) < 1000, true, 'segundos → ms');
+  assert.equal(u.weekly.usedPct, 25);
+});
+
+test('sessionQuota: la ventana de 5h, que es la que corta un lanzamiento', () => {
+  const reset = Date.now() + 3600_000;
+  const f = usageFile({ rate_limits: { five_hour: { used_percentage: 90, resets_at: secs(reset) } } });
+  const q = sessionQuota(f);
+  assert.equal(q.freePct, 10);
+  assert.equal(q.renewed, false);
+});
+
+test('sessionQuota: pasado el reset la lectura está gastada → 100% libre, "renewed"', () => {
+  // rate_limits solo se refresca con una respuesta de la API: pasado el reset el número
+  // viejo miente. El reloj lo sabe antes que el fichero.
+  const reset = Date.now() - 60_000;
+  const f = usageFile({ rate_limits: { five_hour: { used_percentage: 100, resets_at: secs(reset) } } });
+  const q = sessionQuota(f);
+  assert.equal(q.renewed, true);
+  assert.equal(q.freePct, 100);
+  assert.equal(q.usedPct, 0);
+});
+
+test('sessionQuota / readUsage: sin archivo o con basura → null, sin reventar', () => {
+  assert.equal(sessionQuota('/no/existe.json'), null);
+  assert.equal(readUsage('/no/existe.json'), null);
+});
+
 test('resetFromUsage: coge la ventana que vence ANTES de las dos', () => {
-  const tmp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'pp-quota-')), 'usage.json');
-  const soon = new Date(Date.now() + 3600_000).toISOString();
-  const later = new Date(Date.now() + 86400_000).toISOString();
-  fs.writeFileSync(tmp, JSON.stringify({
-    five_hour: { resets_at: soon }, seven_day: { resets_at: later },
-  }));
-  assert.equal(resetFromUsage(tmp), Date.parse(soon));
+  const soon = Date.now() + 3600_000;
+  const f = usageFile({
+    rate_limits: {
+      five_hour: { used_percentage: 10, resets_at: secs(soon) },
+      seven_day: { used_percentage: 10, resets_at: secs(soon + 86400_000) },
+    },
+  });
+  assert.ok(Math.abs(resetFromUsage(f) - soon) < 1000);
 });
 
 test('resetFromUsage: ignora los resets ya pasados (el archivo puede estar rancio)', () => {
-  const tmp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'pp-quota-')), 'usage.json');
-  fs.writeFileSync(tmp, JSON.stringify({ five_hour: { resets_at: '2020-01-01T00:00:00Z' } }));
-  assert.equal(resetFromUsage(tmp), null);
+  const f = usageFile({ rate_limits: { five_hour: { used_percentage: 10, resets_at: secs(Date.now() - 9e6) } } });
+  assert.equal(resetFromUsage(f), null);
 });
 
 test('resetFromUsage: sin archivo o con basura → null, sin reventar', () => {
