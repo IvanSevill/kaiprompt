@@ -246,6 +246,62 @@ async function cmdDaemon({ flags, pos }) {
   }
 }
 
+async function cmdServe({ flags }) {
+  const { DEFAULT_PORT, addresses, createServer, pairingPayload } = await import('./lib/server.mjs');
+  const port = Number(flags.port) || DEFAULT_PORT;
+
+  createServer({ port });
+  const nets = addresses(port);
+  const tail = nets.find((a) => a.tailscale);
+
+  console.log(c.bold('kaip serve') + c.muted(`  ·  puerto ${port}`));
+  console.log(c.muted('  la conversación completa, sin recortar: nada sale de esta máquina.\n'));
+
+  for (const a of nets) {
+    const tag = a.tailscale ? c.ok('  ← usa esta desde el móvil (Tailscale)') : c.muted('  (solo en la red de casa)');
+    console.log(`  ${a.url.padEnd(28)}${tag}`);
+  }
+
+  if (!tail) {
+    console.log('\n' + c.warn('  no veo ninguna dirección de Tailscale.'));
+    console.log(c.muted('  sin ella el móvil solo llega estando en tu wifi. Instálalo en ambos: ')
+      + c.accent('https://tailscale.com'));
+  }
+
+  console.log('\n' + c.muted('  emparejar el móvil:  ') + c.accent('kaip pair'));
+  console.log(c.muted('  Ctrl+C para parar.'));
+}
+
+async function cmdPair({ flags }) {
+  const { DEFAULT_PORT, pairingPayload, resetToken, serverConfig } = await import('./lib/server.mjs');
+  const port = Number(flags.port) || DEFAULT_PORT;
+
+  if (flags.reset) {
+    resetToken();
+    console.log(c.warn('token rotado: los móviles ya emparejados dejan de funcionar.\n'));
+  }
+
+  const p = pairingPayload(port);
+  console.log(c.bold('emparejar el móvil'));
+  console.log(c.muted('  esto es lo que va dentro del QR:\n'));
+  console.log('  ' + c.accent(JSON.stringify(p)));
+  console.log('\n' + c.muted('  url:   ') + p.url);
+  console.log(c.muted('  token: ') + p.token);
+
+  if (!p.tailscale) {
+    console.log('\n' + c.warn('  ⚠ esa dirección es de tu red local, no de Tailscale.'));
+    console.log(c.muted('    el móvil solo llegará estando en tu wifi.'));
+  }
+  console.log('\n' + c.muted('  el servidor tiene que estar levantado: ') + c.accent('kaip serve'));
+  console.log(c.muted('  rotar el token (y desemparejar todo): ') + c.accent('kaip pair --reset'));
+
+  const { devices = [] } = serverConfig();
+  if (devices.length) {
+    console.log('\n' + c.muted('  dispositivos emparejados:'));
+    for (const d of devices) console.log(`    ${d.name}  ${c.muted(d.url)}`);
+  }
+}
+
 function cmdSessions({ pos } = { pos: [] }) {
   if (pos[0] === 'set') {                          // sessions set <target> <session-id>
     const [, target, sid] = pos;
@@ -363,6 +419,8 @@ try {
     case 'projects': case 'project': cmdProjects(parsed); break;
     case 'sessions': cmdSessions(parsed); break;
     case 'daemon': await cmdDaemon(parsed); break;
+    case 'serve': await cmdServe(parsed); break;
+    case 'pair': await cmdPair(parsed); break;
     // No subcommand → the GUI, but only with a real terminal: raw mode on a piped
     // stdin (Task Scheduler, cron, a pipe) would hang forever. There, print the help.
     case undefined:
