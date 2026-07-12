@@ -30,9 +30,9 @@ test('commandFiles: los dos comandos llevan la ruta REAL de instalación', () =>
   const files = commandFiles(ROOT);
   assert.deepEqual(Object.keys(files).sort(), ['programar.md', 'resumen-prompts.md']);
 
-  assert.match(files['programar.md'], /C:\/tools\/kaip\/programar\.mjs/);
-  assert.match(files['resumen-prompts.md'], /C:\/tools\/kaip\/kaip\.mjs/);
-  assert.match(files['resumen-prompts.md'], /C:\/tools\/kaip\/out/);
+  assert.match(files['programar.md'], /C:\/tools\/kaiprompt\/programar\.mjs/);
+  assert.match(files['resumen-prompts.md'], /C:\/tools\/kaiprompt\/kaip\.mjs/);
+  assert.match(files['resumen-prompts.md'], /C:\/tools\/kaiprompt\/out/);
 });
 
 test('commandFiles: resumen-prompts apunta al binario que existe (no al nombre viejo)', () => {
@@ -193,5 +193,5 @@ test('shellSnippets: el atajo lleva la ruta real, y entrecomillada', () => {
 });
 
 test('posix: en el JSON van barras normales (una barra invertida habría que escaparla)', () => {
-  assert.equal(posix('C:\\tools\\kaip'), 'C:/tools/kaiprompt');
+  assert.equal(posix('C:\\tools\\kaiprompt'), 'C:/tools/kaiprompt');
 });
