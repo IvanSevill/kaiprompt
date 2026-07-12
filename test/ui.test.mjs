@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  bar, bigText, bigWidth, box, c, centerLine, fit, paint, strip, toolLines, toolSummary,
+  bar, bigText, bigWidth, box, c, centerBlock, centerLine, fit, paint, strip, toolLines, toolSummary,
   trunc, width, wrap, writeLines,
 } from '../lib/ui.mjs';
 
@@ -43,6 +43,34 @@ test('trunc: recorta y añade elipsis, colapsa espacios', () => {
 test('centerLine centra por ancho visible', () => {
   assert.equal(centerLine('ab', 10), ' '.repeat(4) + 'ab');
   assert.equal(width(centerLine('ab', 10)), 6);
+});
+
+// --- centerBlock -------------------------------------------------------------
+// Regresión visual: centrar CADA línea por su cuenta descuadra el conjunto — una barra
+// corta se iba flotando a un lado mientras la caja ancha quedaba en el medio. Un bloque
+// se centra como bloque: todas las líneas arrancan en la misma columna.
+
+test('centerBlock: todas las líneas empiezan en la MISMA columna', () => {
+  const lines = centerBlock(['caja muy ancha de aqui a alli', 'corto', 'x'], 60);
+  const sangrias = lines.map((l) => l.length - l.trimStart().length);
+  assert.equal(new Set(sangrias).size, 1, 'una sola sangría para todas');
+});
+
+test('centerBlock: el bloque queda centrado por su línea más ancha', () => {
+  const ancha = 'x'.repeat(20);
+  const [primera] = centerBlock([ancha, 'y'], 40);
+  assert.equal(primera.length - primera.trimStart().length, 10, '(40 - 20) / 2');
+});
+
+test('centerBlock: mide por ancho visible, los colores no descuadran', () => {
+  const lines = centerBlock([c.accent('hola'), 'hola'], 20);
+  const sangrias = lines.map((l) => strip(l).length - strip(l).trimStart().length);
+  assert.equal(new Set(sangrias).size, 1, 'el color no debe empujar la línea');
+});
+
+test('centerBlock: nada desborda la terminal', () => {
+  const lines = centerBlock(['x'.repeat(200)], 40);
+  assert.ok(lines.every((l) => width(l) <= 40));
 });
 
 // --- fit (ninguna línea puede desbordar la terminal) ------------------------
