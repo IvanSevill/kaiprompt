@@ -17,11 +17,16 @@ const PROG = path.join(TMP, 'programados.jsonl');
 const PASS = 0;    // deja pasar el prompt
 const BLOCK = 2;   // bloquea el turno → 0 tokens
 
+// Al programar, el hook levanta el daemon (si no, la hora programada no llegaría a
+// nadie). Aquí lo desactivamos: un test no debe dejar procesos sueltos en la máquina.
+// Que el daemon se arme de verdad se prueba en daemon.test.mjs.
+const ENV = { ...process.env, PROGRAM_PROMPT_HOME: TMP, PROGRAM_PROMPT_NO_DAEMON: '1' };
+
 function hook(input, cwd = 'C:/tmp') {
   fs.rmSync(PROG, { force: true });
   const r = spawnSync(process.execPath, [HOOK], {
     input: JSON.stringify({ input, cwd }),
-    env: { ...process.env, PROGRAM_PROMPT_HOME: TMP },
+    env: ENV,
     encoding: 'utf8',
   });
   const lines = fs.existsSync(PROG)
@@ -95,7 +100,13 @@ test('hora inválida → bloquea con error claro (sin agendar)', () => {
 
 test('stdin vacío o no-JSON no rompe el hook (deja pasar)', () => {
   const r = spawnSync(process.execPath, [HOOK], {
-    input: 'no soy json', env: { ...process.env, PROGRAM_PROMPT_HOME: TMP }, encoding: 'utf8',
+    input: 'no soy json', env: ENV, encoding: 'utf8',
   });
   assert.equal(r.status, PASS);
+});
+
+test('al programar avisa de que el daemon queda al mando (no lanza nada ahora)', () => {
+  const r = hook('/programar +2h | algo');
+  assert.match(r.stderr, /daemon/i, 'el usuario tiene que saber quién lo va a lanzar');
+  assert.doesNotMatch(r.stderr, /lanzando|running/i, 'programar no ejecuta');
 });

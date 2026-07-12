@@ -8,6 +8,9 @@ import { fileURLToPath } from 'node:url';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-tui-'));
 process.env.PROGRAM_PROMPT_HOME = TMP;
+// Añadir un job con hora arma el daemon (esa es la gracia). Aquí no: un test no puede
+// dejar procesos de fondo vivos. Que se arme de verdad se prueba en daemon.test.mjs.
+process.env.PROGRAM_PROMPT_NO_DAEMON = '1';
 const { loadQueue, saveQueue, saveProjects, saveSessions } = await import('../lib/store.mjs');
 const { addJob } = await import('../lib/queue.mjs');
 const { strip } = await import('../lib/ui.mjs');
@@ -196,7 +199,7 @@ test('e: un job done NO se edita (lo dice, y no abre el asistente)', () => {
 
   assert.equal(state.wizard, null);
   assert.equal(effect, null);
-  assert.match(strip(state.message), /only pending jobs can be edited/);
+  assert.match(strip(state.message), /only pending \(or missed\) jobs can be edited/);
   assert.equal(loadQueue()[0].id, j.id);
 });
 
@@ -278,7 +281,54 @@ test('render: pestañas, jobs, barra de atajos y marca de selección', () => {
   assert.match(out, new RegExp(j.id));
   assert.match(out, /revisa el PR/);
   assert.match(out, /▸/, 'la fila seleccionada va marcada');
-  assert.match(out, /a add · e edit · d del · r run/, 'la barra de atajos');
+  assert.match(out, /a add · e edit · d del · D daemon · r run now/, 'la barra de atajos');
+});
+
+// --- programar no es lanzar ---------------------------------------------------
+// El malentendido que originó todo esto: abrir la GUI y que el prompt saliera disparado.
+// La GUI no lanza NADA por su cuenta; solo escribe en la cola. Esto lo deja clavado.
+test('la cabecera dice si el daemon está apagado (o los programados no saldrían)', () => {
+  saveQueue([]);
+  const out = view(fresh());
+  assert.match(out, /daemon off/, 'apagado hay que decirlo, no esconderlo');
+  assert.match(out, /will NOT fire/, 'y explicar la consecuencia');
+});
+
+test('"D" pide encender/apagar el daemon (y no lanza la cola)', () => {
+  const { effect } = press(fresh(), ['D']);
+  assert.deepEqual(effect, { type: 'daemon' });
+});
+
+test('"r" sigue siendo lo único que lanza la cola a mano', () => {
+  const { effect } = press(fresh(), ['r']);
+  assert.deepEqual(effect, { type: 'run' });
+});
+
+test('el asistente encola, no envía: ninguna tecla del alta dispara un lanzamiento', () => {
+  saveQueue([]);
+  const keys = [...'a', ...'hola', 'enter', ...'+2h', 'enter', 'enter', 'enter', 'enter'];
+  let state = fresh(); let effect = null;
+  for (const k of keys) {
+    ({ state, effect } = reduce(state, k));
+    assert.notEqual(effect?.type, 'run', 'en ningún momento se lanza nada');
+  }
+  assert.equal(effect.type, 'add', 'al final del asistente solo hay un alta');
+
+  applyEffect(effect);
+  const [job] = loadQueue();
+  assert.equal(job.status, 'pending', 'queda pendiente: nadie lo ha enviado');
+  assert.ok(job.when > Date.now(), 'con su hora, para que el daemon lo lance luego');
+});
+
+test('un alta SIN hora avisa de que solo saldrá en un run manual', () => {
+  saveQueue([]);
+  const line = strip(applyEffect({
+    type: 'add',
+    values: { prompt: 'sin hora', when: '', target: '', dir: '', perm: 'bypass' },
+  }));
+  assert.match(line, /sequential/i);
+  assert.match(line, /only runs when you press "r"/i, 'sin sorpresas: no se lanza solo');
+  assert.equal(loadQueue()[0].when, null);
 });
 
 test('render: las filas quedan en columnas (no se comen los espacios)', () => {

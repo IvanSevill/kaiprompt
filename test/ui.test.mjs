@@ -242,3 +242,15 @@ test('box: todas las líneas del mismo ancho (si no, el marco se descuadra)', ()
   const anchos = b.map(width);
   assert.equal(new Set(anchos).size, 1);
 });
+
+test('box: una línea MÁS ANCHA que la caja se recorta, no empuja el borde', () => {
+  // Regresión: el borde derecho se iba zigzagueando pantalla abajo, una distancia
+  // distinta por cada línea larga. Se veía en la vista de detalle con prompts largos.
+  const b = box(['x'.repeat(200), 'corto'], { title: 'job', cols: 40 });
+  const anchos = b.map(width);
+  assert.equal(new Set(anchos).size, 1, 'todas las filas al mismo ancho');
+  assert.equal(anchos[0], 42, 'el ancho pedido + los dos bordes');
+  for (const l of b.slice(1, -1)) {
+    assert.ok(strip(l).startsWith('│') && strip(l).endsWith('│'), 'bordes en su sitio');
+  }
+});
