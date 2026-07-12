@@ -84,8 +84,8 @@ kaip show <id>                     # the job AND the whole conversation it had
 kaip chat <target>                 # the conversation, by name
 kaip edit <id> --at +1h            # change a pending job
 kaip daemon start                  # fire scheduled jobs with no terminal open
-kaip serve                         # the API + tunnel the phone app talks to
-kaip pair                          # the QR codes: download the app, and pair it
+kaip serve                         # the API + tunnel + the pairing QR, for the phone
+kaip mobile                        # the QR to download the app
 ```
 
 ### 3. The guided GUI
@@ -112,12 +112,15 @@ is the single biggest token saving available (see below).
 
 <img src="https://img.shields.io/badge/Android-APK-D97757" alt="Android"> **[Download the
 APK](https://github.com/IvanSevill/kaiprompt/releases/latest)** · or scan the QR from
-`kaip pair`.
+`kaip mobile`.
 
 ```bash
-kaip serve      # API + Cloudflare tunnel
-kaip pair       # two QR codes: one to download the app, one to pair it
+kaip mobile     # the QR to download the app  (once)
+kaip serve      # the API, the tunnel, and the pairing QR
 ```
+
+`serve` shows the pairing QR itself, and takes it off the screen the moment the phone pairs.
+A code that has done its job is not neutral sitting there — it is a secret on your monitor.
 
 The app shows the queue, the full conversation of every launch, the quota — and **notifies
 you the moment a launch finishes, with the app closed**.
@@ -126,6 +129,10 @@ you the moment a launch finishes, with the app closed**.
 forwarded, no router touched) and the phone reaches it over plain HTTPS. That matters
 practically: it needs **no VPN on the phone**, so a firewall app like NetGuard keeps its one
 VPN slot — and it works from any network, 4G included.
+
+Want no third party at all? **`kaip serve --wifi`** drops the tunnel entirely: the phone
+talks to this machine over your own network and nothing leaves the house. The trade is that
+it only works while you are on that network.
 
 Cloudflare terminates the TLS and could otherwise read everything that passes through. It
 cannot: **the payload is sealed end-to-end** with AES-256-GCM, and the key never travels the

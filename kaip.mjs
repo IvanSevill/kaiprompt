@@ -431,18 +431,39 @@ Usage:
   kaip <engine> <subcommand> [args]
   <engine> = claude | opencode   (optional; defaults to claude)
 
-Subcommands:
-  add "<prompt>" [--target <n>] [--at <when>] [--dir <project>] [--session <id>] [--perm <mode>]
-  list [--full|-f]            view the queue with status (--full for whole prompts)
-  show <id>                   full details of one job
-  daemon <start|stop|status>  the background runner: fires scheduled launches on time
-  run [--once] [--dry-run]    process the queue NOW (full-screen countdown + live view)
-  out [<id>]                  output of a launch (or the latest)
-  chat <id|target|session>    read the conversation of a launch [--last N] [--full] [--raw]
-  edit <id>                   change a pending job (--prompt --at --target --dir --perm --adapter)
+Queue:
+  add "<prompt>"              queue a launch  [--at <when>] [--target <n>] [--dir <project>]
+                              [--perm <mode>] [--session <id>]
+  add --from <path>           the prompt lives in a FILE, read at launch — keep editing it
+                              until the second it goes out  (--file pastes it in NOW instead)
+  list [--full|-f]            the queue, with status
+  show <id>                   the job AND the whole conversation it had
+  edit <id>                   change a pending job (--prompt --from --at --target --dir --perm)
   rm <id> [<id>...]           remove jobs
   clear                       clear finished/error entries
+
+Running:
+  daemon <start|stop|status>  the background runner: fires scheduled launches on time,
+                              with nothing open. "install" brings it back at logon.
+  run                         process the queue NOW (countdown + live view). Stays up when
+                              the queue empties, so you can keep feeding it.
+     --once                   drain and exit (for scripts)
+     --parallel N             different conversations need not wait for each other
+     --plain                  no full-screen view — for servers and CI
   gui                         the guided GUI (same as running with no arguments)
+
+Seeing what happened:
+  out [<id>]                  the ANSWER — just the last thing Claude said
+  chat <id|target|session>    the CONVERSATION — every turn  [--last N] [--full] [--raw]
+
+The phone:
+  serve                       the API + a Cloudflare tunnel, and the pairing QR.
+                              Works from any network; no VPN, no ports opened.
+     --wifi                   no tunnel, no Cloudflare, no third party. Your network only.
+  mobile                      the QR to download the app
+  app <build|test>            build the APK yourself (needs the Android SDK)
+
+Setup:
   sessions                    saved sessions (name → session-id)
   sessions set <t> <id>       assign a session-id to a target by hand
   projects                    folders/projects available for --dir
