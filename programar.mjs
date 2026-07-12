@@ -10,11 +10,11 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dir = path.dirname(fileURLToPath(import.meta.url));
 // Los datos pueden vivir fuera del código (tests / instalación); por defecto, aquí mismo.
-const HOME = process.env.PROGRAM_PROMPT_HOME || __dir;
+const HOME = process.env.PROMPTHEUS_HOME || __dir;
 const PROG = path.join(HOME, 'programados.jsonl');
 const PROYECTOS = path.join(HOME, 'projects.json');
 
@@ -107,11 +107,28 @@ const appendEntry = (e) => fs.appendFileSync(PROG, JSON.stringify(e) + '\n');
 const proj = (d) => (d ? String(d).replace(/[\\/]+$/, '').split(/[\\/]/).pop() : '');
 const confirm = (e) => `✓ programado para ${new Date(e.when).toLocaleString()}${e.target ? '  [' + e.target + ']' : ''}${e.dir ? '  en ' + proj(e.dir) : ''}\n  → ${e.prompt}`;
 
+/**
+ * Programar sin lanzar solo sirve si algo lo lanza a su hora: eso es el daemon.
+ * Lo levantamos aquí, al programar, para que "a las 9" signifique a las 9 aunque no
+ * haya nada abierto. Si falla, el lanzamiento sigue en la cola: nunca rompemos el hook.
+ */
+async function armDaemon() {
+  if (process.env.PROMPTHEUS_NO_DAEMON) return '  (daemon desactivado por entorno)';
+  try {
+    const d = await import(pathToFileURL(path.join(__dir, 'lib', 'daemon.mjs')).href);
+    const st = d.ensure();
+    return '  ' + (st.started ? `daemon arrancado (pid ${st.pid}) — se lanzará solo a su hora`
+      : `daemon ya activo (pid ${st.pid}) — se lanzará solo a su hora`);
+  } catch (e) {
+    return `  ⚠ no pude arrancar el daemon (${e.message}); lánzalo con: promptheus daemon start`;
+  }
+}
+
 function readStdin() {
   try { return fs.readFileSync(0, 'utf8'); } catch { return ''; }
 }
 
-function main() {
+async function main() {
   const argv = process.argv.slice(2);
 
   // --- modo CLI (red de seguridad del comando /programar) ---
@@ -122,7 +139,7 @@ function main() {
     const r = buildEntry(rest, process.cwd());
     if (r.error) { process.stdout.write('⚠ ' + r.error + '\n' + USAGE + '\n'); return 1; }
     appendEntry(r.entry);
-    process.stdout.write(confirm(r.entry) + '\n  (guardado en programados.jsonl; lánzalo con: cq run)\n');
+    process.stdout.write(confirm(r.entry) + '\n' + (await armDaemon()) + '\n');
     return 0;
   }
 
@@ -138,8 +155,8 @@ function main() {
   const r = buildEntry((m[1] || '').trim(), j.cwd);   // dir = carpeta donde se escribió /programar
   if (r.error) { process.stderr.write('⚠ ' + r.error + '\n' + USAGE + '\n'); return EXIT_BLOCK; }
   appendEntry(r.entry);
-  process.stderr.write(confirm(r.entry) + '\n  (0 tokens; lánzalo con: cq run)\n');
+  process.stderr.write(confirm(r.entry) + '\n  (0 tokens)\n' + (await armDaemon()) + '\n');
   return EXIT_BLOCK;                                   // bloquea el turno → no gasta tokens
 }
 
-process.exit(main());
+process.exit(await main());

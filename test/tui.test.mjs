@@ -7,7 +7,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-tui-'));
-process.env.PROGRAM_PROMPT_HOME = TMP;
+process.env.PROMPTHEUS_HOME = TMP;
+// Añadir un job con hora arma el daemon (esa es la gracia). Aquí no: un test no puede
+// dejar procesos de fondo vivos. Que se arme de verdad se prueba en daemon.test.mjs.
+process.env.PROMPTHEUS_NO_DAEMON = '1';
 const { loadQueue, saveQueue, saveProjects, saveSessions } = await import('../lib/store.mjs');
 const { addJob } = await import('../lib/queue.mjs');
 const { strip } = await import('../lib/ui.mjs');
@@ -196,7 +199,7 @@ test('e: un job done NO se edita (lo dice, y no abre el asistente)', () => {
 
   assert.equal(state.wizard, null);
   assert.equal(effect, null);
-  assert.match(strip(state.message), /only pending jobs can be edited/);
+  assert.match(strip(state.message), /only pending \(or missed\) jobs can be edited/);
   assert.equal(loadQueue()[0].id, j.id);
 });
 
@@ -273,12 +276,59 @@ test('render: pestañas, jobs, barra de atajos y marca de selección', () => {
   const j = addJob({ prompt: 'revisa el PR', target: 'review' });
   const out = view(fresh());
 
-  assert.match(out, /program-prompt/);
+  assert.match(out, /promptheus/);
   assert.match(out, /Queue \(1\).*Chats.*Projects.*Help/s, 'las cuatro vistas');
   assert.match(out, new RegExp(j.id));
   assert.match(out, /revisa el PR/);
   assert.match(out, /▸/, 'la fila seleccionada va marcada');
-  assert.match(out, /a add · e edit · d del · r run/, 'la barra de atajos');
+  assert.match(out, /a add · e edit · d del · D daemon · r run now/, 'la barra de atajos');
+});
+
+// --- programar no es lanzar ---------------------------------------------------
+// El malentendido que originó todo esto: abrir la GUI y que el prompt saliera disparado.
+// La GUI no lanza NADA por su cuenta; solo escribe en la cola. Esto lo deja clavado.
+test('la cabecera dice si el daemon está apagado (o los programados no saldrían)', () => {
+  saveQueue([]);
+  const out = view(fresh());
+  assert.match(out, /daemon off/, 'apagado hay que decirlo, no esconderlo');
+  assert.match(out, /will NOT fire/, 'y explicar la consecuencia');
+});
+
+test('"D" pide encender/apagar el daemon (y no lanza la cola)', () => {
+  const { effect } = press(fresh(), ['D']);
+  assert.deepEqual(effect, { type: 'daemon' });
+});
+
+test('"r" sigue siendo lo único que lanza la cola a mano', () => {
+  const { effect } = press(fresh(), ['r']);
+  assert.deepEqual(effect, { type: 'run' });
+});
+
+test('el asistente encola, no envía: ninguna tecla del alta dispara un lanzamiento', () => {
+  saveQueue([]);
+  const keys = [...'a', ...'hola', 'enter', ...'+2h', 'enter', 'enter', 'enter', 'enter'];
+  let state = fresh(); let effect = null;
+  for (const k of keys) {
+    ({ state, effect } = reduce(state, k));
+    assert.notEqual(effect?.type, 'run', 'en ningún momento se lanza nada');
+  }
+  assert.equal(effect.type, 'add', 'al final del asistente solo hay un alta');
+
+  applyEffect(effect);
+  const [job] = loadQueue();
+  assert.equal(job.status, 'pending', 'queda pendiente: nadie lo ha enviado');
+  assert.ok(job.when > Date.now(), 'con su hora, para que el daemon lo lance luego');
+});
+
+test('un alta SIN hora avisa de que solo saldrá en un run manual', () => {
+  saveQueue([]);
+  const line = strip(applyEffect({
+    type: 'add',
+    values: { prompt: 'sin hora', when: '', target: '', dir: '', perm: 'bypass' },
+  }));
+  assert.match(line, /sequential/i);
+  assert.match(line, /only runs when you press "r"/i, 'sin sorpresas: no se lanza solo');
+  assert.equal(loadQueue()[0].when, null);
 });
 
 test('render: las filas quedan en columnas (no se comen los espacios)', () => {
@@ -354,17 +404,132 @@ test('VIEWS: las cuatro vistas del plan, en orden', () => {
 });
 
 // --- lo desatendido no se puede romper ---------------------------------------
-test('sin TTY, "program-prompt" a secas imprime la ayuda y NO abre la GUI', () => {
+test('sin TTY, "promptheus" a secas imprime la ayuda y NO abre la GUI', () => {
   // Esto es el caso del Task Scheduler y de las tuberías: la GUI en raw mode
   // se quedaría colgada para siempre esperando una tecla que nadie va a pulsar.
-  const cli = fileURLToPath(new URL('../program-prompt.mjs', import.meta.url));
+  const cli = fileURLToPath(new URL('../promptheus.mjs', import.meta.url));
   const out = execFileSync(process.execPath, [cli], {
     encoding: 'utf8',
     timeout: 10_000,                            // si abriera la GUI, colgaría aquí
-    env: { ...process.env, PROGRAM_PROMPT_HOME: TMP },
+    env: { ...process.env, PROMPTHEUS_HOME: TMP },
   });
 
   assert.match(out, /Usage:/, 'debe salir la ayuda');
   assert.match(out, /Subcommands:/);
   assert.doesNotMatch(out, /\x1b\[\?1049h/, 'ni rastro de la pantalla alternativa');
+});
+
+// --- reiniciar la interfaz ---------------------------------------------------
+// Cualquier cosa que escriba en el terminal por detrás de la GUI (la salida suelta de
+// un lanzamiento, un resize que el terminal se comió) deja basura en pantalla, y no
+// había forma de recuperar un frame limpio salvo salir.
+
+test('R pide reiniciar la interfaz', () => {
+  const { effect } = reduce(refresh(initialState()), 'R');
+  assert.deepEqual(effect, { type: 'restart' });
+});
+
+test('R dentro del asistente NO reinicia: ahí es una letra que se escribe', () => {
+  const st = reduce(refresh(initialState()), 'a').state;      // abre el asistente
+  const { state: next, effect } = reduce(st, 'R');
+  assert.equal(effect, null, 'no dispara efecto');
+  assert.ok(next.wizard.buffer.endsWith('R'), 'se escribe en el prompt');
+});
+
+// --- conversaciones sugeridas ------------------------------------------------
+// Reutilizar un target retoma una sesión que YA tiene el contexto cargado: es el mayor
+// ahorro de tokens de la herramienta. Por eso el asistente las ofrece.
+
+test('el asistente sugiere las conversaciones existentes, y ↑↓ las elige', () => {
+  saveQueue([]);
+  saveSessions({ fixes: { sessionId: 'sess-abcdef12', adapter: 'claude', updatedAt: Date.now() } });
+
+  // add → prompt → when → llegamos al paso "target"
+  let st = refresh(initialState());
+  st = reduce(st, 'a').state;
+  for (const ch of 'algo') st = reduce(st, ch).state;
+  st = reduce(st, 'enter').state;                              // prompt hecho
+  st = reduce(st, 'enter').state;                              // when vacío → secuencial
+
+  assert.equal(st.wizard.step, 2, 'estamos en el paso del target');
+
+  const pantalla = render(st).map(strip).join('\n');
+  assert.ok(pantalla.includes('fixes'), 'la sesión existente se ofrece en pantalla');
+
+  st = reduce(st, 'down').state;                               // elegirla con la flecha
+  assert.equal(st.wizard.buffer, 'fixes');
+  assert.equal(st.wizard.pick, 0);
+});
+
+test('escribir por encima de una sugerencia la descarta (es tu valor, no el suyo)', () => {
+  saveQueue([]);
+  saveSessions({ fixes: { sessionId: 's1', adapter: 'claude', updatedAt: 1 } });
+
+  let st = refresh(initialState());
+  st = reduce(st, 'a').state;
+  for (const ch of 'algo') st = reduce(st, ch).state;
+  st = reduce(st, 'enter').state;
+  st = reduce(st, 'enter').state;
+  st = reduce(st, 'down').state;                               // coge "fixes"
+  assert.equal(st.wizard.pick, 0);
+
+  st = reduce(st, 'X').state;                                  // y escribe encima
+  assert.equal(st.wizard.pick, null, 'ya no está eligiendo de la lista');
+  assert.equal(st.wizard.buffer, 'fixesX');
+});
+
+test('sin sesiones guardadas, las flechas no rompen el asistente', () => {
+  saveQueue([]); saveSessions({});
+  let st = refresh(initialState());
+  st = reduce(st, 'a').state;
+  for (const ch of 'algo') st = reduce(st, ch).state;
+  st = reduce(st, 'enter').state;
+  st = reduce(st, 'enter').state;
+  const { state: next } = reduce(st, 'down');
+  assert.ok(next.wizard, 'el asistente sigue en pie');
+});
+
+// --- borrar los jobs ya terminados ------------------------------------------
+test('"x" pide confirmacion antes de borrar los terminados (no borra a la primera)', () => {
+  saveQueue([]);
+  const a = addJob({ prompt: 'pendiente', adapter: 'mock' });
+  const b = addJob({ prompt: 'terminado', adapter: 'mock' });
+  saveQueue(loadQueue().map((j) => (j.id === b.id ? { ...j, status: 'done' } : j)));
+
+  const st = refresh(initialState());
+  const { state: next, effect } = reduce(st, 'x');
+
+  assert.equal(effect, null, 'todavia no borra nada');
+  assert.ok(next.confirm, 'pregunta primero');
+  assert.match(next.confirm.text, /1 finished/);
+  assert.equal(loadQueue().length, 2, 'la cola sigue intacta');
+
+  // Y al decir que si, se van los terminados y se quedan los pendientes.
+  const { effect: go } = reduce(next, 'y');
+  assert.deepEqual(go, { type: 'clear' });
+  applyEffect(go);
+
+  const ids = loadQueue().map((j) => j.id);
+  assert.deepEqual(ids, [a.id], 'solo queda el pendiente');
+});
+
+test('"x" con nada terminado no pregunta, solo lo dice', () => {
+  saveQueue([]);
+  addJob({ prompt: 'pendiente', adapter: 'mock' });
+  const { state: next, effect } = reduce(refresh(initialState()), 'x');
+  assert.equal(effect, null);
+  assert.equal(next.confirm, null, 'no monta un dialogo para nada');
+  assert.match(strip(next.message), /nothing finished/);
+});
+
+test('cancelar la confirmacion con "n" no borra nada', () => {
+  saveQueue([]);
+  addJob({ prompt: 'terminado', adapter: 'mock' });
+  saveQueue(loadQueue().map((j) => ({ ...j, status: 'done' })));
+
+  const st = reduce(refresh(initialState()), 'x').state;
+  const { state: next, effect } = reduce(st, 'n');
+  assert.equal(effect, null);
+  assert.equal(next.confirm, null);
+  assert.equal(loadQueue().length, 1, 'sigue ahi');
 });

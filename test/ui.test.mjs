@@ -2,8 +2,22 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  bar, bigText, bigWidth, box, c, centerLine, fit, strip, toolSummary, trunc, width, wrap,
+  bar, bigText, bigWidth, box, c, centerLine, fit, paint, strip, toolLines, toolSummary,
+  trunc, width, wrap, writeLines,
 } from '../lib/ui.mjs';
+
+/** Pretend stdout is a terminal and capture what gets written to it. */
+function asTTY(fn) {
+  const { isTTY, write } = process.stdout;
+  const out = [];
+  process.stdout.isTTY = true;
+  process.stdout.write = (s) => { out.push(String(s)); return true; };
+  try { fn(); } finally {
+    process.stdout.write = write;
+    process.stdout.isTTY = isTTY;
+  }
+  return out.join('');
+}
 
 // Sin TTY (los tests corren con la salida redirigida) los helpers de color no pintan:
 // eso es justo lo que garantiza que el modo desatendido salga en texto plano.
@@ -115,6 +129,99 @@ test('bigText: la escala cambia el ancho, no la altura', () => {
   assert.ok(bigWidth('12', { scale: 2 }) > bigWidth('12', { scale: 1 }));
 });
 
+// --- toolLines (lo que se ve mientras el lanzamiento corre) -----------------
+// Un "Edit(archivo)" pelado no dice QUÉ cambió, y un "TodoWrite" pelado no dice nada.
+
+test('toolLines: TodoWrite enseña las tareas, no una llamada vacía', () => {
+  const lines = toolLines('TodoWrite', {
+    todos: [
+      { content: 'leer el codigo', status: 'completed' },
+      { content: 'arreglar el bug', status: 'in_progress' },
+      { content: 'correr los tests', status: 'pending' },
+    ],
+  }, 60).map(strip);
+
+  assert.ok(lines[0].includes('TodoWrite'));
+  assert.ok(lines.some((l) => l.includes('✓') && l.includes('leer el codigo')));
+  assert.ok(lines.some((l) => l.includes('▶') && l.includes('arreglar el bug')));
+  assert.ok(lines.some((l) => l.includes('·') && l.includes('correr los tests')));
+});
+
+test('toolLines: TodoWrite sin tareas no revienta', () => {
+  assert.equal(toolLines('TodoWrite', {}, 60).length, 1);
+  assert.equal(toolLines('TodoWrite', undefined, 60).length, 1);
+});
+
+test('toolLines: Edit enseña el cambio, lo que sale y lo que entra', () => {
+  const lines = toolLines('Edit', {
+    file_path: 'lib/ui.mjs', old_string: 'join("\\n")', new_string: 'join("\\r\\n")',
+  }, 60).map(strip);
+
+  assert.ok(lines[0].includes('Edit') && lines[0].includes('lib/ui.mjs'));
+  assert.ok(lines.some((l) => l.trim().startsWith('-') && l.includes('join')));
+  assert.ok(lines.some((l) => l.trim().startsWith('+') && l.includes('join')));
+});
+
+test('toolLines: un Edit gigante se recorta (si no, tapa la pantalla)', () => {
+  const big = Array.from({ length: 40 }, (_, i) => `linea ${i}`).join('\n');
+  const lines = toolLines('Edit', { file_path: 'x', old_string: big, new_string: big }, 60).map(strip);
+  assert.ok(lines.length < 12, `demasiadas lineas: ${lines.length}`);
+  assert.ok(lines.some((l) => l.includes('…')), 'debe avisar de lo que oculta');
+});
+
+test('toolLines: MultiEdit muestra todos los cambios', () => {
+  const lines = toolLines('MultiEdit', {
+    file_path: 'a.mjs',
+    edits: [
+      { old_string: 'uno', new_string: 'UNO' },
+      { old_string: 'dos', new_string: 'DOS' },
+    ],
+  }, 60).map(strip).join('\n');
+  for (const s of ['uno', 'UNO', 'dos', 'DOS']) assert.ok(lines.includes(s), s);
+});
+
+test('toolLines: Write dice cuántas líneas escribe', () => {
+  const lines = toolLines('Write', { file_path: 'x.mjs', content: 'a\nb\nc' }, 60).map(strip);
+  assert.ok(lines.some((l) => l.includes('3 lines')));
+});
+
+test('toolLines: una herramienta cualquiera sigue siendo una sola línea', () => {
+  const lines = toolLines('Bash', { command: 'npm test' }, 60);
+  assert.equal(lines.length, 1);
+  assert.ok(strip(lines[0]).includes('Bash') && strip(lines[0]).includes('npm test'));
+});
+
+// --- pintado en crudo -------------------------------------------------------
+// Regresión: la GUI salía en escalera. El modo raw (necesario para leer teclas
+// sueltas) también apaga la traducción LF→CRLF de SALIDA, así que un "\n" pelado
+// baja una fila pero NO vuelve a la columna 0. Con CRLF va bien en ambos modos.
+
+test('paint: separa las líneas con CRLF, nunca con LF pelado', () => {
+  const out = asTTY(() => paint(['uno', 'dos', 'tres']));
+  assert.ok(out.includes('uno\r\ndos\r\ntres'), 'las filas deben ir con CRLF');
+  assert.ok(!/[^\r]\n/.test(out), 'ni un solo LF sin su CR delante');
+});
+
+test('paint: limpia la pantalla antes de pintar (si no, quedan restos del frame anterior)', () => {
+  const out = asTTY(() => paint(['x']));
+  assert.ok(out.includes('\x1b[2J'), 'debe borrar');
+  assert.ok(out.includes('\x1b[H'), 'y volver al origen');
+});
+
+test('paint: sin TTY sale texto plano, sin códigos ANSI (el modo desatendido)', () => {
+  const logged = [];
+  const log = console.log;
+  console.log = (s) => logged.push(s);
+  try { paint([c.accent('hola'), 'adios']); } finally { console.log = log; }
+  assert.equal(logged.join(''), 'hola\nadios');
+});
+
+test('writeLines: convierte los saltos del texto a CRLF (el visor de chat en la GUI)', () => {
+  const out = asTTY(() => writeLines('linea1\nlinea2'));
+  assert.ok(out.startsWith('linea1\r\nlinea2'));
+  assert.ok(!/[^\r]\n/.test(out));
+});
+
 // --- barra y caja -----------------------------------------------------------
 test('bar: acota entre 0 y 100', () => {
   assert.ok(strip(bar(0, 10)).startsWith('░'));
@@ -134,4 +241,16 @@ test('box: todas las líneas del mismo ancho (si no, el marco se descuadra)', ()
   const b = box(['corto', 'una linea bastante mas larga'], { title: 'x' });
   const anchos = b.map(width);
   assert.equal(new Set(anchos).size, 1);
+});
+
+test('box: una línea MÁS ANCHA que la caja se recorta, no empuja el borde', () => {
+  // Regresión: el borde derecho se iba zigzagueando pantalla abajo, una distancia
+  // distinta por cada línea larga. Se veía en la vista de detalle con prompts largos.
+  const b = box(['x'.repeat(200), 'corto'], { title: 'job', cols: 40 });
+  const anchos = b.map(width);
+  assert.equal(new Set(anchos).size, 1, 'todas las filas al mismo ancho');
+  assert.equal(anchos[0], 42, 'el ancho pedido + los dos bordes');
+  for (const l of b.slice(1, -1)) {
+    assert.ok(strip(l).startsWith('│') && strip(l).endsWith('│'), 'bordes en su sitio');
+  }
 });

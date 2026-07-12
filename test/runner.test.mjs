@@ -5,14 +5,65 @@ import os from 'node:os';
 import path from 'node:path';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-run-'));
-process.env.PROGRAM_PROMPT_HOME = TMP;
+process.env.PROMPTHEUS_HOME = TMP;
 const { loadQueue, loadSessions, nid, outPath, saveQueue, saveSessions } = await import('../lib/store.mjs');
-const { executeJob, runQueue } = await import('../lib/runner.mjs');
+const { executeJob, requeue, runQueue, settle } = await import('../lib/runner.mjs');
 
 const job = (over = {}) => ({
   id: nid(), prompt: 'haz algo', target: null, adapter: 'mock', when: null,
   dir: null, permMode: null, status: 'pending', createdAt: Date.now(),
   sessionId: null, output: null, ...over,
+});
+
+// --- quedarse sin cupo no es un fallo ---------------------------------------
+// La tanda nocturna perdió su última fase justo aquí: Claude imprime "you've hit your
+// session limit" y sale con código 1, que visto desde fuera es igual que un crash. Se
+// marcó como `error` y nadie volvió a recogerlo nunca.
+
+const LIMIT = "You've hit your session limit · resets 1:30pm (Europe/Madrid)";
+
+test('settle: un lanzamiento OK termina, sin más', () => {
+  assert.deepEqual(settle(job(), { ok: true }), { action: 'done' });
+});
+
+test('settle: cortado por cupo → vuelve a la cola, NO se marca como error', () => {
+  const s = settle(job(), { ok: false, output: LIMIT, error: 'claude exited with code 1' });
+  assert.equal(s.action, 'requeue');
+  assert.ok(s.waitUntil > Date.now(), 'con una hora de reanudación en el futuro');
+});
+
+test('settle: un fallo de VERDAD sigue siendo un error (no se reintenta eternamente)', () => {
+  const s = settle(job(), { ok: false, output: 'TypeError: boom', error: 'crashed' });
+  assert.equal(s.action, 'fail');
+});
+
+test('settle: se rinde si el cupo lo tumba una y otra vez', () => {
+  const s = settle(job({ quotaRetries: 3 }), { ok: false, output: LIMIT, error: 'x' });
+  assert.equal(s.action, 'fail');
+  assert.match(s.reason, /giving up/);
+});
+
+test('requeue: vuelve a pending y NO toca "when" — eso conserva el ORDEN de la cola', () => {
+  // Lo que pediste: que al volver el cupo siga en el mismo sitio en que estaba.
+  const primero = job({ when: 1000 });
+  const segundo = job({ when: 2000 });
+  saveQueue([primero, segundo]);
+
+  const s = settle(primero, { ok: false, output: LIMIT, error: 'x' });
+  requeue(primero, s);
+
+  const q = loadQueue();
+  const vuelto = q.find((j) => j.id === primero.id);
+  assert.equal(vuelto.status, 'pending', 'de vuelta en la cola');
+  assert.equal(vuelto.when, 1000, 'su hora NO cambia');
+  assert.equal(vuelto.quotaRetries, 1);
+  assert.ok(vuelto.pausedUntil > Date.now());
+  assert.equal(vuelto.finishedAt, null, 'no cuenta como terminado');
+
+  // Y sigue siendo el más antiguo pendiente: al volver el cupo, sale primero otra vez.
+  const pendientes = q.filter((j) => j.status === 'pending').sort((a, b) => a.when - b.when);
+  assert.equal(pendientes[0].id, primero.id);
+  assert.equal(pendientes[1].id, segundo.id);
 });
 
 test('executeJob: marca done, escribe la salida y guarda la sesión del target', async () => {
@@ -128,4 +179,25 @@ test('cerrojo: se libera al terminar', async () => {
   saveQueue([]);
   await runQueue({ once: true });
   assert.equal(fs.existsSync(path.join(TMP, 'data', 'runner.lock')), false, 'no debe quedar colgado');
+});
+
+// --- jobs que se quedan colgados en "running" -------------------------------
+test('reapStale: un job SIN runnerPid (de una version vieja) tambien se cierra', async () => {
+  // Si no, se queda en "running" para siempre: nadie puede confirmar que murio.
+  // Le paso justo eso al lanzamiento que se cancelo a mitad.
+  const { reapStale } = await import('../lib/runner.mjs');
+  const colgado = job({ status: 'running', startedAt: Date.now() - 3600_000 });
+  delete colgado.runnerPid;
+  saveQueue([colgado]);
+
+  assert.equal(reapStale(), 1);
+  assert.equal(loadQueue()[0].status, 'error');
+  assert.match(loadQueue()[0].error, /interrupted/);
+});
+
+test('reapStale: un job de un runner VIVO no se toca', async () => {
+  const { reapStale } = await import('../lib/runner.mjs');
+  saveQueue([job({ status: 'running', runnerPid: process.pid })]);   // este proceso existe
+  assert.equal(reapStale(), 0);
+  assert.equal(loadQueue()[0].status, 'running');
 });

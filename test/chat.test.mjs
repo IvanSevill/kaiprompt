@@ -6,7 +6,7 @@ import path from 'node:path';
 
 // Aislar datos (store) y el ~/.claude falso (transcripts) ANTES de importar.
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-chat-'));
-process.env.PROGRAM_PROMPT_HOME = TMP;
+process.env.PROMPTHEUS_HOME = TMP;
 process.env.CLAUDE_CONFIG_DIR = path.join(TMP, 'claude');
 
 const { nid, saveQueue, saveSessions } = await import('../lib/store.mjs');

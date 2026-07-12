@@ -52,7 +52,7 @@ test('sanitizado: ningún fichero del repo lleva una ruta de home personal', () 
 test('sanitizado: el barrido mira de verdad los ficheros (si no, no probaría nada)', () => {
   // Un test que no lee nada pasaría siempre: aquí verificamos que el walk encuentra el código.
   const files = walk(REPO).map((f) => path.relative(REPO, f).replace(/\\/g, '/'));
-  assert.ok(files.includes('program-prompt.mjs'));
+  assert.ok(files.includes('promptheus.mjs'));
   assert.ok(files.includes('lib/install.mjs'));
   assert.ok(files.includes('README.md'));
   assert.ok(files.length > 15, `esperaba barrer el repo entero, solo vi ${files.length} ficheros`);
@@ -63,14 +63,14 @@ test('sanitizado: el detector reconoce una ruta personal si se cuela', () => {
   // fichero sería una ruta personal y el barrido de arriba se cazaría a sí mismo.
   const u = 'alguien';
   const malas = [
-    `node "C:\\Users\\${u}\\.claude\\tools\\chat-queue\\program-prompt.mjs"`,
-    `/home/${u}/.claude/tools/chat-queue`,
+    `node "C:\\Users\\${u}\\.claude\\tools\\promptheus\\promptheus.mjs"`,
+    `/home/${u}/.claude/tools/promptheus`,
     `/Users/${u}/.claude`,
   ];
   for (const mala of malas) {
     assert.equal([...mala.matchAll(HOME_PATH)].length, 1, `debe cazar: ${mala}`);
   }
 
-  const buena = 'node "$env:USERPROFILE\\.claude\\tools\\chat-queue\\program-prompt.mjs"';
+  const buena = 'node "$env:USERPROFILE\\.claude\\tools\\promptheus\\promptheus.mjs"';
   assert.equal([...buena.matchAll(HOME_PATH)].length, 0, 'y dejar pasar el marcador de sitio');
 });
