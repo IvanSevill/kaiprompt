@@ -180,3 +180,24 @@ test('cerrojo: se libera al terminar', async () => {
   await runQueue({ once: true });
   assert.equal(fs.existsSync(path.join(TMP, 'data', 'runner.lock')), false, 'no debe quedar colgado');
 });
+
+// --- jobs que se quedan colgados en "running" -------------------------------
+test('reapStale: un job SIN runnerPid (de una version vieja) tambien se cierra', async () => {
+  // Si no, se queda en "running" para siempre: nadie puede confirmar que murio.
+  // Le paso justo eso al lanzamiento que se cancelo a mitad.
+  const { reapStale } = await import('../lib/runner.mjs');
+  const colgado = job({ status: 'running', startedAt: Date.now() - 3600_000 });
+  delete colgado.runnerPid;
+  saveQueue([colgado]);
+
+  assert.equal(reapStale(), 1);
+  assert.equal(loadQueue()[0].status, 'error');
+  assert.match(loadQueue()[0].error, /interrupted/);
+});
+
+test('reapStale: un job de un runner VIVO no se toca', async () => {
+  const { reapStale } = await import('../lib/runner.mjs');
+  saveQueue([job({ status: 'running', runnerPid: process.pid })]);   // este proceso existe
+  assert.equal(reapStale(), 0);
+  assert.equal(loadQueue()[0].status, 'running');
+});

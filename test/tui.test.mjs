@@ -488,3 +488,48 @@ test('sin sesiones guardadas, las flechas no rompen el asistente', () => {
   const { state: next } = reduce(st, 'down');
   assert.ok(next.wizard, 'el asistente sigue en pie');
 });
+
+// --- borrar los jobs ya terminados ------------------------------------------
+test('"x" pide confirmacion antes de borrar los terminados (no borra a la primera)', () => {
+  saveQueue([]);
+  const a = addJob({ prompt: 'pendiente', adapter: 'mock' });
+  const b = addJob({ prompt: 'terminado', adapter: 'mock' });
+  saveQueue(loadQueue().map((j) => (j.id === b.id ? { ...j, status: 'done' } : j)));
+
+  const st = refresh(initialState());
+  const { state: next, effect } = reduce(st, 'x');
+
+  assert.equal(effect, null, 'todavia no borra nada');
+  assert.ok(next.confirm, 'pregunta primero');
+  assert.match(next.confirm.text, /1 finished/);
+  assert.equal(loadQueue().length, 2, 'la cola sigue intacta');
+
+  // Y al decir que si, se van los terminados y se quedan los pendientes.
+  const { effect: go } = reduce(next, 'y');
+  assert.deepEqual(go, { type: 'clear' });
+  applyEffect(go);
+
+  const ids = loadQueue().map((j) => j.id);
+  assert.deepEqual(ids, [a.id], 'solo queda el pendiente');
+});
+
+test('"x" con nada terminado no pregunta, solo lo dice', () => {
+  saveQueue([]);
+  addJob({ prompt: 'pendiente', adapter: 'mock' });
+  const { state: next, effect } = reduce(refresh(initialState()), 'x');
+  assert.equal(effect, null);
+  assert.equal(next.confirm, null, 'no monta un dialogo para nada');
+  assert.match(strip(next.message), /nothing finished/);
+});
+
+test('cancelar la confirmacion con "n" no borra nada', () => {
+  saveQueue([]);
+  addJob({ prompt: 'terminado', adapter: 'mock' });
+  saveQueue(loadQueue().map((j) => ({ ...j, status: 'done' })));
+
+  const st = reduce(refresh(initialState()), 'x').state;
+  const { state: next, effect } = reduce(st, 'n');
+  assert.equal(effect, null);
+  assert.equal(next.confirm, null);
+  assert.equal(loadQueue().length, 1, 'sigue ahi');
+});

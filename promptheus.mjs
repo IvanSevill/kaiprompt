@@ -16,7 +16,7 @@ import {
   outPath, preview, saveProjects, saveSessions,
 } from './lib/store.mjs';
 import { fmt } from './lib/time.mjs';
-import { runQueue } from './lib/runner.mjs';
+import { reapStale, runQueue } from './lib/runner.mjs';
 import { renderChat } from './lib/chat.mjs';
 import { editJob } from './lib/edit.mjs';
 import { addJob, clearFinished, jobDetails, removeJobs } from './lib/queue.mjs';
@@ -72,6 +72,11 @@ async function cmdAdd({ flags, pos, engine }) {
 function cmdList({ flags, pos }) {
   const imp = importProgramados();
   if (imp) console.log(`(imported ${imp} from programados.jsonl)`);
+  // A job whose runner died still says "running" until someone closes it out, and this
+  // is the screen you actually read — a status that lies here is the worst place for it.
+  const dead = reapStale();
+  if (dead) console.log(`(${dead} job(s) left hanging by a dead runner marked as error)`);
+
   const q = loadQueue();
   if (!q.length) return console.log('(empty queue)');
   // parseArgs only understands "--" flags; short ones (-f/-l) land in pos.
