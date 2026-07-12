@@ -1,0 +1,38 @@
+Implementa la FASE 4: hacer exportables y publicar las DOS herramientas.
+
+REGLAS DURAS (incumplirlas rompe el trabajo de otros):
+- Trabaja SOLO dentro de C:/Users/ivans/.claude/tools/chat-queue
+- ADITIVO: NO renombres archivos ni comandos existentes. NO borres el hook /programar,
+  ni programar.mjs, ni importProgramados. NO cambies la firma de comandos que ya existen.
+- NO toques datos del usuario: data/, out/, projects.json, programados.jsonl
+- Reutiliza lib/ (store.mjs, time.mjs, ui.mjs, runner.mjs). No dupliques logica.
+- Escribe tests en test/ para TODO lo que anadas.
+- OBLIGATORIO antes de terminar: "node --check" de todos los .mjs Y "node --test test/*.test.mjs"
+  con TODOS los tests en verde. Si alguno falla, arreglalo. NUNCA termines con tests rojos.
+- Haz git commit al terminar, con mensaje claro.
+- Antes de tocar nada: lee README.md y el plan en
+  C:/Users/ivans/.claude/plans/wise-wibbling-dewdrop.md (secciones Fase 2/3/4).
+(la carpeta de la segunda herramienta es C:/Users/ivans/.claude/tools/claude-usage,
+ tambien puedes trabajar ahi para esta tarea)
+
+QUE HACER:
+1) install.mjs (cero dependencias, multiplataforma) en program-prompt, que:
+   - genere ~/.claude/commands/programar.md y resumen-prompts.md con la ruta REAL de instalacion
+   - registre el hook UserPromptSubmit en ~/.claude/settings.json (merge idempotente, sin pisar
+     lo que ya haya)
+   - cree projects.json preguntando/detectando la carpeta base de proyectos
+   - imprima el atajo de shell (funcion de PowerShell / alias de bash)
+   Y un uninstall.mjs que lo revierta.
+2) SANITIZADO (bloqueante): prepara una copia limpia para publicar. NO debe quedar ningun dato
+   personal: rutas C:\Users\ivans, "ivans", "IngenieriaSoftware", ni nombres de proyectos
+   personales (FacturaSevi, GymHub...). Sustituye por $HOME / <your-user> / rutas de ejemplo.
+   VERIFICACION OBLIGATORIA: grep -ri "ivans|IngenieriaSoftware|FacturaSevi|GymHub" sobre la copia
+   debe devolver CERO resultados. Si devuelve algo, ARREGLALO; y si no puedes, NO publiques y
+   reporta el problema.
+3) Publica ambos repos en GitHub con "gh repo create --public --source=. --push":
+   - program-prompt  (README ya en ingles; anade LICENSE MIT si falta)
+   - claude-usage    (ya tiene README y LICENSE)
+   Empieza con historial LIMPIO: un unico commit inicial en la copia sanitizada (no importes el
+   historial viejo, que contiene rutas personales).
+4) Al final, escribe un resumen en C:/Users/ivans/.claude/tools/chat-queue/.tasks/RESULTADO.md
+   con: que se hizo, las URLs de los repos, y cualquier cosa que quede pendiente.

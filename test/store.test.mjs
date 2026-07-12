@@ -39,10 +39,17 @@ test('sesiones: round-trip', () => {
   assert.equal(loadSessions().fixes.sessionId, 'abc');
 });
 
-test('nid: ids únicos y con prefijo', () => {
-  const ids = new Set(Array.from({ length: 200 }, () => nid()));
-  assert.equal(ids.size, 200);
+test('nid: ids únicos aunque se generen miles en el mismo milisegundo', () => {
+  // Regresión: con solo 3 chars aleatorios había ~35% de colisión en 200 ids
+  // (paradoja del cumpleaños). Dos jobs con el mismo id corrompen la cola.
+  const N = 5000;
+  const ids = new Set(Array.from({ length: N }, () => nid()));
+  assert.equal(ids.size, N, 'no puede haber ni una colisión');
+});
+
+test('nid: respeta el prefijo y mantiene longitud fija', () => {
   assert.ok(nid('p').startsWith('p'));
+  assert.equal(nid('j').length, nid('j').length);
 });
 
 test('preview: primera línea, truncada', () => {
