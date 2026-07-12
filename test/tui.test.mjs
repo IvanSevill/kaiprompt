@@ -417,7 +417,9 @@ test('sin TTY, "kaip" a secas imprime la ayuda y NO abre la GUI', () => {
   });
 
   assert.match(out, /Usage:/, 'debe salir la ayuda');
-  assert.match(out, /Subcommands:/);
+  // Los comandos, no los títulos de sección: reordenar la ayuda no puede romper este test,
+  // que existe para otra cosa (que NO se abra la GUI y se cuelgue el desatendido).
+  for (const cmd of [/\badd\b/, /\brun\b/, /\bdaemon\b/, /\bserve\b/]) assert.match(out, cmd);
   assert.doesNotMatch(out, /\x1b\[\?1049h/, 'ni rastro de la pantalla alternativa');
 });
 
