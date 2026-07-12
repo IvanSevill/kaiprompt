@@ -11,6 +11,7 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -82,11 +83,17 @@ class MainActivity : ComponentActivity() {
         setContent {
             KaipTheme {
                 Surface(Modifier.fillMaxSize(), color = K.Bg) {
-                    when {
-                        pairing == null -> PairScreen()
-                        chat != null -> ChatScreen(chat!!) { chat = null }
-                        openJob != null -> JobScreen(openJob!!) { openJob = null }
-                        else -> QueueScreen()
+                    // systemBarsPadding: without it the app draws UNDER the notch and the
+                    // status bar, and the top row — the back button — ends up half-hidden
+                    // behind the camera cutout. Nothing about that is obvious until you
+                    // hold a phone that has one.
+                    Box(Modifier.fillMaxSize().systemBarsPadding()) {
+                        when {
+                            pairing == null -> PairScreen()
+                            chat != null -> ChatScreen(chat!!) { chat = null }
+                            openJob != null -> JobScreen(openJob!!) { openJob = null }
+                            else -> QueueScreen()
+                        }
                     }
                 }
             }
@@ -493,63 +500,121 @@ class MainActivity : ComponentActivity() {
     }
 
     // ============================== CHAT ==========================================
+    /**
+     * The conversation.
+     *
+     * The shape of it matters more than it looks like it should. A launch is mostly Claude
+     * working — dozens of tool calls between the few sentences that actually say something —
+     * so the tool calls are pushed into the background (small, grey, monospace, one line) and
+     * the prose is given the room. Read down the accent-coloured left edge and you get the
+     * conversation; read the grey and you get how it got there.
+     */
     @Composable
     private fun ChatScreen(c: Chat, onBack: () -> Unit) {
         Column(Modifier.fillMaxSize()) {
-            Row(Modifier.fillMaxWidth().padding(8.dp, 14.dp, 20.dp, 14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                Modifier.fillMaxWidth().padding(8.dp, 12.dp, 20.dp, 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 TextButton(onClick = onBack) { Text("‹  volver", color = K.Muted, fontSize = 15.sp) }
                 Spacer(Modifier.weight(1f))
                 Text("${c.turns.size} turnos", color = K.Muted, fontSize = 12.sp)
             }
-            Text(
-                c.target ?: c.sessionId.take(8),
-                color = K.Accent, fontSize = 19.sp, fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(horizontal = 20.dp),
-            )
-            Spacer(Modifier.height(12.dp))
+
+            Column(Modifier.padding(20.dp, 0.dp, 20.dp, 12.dp)) {
+                Text(
+                    c.target ?: c.sessionId.take(8),
+                    color = K.Text, fontSize = 20.sp, fontWeight = FontWeight.Bold,
+                )
+                c.dir?.let {
+                    Spacer(Modifier.height(3.dp))
+                    Text(
+                        it.substringAfterLast('/').substringAfterLast('\\'),
+                        color = K.Muted, fontSize = 12.sp, fontFamily = FontFamily.Monospace,
+                    )
+                }
+            }
             HorizontalDivider(color = K.Line)
 
-            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp, 12.dp, 16.dp, 40.dp)) {
-                items(c.turns) { turn ->
-                    val you = turn.role == "user"
-                    Column(
-                        Modifier.fillMaxWidth().padding(vertical = 7.dp)
-                            .clip(RoundedCornerShape(11.dp))
-                            .background(if (you) K.CardHi else K.Card)
-                            .padding(13.dp),
-                    ) {
-                        Text(
-                            if (you) "❯  tú" else "⏺  claude",
-                            color = if (you) K.Accent else K.Ok,
-                            fontSize = 11.sp, fontWeight = FontWeight.Bold,
-                        )
-                        Spacer(Modifier.height(7.dp))
+            if (c.turns.isEmpty()) {
+                Center { Text("Esta conversación está vacía.", color = K.Muted, fontSize = 14.sp) }
+                return@Column
+            }
 
-                        for (b in turn.blocks) when (b) {
-                            is Block.Text ->
-                                Text(b.text, color = K.Text, fontSize = 14.sp, lineHeight = 20.sp)
+            LazyColumn(
+                Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(0.dp, 14.dp, 16.dp, 44.dp),
+            ) {
+                items(c.turns) { turn -> Turn(turn) }
+            }
+        }
+    }
 
-                            is Block.Thinking ->
-                                Text(b.text, color = K.Muted, fontSize = 12.sp, lineHeight = 17.sp)
+    @Composable
+    private fun Turn(turn: Turn) {
+        val you = turn.role == "user"
+        val edge = if (you) K.Accent else K.Ok
 
-                            // A tool call is not prose. It gets the monospace and the muted grey,
-                            // so the eye skips it unless it is looking for it.
-                            is Block.Tool -> Row(Modifier.padding(top = 4.dp)) {
-                                Text("⎿ ", color = K.Muted, fontSize = 12.sp)
-                                Text(
-                                    b.name,
-                                    color = K.Info, fontSize = 12.sp,
-                                    fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.Monospace,
-                                )
-                                if (b.arg.isNotBlank()) Text(
-                                    "(${b.arg})",
-                                    color = K.Muted, fontSize = 12.sp, fontFamily = FontFamily.Monospace,
-                                    maxLines = 1,
-                                )
-                            }
-                        }
-                    }
+        Row(Modifier.fillMaxWidth().padding(bottom = 18.dp)) {
+            // The coloured rail down the left: whose turn this is, readable without a label.
+            Box(Modifier.width(2.dp).fillMaxHeight().background(edge.copy(alpha = 0.45f)))
+            Spacer(Modifier.width(12.dp))
+
+            Column(Modifier.weight(1f)) {
+                Text(
+                    if (you) "TÚ" else "CLAUDE",
+                    color = edge, fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold, letterSpacing = 1.2.sp,
+                )
+                Spacer(Modifier.height(7.dp))
+
+                for (b in turn.blocks) when (b) {
+                    is Block.Text -> Text(
+                        b.text.trim(),
+                        color = K.Text, fontSize = 15.sp, lineHeight = 22.sp,
+                        modifier = Modifier.padding(bottom = 8.dp),
+                    )
+
+                    // Thinking is not the answer. It is available, but it does not compete.
+                    is Block.Thinking -> Text(
+                        b.text.trim(),
+                        color = K.Muted, fontSize = 12.sp, lineHeight = 17.sp,
+                        modifier = Modifier.fillMaxWidth()
+                            .padding(bottom = 8.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(K.Card)
+                            .padding(10.dp),
+                    )
+
+                    is Block.Tool -> ToolLine(b)
                 }
+            }
+        }
+    }
+
+    /** One tool call, on one line. There are dozens of these; they must not shout. */
+    @Composable
+    private fun ToolLine(b: Block.Tool) {
+        Row(
+            Modifier.fillMaxWidth().padding(bottom = 3.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("⎿", color = K.Line, fontSize = 11.sp)
+            Spacer(Modifier.width(7.dp))
+            Text(
+                b.name,
+                color = K.Info.copy(alpha = 0.85f), fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.Monospace,
+            )
+            if (b.arg.isNotBlank()) {
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    b.arg,
+                    color = K.Muted, fontSize = 11.sp, fontFamily = FontFamily.Monospace,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
             }
         }
     }

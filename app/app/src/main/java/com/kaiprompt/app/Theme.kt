@@ -1,20 +1,27 @@
 package com.kaiprompt.app
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.sin
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -79,6 +86,45 @@ object K {
 @Composable
 fun KaipTheme(content: @Composable () -> Unit) =
     MaterialTheme(colorScheme = K.scheme, content = content)
+
+/**
+ * The mark. Six-pointed, coral, drawn rather than shipped as a bitmap — it scales to any
+ * size, weighs nothing, and matches the ✦ the terminal already prints.
+ */
+@Composable
+fun Sparkle(size: Dp, colour: Color = K.Accent, modifier: Modifier = Modifier) {
+    Canvas(modifier.size(size)) {
+        val c = Offset(this.size.width / 2, this.size.height / 2)
+        val r = this.size.minDimension / 2
+
+        // Six arms, each a slim quadrilateral pinched at the waist — the concave curve
+        // between them is what makes it read as a spark and not a snowflake.
+        val path = Path()
+        for (i in 0 until 6) {
+            val a = (PI / 3 * i).toFloat()
+            val b = a + (PI / 6).toFloat()
+            val tip = Offset(c.x + r * cos(a), c.y + r * sin(a))
+            val waist = Offset(c.x + r * 0.22f * cos(b), c.y + r * 0.22f * sin(b))
+
+            if (i == 0) path.moveTo(tip.x, tip.y) else path.lineTo(tip.x, tip.y)
+            path.lineTo(waist.x, waist.y)
+        }
+        path.close()
+        drawPath(path, colour)
+    }
+}
+
+/** A horizontal rule with a label, the way a terminal draws one: ── label ────────── */
+@Composable
+fun Rule(label: String, modifier: Modifier = Modifier) {
+    Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(label.uppercase(), color = K.Muted, fontSize = 10.sp,
+            fontWeight = FontWeight.Bold, letterSpacing = 1.4.sp,
+            fontFamily = FontFamily.Monospace)
+        Spacer(Modifier.width(10.dp))
+        Box(Modifier.weight(1f).height(1.dp).background(K.Line))
+    }
+}
 
 /** A small rounded label. Used for status, targets, times — anything that is a fact, not prose. */
 @Composable

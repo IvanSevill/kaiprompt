@@ -102,3 +102,81 @@ test('render: todas las líneas del mismo ancho (si no, el código sale torcido)
 test('render: el mismo texto da siempre el mismo código (es determinista)', () => {
   assert.equal(render('estable'), render('estable'));
 });
+
+// --- vectores de referencia (los que habrian cazado los dos bugs) --------------
+//
+// Un QR mal hecho no "parece" mal: la camara lo encuentra, lo lee... y devuelve basura.
+// Los tests estructurales de arriba pasaban con las dos manos rotas. Estos no: son
+// matrices generadas por una implementacion de referencia (python-qrcode) y comparadas
+// modulo a modulo.
+//
+// Los dos bugs que dejaron pasar:
+//   1. Reed-Solomon: el polinomio generador se construye en potencias ASCENDENTES y el
+//      bucle de division lo leia DESCENDENTE. Los bytes de datos salian perfectos y los
+//      de correccion eran ruido, asi que el movil leia el codigo, fallaba el checksum y
+//      no devolvia nada.
+//   2. La info de formato iba TRANSPUESTA (fila 8 en vez de columna 8). El movil leia una
+//      mascara equivocada y desenmascaraba los datos a basura: "ese QR no es de la app".
+
+/**
+ * La matriz EXACTA que produce una implementación de referencia (python-qrcode) para
+ * "kaip-pair-abcdefghijklmnop" en v2, ECC M, máscara 1. 25x25, fila a fila.
+ *
+ * Esto es lo que de verdad habría cazado los dos bugs, y lo que los tests estructurales
+ * de arriba dejaron pasar tan tranquilos.
+ */
+const REF_V2 = '1111111011100010001111111100000100000100010100000110111010110101100010111011011101000111110001011101101110100111101000101110110000010111100000010000011111111010101010101111111000000000001101110000000010100011010110011001001010010010100110101101000101010000101011101100010010100010000100100001100010100100011111101001101000011001011000010010110110000111111011110110111110111010010110010000010110010011110101110001000111111101000000000101111001000111011111111011010100101010101100000100011100110001100110111010000010011111100101011101001111101110010010101110101101110111001111110000010000110101001010001111111011001000110111001';
+
+test('la matriz coincide MÓDULO A MÓDULO con una implementación de referencia', () => {
+  // Con la máscara FIJADA: elegirla es una heurística de penalización, y dos codificadores
+  // correctos pueden aterrizar legítimamente en máscaras distintas. Fijarla es la única
+  // forma de distinguir "otra máscara" de "mal".
+  const m = encode('kaip-pair-abcdefghijklmnop', { mask: 1 });
+  assert.equal(m.length, 25, 'v2');
+
+  const mio = m.flat().join('');
+  assert.equal(mio.length, REF_V2.length);
+
+  let distintos = 0;
+  for (let i = 0; i < REF_V2.length; i++) if (mio[i] !== REF_V2[i]) distintos++;
+  assert.equal(distintos, 0, distintos + ' módulos distintos de la referencia');
+});
+
+test('la información de formato NO va transpuesta (fila 8 vs columna 8)', () => {
+  // Los 15 bits van dos veces, en angulo recto. Escribirlos girados deja un codigo que
+  // sigue pareciendo un QR, que la camara encuentra... y que no decodifica: el movil lee
+  // una mascara equivocada y desenmascara los datos a basura.
+  const m = encode('kaip-pair-abcdefghijklmnop');
+  const size = m.length;
+
+  const leer = () => {
+    const b = [];
+    for (let i = 0; i <= 5; i++) b[i] = m[i][8];
+    b[6] = m[7][8];
+    b[7] = m[8][8];
+    b[8] = m[8][7];
+    for (let i = 9; i < 15; i++) b[i] = m[8][14 - i];
+    return b.reduce((a, x, i) => a | (x << i), 0);
+  };
+
+  const validos = [];
+  for (let lvl = 0; lvl < 4; lvl++) {
+    for (let msk = 0; msk < 8; msk++) {
+      const data = (lvl << 3) | msk;
+      let rem = data;
+      for (let i = 0; i < 10; i++) rem = (rem << 1) ^ ((rem >>> 9) * 0x537);
+      validos.push(((data << 10) | rem) ^ 0x5412);
+    }
+  }
+  assert.ok(validos.includes(leer()), 'los bits de formato no decodifican a nada valido');
+
+  const b2 = [];
+  for (let i = 0; i < 8; i++) b2[i] = m[8][size - 1 - i];
+  for (let i = 8; i < 15; i++) b2[i] = m[size - 15 + i][8];
+  assert.equal(b2.reduce((a, x, i) => a | (x << i), 0), leer(), 'las dos copias se contradicen');
+});
+
+test('el módulo que SIEMPRE es oscuro lo es', () => {
+  const m = encode('x');
+  assert.equal(m[m.length - 8][8], 1);
+});
