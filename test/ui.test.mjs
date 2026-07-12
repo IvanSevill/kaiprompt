@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  bar, bigText, bigWidth, box, c, centerBlock, centerLine, fit, paint, strip, toolLines, toolSummary,
+  altEnter, altExit, bar, bigText, bigWidth, box, c, centerBlock, centerLine, clear, fit, paint,
+  strip, toolLines, toolSummary,
   trunc, width, wrap, writeLines,
 } from '../lib/ui.mjs';
 
@@ -236,6 +237,16 @@ test('paint: limpia la pantalla antes de pintar (si no, quedan restos del frame 
   assert.ok(out.includes('\x1b[H'), 'y volver al origen');
 });
 
+test('clear: borra TAMBIÉN el historial de desplazamiento', () => {
+  // Regresión: al salir de la pantalla alternativa el terminal restaura lo que había antes,
+  // y "2J" solo borra lo visible. Sin "3J" quedaba basura por debajo y el adiós salía
+  // encima de los restos.
+  const out = asTTY(() => clear());
+  assert.ok(out.includes('\x1b[3J'), 'sin esto, el scrollback sobrevive');
+  assert.ok(out.includes('\x1b[2J'));
+  assert.ok(out.includes('\x1b[H'));
+});
+
 test('paint: sin TTY sale texto plano, sin códigos ANSI (el modo desatendido)', () => {
   const logged = [];
   const log = console.log;
@@ -281,4 +292,19 @@ test('box: una línea MÁS ANCHA que la caja se recorta, no empuja el borde', ()
   for (const l of b.slice(1, -1)) {
     assert.ok(strip(l).startsWith('│') && strip(l).endsWith('│'), 'bordes en su sitio');
   }
+});
+
+// --- salir de la pantalla alternativa UNA sola vez ---------------------------
+test('altExit dos veces NO restaura la pantalla vieja (era el parpadeo al salir)', () => {
+  // "?1049l" no significa "borra": significa "restaura la pantalla que guardaste". Llamarlo
+  // por segunda vez, DESPUÉS de haber salido e impreso la despedida, hacía que el terminal
+  // devolviera obedientemente el búfer viejo: la pantalla se limpiaba y volvía a ensuciarse.
+  const out = asTTY(() => { altEnter(); altExit(); altExit(); altExit(); });
+  const salidas = out.split('\x1b[?1049l').length - 1;
+  assert.equal(salidas, 1, 'solo puede salirse una vez');
+});
+
+test('altEnter dos veces tampoco entra dos veces', () => {
+  const out = asTTY(() => { altEnter(); altEnter(); altExit(); });
+  assert.equal(out.split('\x1b[?1049h').length - 1, 1);
 });

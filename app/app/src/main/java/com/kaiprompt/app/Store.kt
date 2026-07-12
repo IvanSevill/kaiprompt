@@ -1,0 +1,59 @@
+package com.kaiprompt.app
+
+import android.content.Context
+import android.content.SharedPreferences
+
+/**
+ * Where the pairing lives on the phone.
+ *
+ * The token and the key are kept; the URL is expected to change. A Cloudflare quick tunnel
+ * gets a new address every time `kaip serve` restarts, so re-pairing is a routine event —
+ * and it must not feel like starting over. Scanning again only refreshes the address.
+ */
+class Store(context: Context) {
+
+    private val prefs: SharedPreferences =
+        context.getSharedPreferences("kaiprompt", Context.MODE_PRIVATE)
+
+    var pairing: Pairing?
+        get() {
+            val token = prefs.getString("token", null) ?: return null
+            val key = prefs.getString("key", null) ?: return null
+            val url = prefs.getString("url", null) ?: return null
+            return Pairing(
+                url = url,
+                lan = prefs.getString("lan", null),
+                token = token,
+                key = key,
+                host = prefs.getString("host", "?") ?: "?",
+                tunnel = prefs.getBoolean("tunnel", false),
+            )
+        }
+        set(p) {
+            prefs.edit().apply {
+                if (p == null) {
+                    clear()
+                } else {
+                    putString("url", p.url)
+                    putString("lan", p.lan)
+                    putString("token", p.token)
+                    putString("key", p.key)
+                    putString("host", p.host)
+                    putBoolean("tunnel", p.tunnel)
+                }
+            }.apply()
+        }
+
+    /**
+     * Which finished jobs the phone has already told you about.
+     *
+     * Without this the catch-up poll would re-announce everything it finds every time it
+     * wakes, and a notification you have already read reappearing is how people turn
+     * notifications off.
+     */
+    var announced: Set<String>
+        get() = prefs.getStringSet("announced", emptySet()) ?: emptySet()
+        set(v) = prefs.edit().putStringSet("announced", v.take(200).toSet()).apply()
+
+    val paired get() = pairing != null
+}
