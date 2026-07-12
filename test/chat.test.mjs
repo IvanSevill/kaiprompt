@@ -177,27 +177,48 @@ test('renderChat: sesión sin mensajes no revienta', () => {
 // Leer el transcript te dice qué pasó. Esto te deja retomar el hilo y seguir hablando,
 // en un Claude Code de verdad.
 
+// Las carpetas tienen que EXISTIR de verdad: resumeTarget lo comprueba a propósito
+// (ver el test de más abajo sobre el ENOENT engañoso).
+const realDir = (name) => {
+  const d = path.join(TMP, name);
+  fs.mkdirSync(d, { recursive: true });
+  return d;
+};
+
 test('resumeTarget: da la sesión Y la carpeta (sin la carpeta, --resume no la encuentra)', async () => {
   const { resumeTarget, resumeCommand } = await import('../lib/chat.mjs');
+  const dir = realDir('miapp');
   saveSessions({ fixes: { sessionId: 'sess-1', adapter: 'claude', updatedAt: 1 } });
   saveQueue([{
-    id: 'j1', target: 'fixes', sessionId: 'sess-1', dir: 'C:/proyectos/miapp',
+    id: 'j1', target: 'fixes', sessionId: 'sess-1', dir,
     status: 'done', adapter: 'claude', prompt: 'x', createdAt: 1,
   }]);
 
   const r = resumeTarget('fixes');
   assert.equal(r.sessionId, 'sess-1');
-  assert.equal(r.dir, 'C:/proyectos/miapp', 'las sesiones de Claude Code son POR CARPETA');
-  assert.match(resumeCommand(r), /cd "C:\/proyectos\/miapp" && claude --resume sess-1/);
+  assert.equal(r.dir, dir, 'las sesiones de Claude Code son POR CARPETA');
+  assert.match(resumeCommand(r), /claude --resume sess-1$/);
 });
 
 test('resumeTarget: por id de job también', async () => {
   const { resumeTarget } = await import('../lib/chat.mjs');
   saveQueue([{
-    id: 'j2', target: null, sessionId: 'sess-2', dir: 'C:/otra',
+    id: 'j2', target: null, sessionId: 'sess-2', dir: realDir('otra'),
     status: 'done', adapter: 'claude', prompt: 'x', createdAt: 1,
   }]);
   assert.equal(resumeTarget('j2').sessionId, 'sess-2');
+});
+
+test('resumeTarget: si la carpeta ya no existe, error CLARO (no un "spawn cmd.exe ENOENT")', async () => {
+  // Regresión real: al renombrar la herramienta, la carpeta de sesiones viejas desapareció
+  // y el spawn fallaba con ENOENT sobre cmd.exe — Node reporta ENOENT del SHELL cuando el
+  // cwd no existe, y te manda a buscar un cmd.exe roto que está perfectamente.
+  const { resumeTarget } = await import('../lib/chat.mjs');
+  saveQueue([{
+    id: 'j3', target: null, sessionId: 'sess-3', dir: path.join(TMP, 'carpeta-que-ya-no-esta'),
+    status: 'done', adapter: 'claude', prompt: 'x', createdAt: 1,
+  }]);
+  assert.throws(() => resumeTarget('j3'), /folder .* is gone/i);
 });
 
 test('resumeTarget: sin carpeta conocida, error CLARO (no un --resume que no encuentra nada)', async () => {
