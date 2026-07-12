@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  bar, bigText, bigWidth, box, c, centerLine, strip, toolSummary, trunc, width, wrap,
+  bar, bigText, bigWidth, box, c, centerLine, fit, strip, toolSummary, trunc, width, wrap,
 } from '../lib/ui.mjs';
 
 // Sin TTY (los tests corren con la salida redirigida) los helpers de color no pintan:
@@ -29,6 +29,18 @@ test('trunc: recorta y añade elipsis, colapsa espacios', () => {
 test('centerLine centra por ancho visible', () => {
   assert.equal(centerLine('ab', 10), ' '.repeat(4) + 'ab');
   assert.equal(width(centerLine('ab', 10)), 6);
+});
+
+// --- fit (ninguna línea puede desbordar la terminal) ------------------------
+test('fit: deja pasar lo que cabe, recorta lo que no', () => {
+  assert.equal(fit('hola', 10), 'hola');
+  assert.equal(width(fit('x'.repeat(30), 10)), 10);
+});
+
+test('fit: mide por ancho visible, no por bytes (los ANSI no ocupan)', () => {
+  const coloreada = '\x1b[38;2;1;2;3mhola\x1b[39m';
+  assert.equal(fit(coloreada, 10), coloreada, 'cabe: se respeta el color');
+  assert.ok(width(fit(coloreada, 2)) <= 2, 'no cabe: se recorta al ancho visible');
 });
 
 // --- wrap (párrafos del visor de chat) --------------------------------------

@@ -8,6 +8,7 @@ program-prompt <engine> <subcommand> [args]
 
 | Interface | How | Purpose |
 |---|---|---|
+| **GUI** | `program-prompt` *(no arguments)* | Guided full-screen mode: queue, chats, projects (see §2b) |
 | **Terminal (CLI)** | `program-prompt <engine> …` | Manage and **launch** the queue (add, list, run, out…) |
 | **Claude chat** | `/programar <when> \| <prompt>` | **Schedule** a launch with **0 tokens** (see §4c) |
 | **Claude chat** | `/resumen-prompts` | Have Claude **summarize** what the launches did |
@@ -132,6 +133,41 @@ program-prompt edit jlzz4t3h6 --at +1h    # postpone a pending launch
 
 ---
 
+## 2b. The GUI (`program-prompt` with no arguments)
+
+Running `program-prompt` with no arguments opens a **guided full-screen mode** — the same queue, without memorizing flags:
+
+```powershell
+program-prompt          # or: program-prompt gui
+```
+
+Four views, switched with `←` `→`, `tab` or `1`-`4`:
+
+| View | What's in it |
+|---|---|
+| **Queue** | every job with its status; `enter` shows one in full |
+| **Chats** | saved sessions (target → session-id); `enter` opens the conversation |
+| **Projects** | the base folder and the registered aliases |
+| **Help** | the keys |
+
+| Key | What it does |
+|---|---|
+| `↑` `↓` | move through the list |
+| `enter` | detail of the selected job |
+| `a` | **add** a launch, guided: prompt → when → target → folder → permissions |
+| `e` | **edit** a pending job (same wizard, prefilled) |
+| `d` | **delete** a job (asks first) |
+| `r` | **run** the queue — hands the screen to the countdown clock and the live view |
+| `o` | **output** of a launch |
+| `c` | the whole **conversation** of a launch |
+| `?` | help · `q` quit |
+
+The wizard checks as you type: an empty prompt or a time it can't parse (`"a las tantas"`) is caught **there**, while you can still retype it — not at 3am when the launch fires. Permissions are picked from a list (`bypass` · `acceptEdits` · `default`), so you can't invent a mode that doesn't exist.
+
+> **Without a terminal there is no GUI.** If stdout/stdin aren't a TTY (Task Scheduler, a pipe, a background `run`), `program-prompt` prints this help instead. A raw-mode GUI in an unattended batch would hang forever waiting for a key nobody is going to press.
+
+---
+
 ## 3. How sessions and folders work (important)
 
 Claude Code sessions are **per-folder/project**: they're saved in `~/.claude/projects/<encoded-folder>/<session-id>.jsonl`. That's why:
@@ -211,16 +247,18 @@ summarizes each launch), or `program-prompt out` from the terminal.
 ## 6. File Structure
 
 ```
-program-prompt.mjs         CLI: argument parsing + dispatch
+program-prompt.mjs         CLI: argument parsing + dispatch (no args → the GUI)
 programar.mjs              the /programar hook (writes programados.jsonl, 0 tokens)
 program-prompt.cmd         Windows wrapper (cmd/PowerShell)
 lib/
   store.mjs                data layer: queue · sessions · projects · /programar inbox
   time.mjs                 parseWhen, formatting, durations
   ui.mjs                   ANSI primitives: palette, boxes, big digits, wrapping
+  queue.mjs                job operations shared by the CLI and the GUI (add/rm/clear/details)
   runner.mjs               execution loop + countdown clock + live view
   chat.mjs                 find and render session transcripts
   edit.mjs                 edit a pending job
+  tui.mjs                  the guided GUI (state machine + renderer)
 adapters/
   claude.mjs               launches `claude -p` (subscription; runs in the job's folder)
   opencode.mjs             stub — implement when needed

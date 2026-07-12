@@ -12,13 +12,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import {
-  ROOT, importProgramados, loadProjects, loadQueue, loadSessions, nid, nowMs,
-  preview, resolveDir, saveProjects, saveQueue, saveSessions,
+  ROOT, importProgramados, loadProjects, loadQueue, loadSessions, nowMs,
+  preview, saveProjects, saveSessions,
 } from './lib/store.mjs';
-import { fmt, parseWhen } from './lib/time.mjs';
+import { fmt } from './lib/time.mjs';
 import { runQueue } from './lib/runner.mjs';
 import { renderChat } from './lib/chat.mjs';
 import { editJob } from './lib/edit.mjs';
+import { addJob, clearFinished, jobDetails, removeJobs } from './lib/queue.mjs';
+import { isTTY } from './lib/ui.mjs';
 
 // --- argument parsing --------------------------------------------------------
 function parseArgs(argv) {
@@ -43,51 +45,17 @@ function cmdAdd({ flags, pos, engine }) {
     throw new Error('missing prompt.\n  usage: program-prompt <engine> add "your message" '
       + '[--target name] [--at HH:MM|+30m] [--dir project] [--session id] [--perm mode]');
   }
-  const target = typeof flags.target === 'string' ? flags.target : null;
-  const adapter = typeof flags.adapter === 'string' ? flags.adapter : (engine || 'claude');
-  const session = typeof flags.session === 'string' ? flags.session : null;
-  const job = {
-    id: nid(),
+  const job = addJob({
     prompt,
-    target,
-    adapter,
-    when: parseWhen(typeof flags.at === 'string' ? flags.at : null),
-    dir: resolveDir(typeof flags.dir === 'string' ? flags.dir : null, process.cwd()),
-    permMode: typeof flags.perm === 'string' ? flags.perm : null,   // null → bypass
-    status: 'pending',
-    createdAt: nowMs(),
-    sessionId: session,
-    output: null,
-  };
-  const q = loadQueue(); q.push(job); saveQueue(q);
-
-  // With --session + --target, the target's stored session is overwritten with this id.
-  if (session && target) {
-    const sessions = loadSessions();
-    sessions[target] = { sessionId: session, adapter, updatedAt: nowMs() };
-    saveSessions(sessions);
-  }
+    target: typeof flags.target === 'string' ? flags.target : null,
+    at: typeof flags.at === 'string' ? flags.at : null,
+    dir: typeof flags.dir === 'string' ? flags.dir : null,
+    perm: typeof flags.perm === 'string' ? flags.perm : null,       // null → bypass
+    adapter: typeof flags.adapter === 'string' ? flags.adapter : (engine || 'claude'),
+    session: typeof flags.session === 'string' ? flags.session : null,
+  });
   console.log(`+ ${job.id}  ${job.when ? '@ ' + fmt(job.when) : '(sequential)'}  `
     + `${job.target ? '[' + job.target + '] ' : ''}${preview(prompt)}`);
-}
-
-function jobDetails(job) {
-  const rows = [
-    ['id', job.id],
-    ['status', job.status],
-    ['time', job.when ? '@ ' + fmt(job.when) : 'sequential'],
-    ['adapter', job.adapter],
-    ['target', job.target || '—'],
-    ['folder', job.dir || '—'],
-    ['perm', job.permMode || 'bypass'],
-    ['session', job.sessionId || '—'],
-    ['created', fmt(job.createdAt)],
-  ];
-  if (job.startedAt) rows.push(['started', fmt(job.startedAt)]);
-  if (job.finishedAt) rows.push(['finished', fmt(job.finishedAt)]);
-  const out = [`── ${job.id} ──`, ...rows.map(([k, v]) => `  ${(k + ':').padEnd(10)}${v}`)];
-  out.push(`  prompt:\n${(job.prompt || '').replace(/^/gm, '    ')}`);
-  return out.join('\n');
 }
 
 function cmdList({ flags, pos }) {
@@ -129,17 +97,11 @@ function cmdEdit({ flags, pos }) {
 
 function cmdRm({ pos }) {
   if (!pos.length) throw new Error('usage: program-prompt rm <id> [<id>...]');
-  const set = new Set(pos); const q = loadQueue();
-  const kept = q.filter((j) => !set.has(j.id));
-  saveQueue(kept);
-  console.log(`removed ${q.length - kept.length}`);
+  console.log(`removed ${removeJobs(pos)}`);
 }
 
 function cmdClear() {
-  const q = loadQueue();
-  const kept = q.filter((j) => j.status === 'pending' || j.status === 'running');
-  saveQueue(kept);
-  console.log(`cleared ${q.length - kept.length} finished entries`);
+  console.log(`cleared ${clearFinished()} finished entries`);
 }
 
 function cmdOut({ pos }) {
@@ -196,6 +158,7 @@ function cmdSessions({ pos } = { pos: [] }) {
 const HELP = `program-prompt — portable prompt queue for Claude Code (and opencode later)
 
 Usage:
+  program-prompt                       open the guided GUI (needs a terminal)
   program-prompt <engine> <subcommand> [args]
   <engine> = claude | opencode   (optional; defaults to claude)
 
@@ -209,6 +172,7 @@ Subcommands:
   edit <id>                   change a pending job (--prompt --at --target --dir --perm --adapter)
   rm <id> [<id>...]           remove jobs
   clear                       clear finished/error entries
+  gui                         the guided GUI (same as running with no arguments)
   sessions                    saved sessions (name → session-id)
   sessions set <t> <id>       assign a session-id to a target by hand
   projects                    folders/projects available for --dir
@@ -232,6 +196,9 @@ Notes:
              everything (thinking + tool results), --raw for the transcript as-is.
   edit       only PENDING jobs (a running/finished one is already history). Same flags
              as "add"; --target/--dir/--perm accept "none" to clear them.
+  gui        views: Queue · Chats · Projects · Help. Keys: ↑↓ move · ←→/tab/1-4 view ·
+             enter detail · a add (guided) · e edit · d delete · r run · o output ·
+             c chat · ? help · q quit. Without a terminal it prints this help instead.
 
 Examples:
   program-prompt claude add "/test" --target fixes --dir FacturaSevi
@@ -264,7 +231,14 @@ try {
     case 'edit': cmdEdit(parsed); break;
     case 'projects': case 'project': cmdProjects(parsed); break;
     case 'sessions': cmdSessions(parsed); break;
-    case undefined: case 'help': case '--help': case '-h': console.log(HELP); break;
+    // No subcommand → the GUI, but only with a real terminal: raw mode on a piped
+    // stdin (Task Scheduler, cron, a pipe) would hang forever. There, print the help.
+    case undefined:
+      if (isTTY() && process.stdin.isTTY) { const { startTUI } = await import('./lib/tui.mjs'); await startTUI(); }
+      else console.log(HELP);
+      break;
+    case 'gui': { const { startTUI } = await import('./lib/tui.mjs'); await startTUI(); break; }
+    case 'help': case '--help': case '-h': console.log(HELP); break;
     default: console.error(`unknown command: ${cmd}\n`); console.log(HELP); process.exit(1);
   }
 } catch (e) { console.error('Error:', e.message); process.exit(1); }
