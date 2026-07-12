@@ -301,88 +301,113 @@ async function cmdServe({ flags }) {
   const { DEFAULT_PORT, addresses, createServer } = await import('./lib/server.mjs');
   const port = Number(flags.port) || DEFAULT_PORT;
 
+  // --wifi: nothing leaves the house. No tunnel, no Cloudflare, no third party at all —
+  // the phone talks to this machine over the local network and that is the end of it. The
+  // trade is that it only works while you are on the same wifi.
+  const wifiOnly = !!flags.wifi || !!flags.local || !!flags['no-tunnel'] || flags.tunnel === false;
+
   createServer({ port });
   console.log(c.bold('kaip serve') + c.muted(`  ·  puerto ${port}`));
 
   const lan = addresses(port)[0];
-  if (lan) console.log(c.muted('  en casa:  ') + lan.url);
+  if (lan) console.log(c.muted('  en casa:  ') + (wifiOnly ? c.accent(lan.url) : lan.url));
 
-  // The tunnel is what makes the phone work from ANYWHERE without a VPN — which is the
-  // whole point when a firewall app already owns the phone's single VPN slot.
-  if (flags.tunnel !== false && !flags['no-tunnel']) {
+  if (wifiOnly) {
+    // Forget any tunnel URL from a previous run, or `pair` would hand the phone an address
+    // that died when that tunnel closed — and it would fail far from here, silently.
+    await saveLastUrl(null);
+    console.log(c.muted('\n  solo wifi: sin túnel, sin Cloudflare, sin terceros.'));
+    console.log(c.muted('  el móvil tiene que estar en tu misma red.'));
+  } else {
     const { startTunnel, TunnelError } = await import('./lib/tunnel.mjs');
     process.stdout.write(c.muted('  abriendo el túnel de Cloudflare… '));
     try {
       const { url } = await startTunnel(port);
       await saveLastUrl(url);
       console.log(c.ok('listo'));
-      console.log(c.muted('  fuera:    ') + c.accent(url) + c.muted('   ← el móvil usa esta'));
-      console.log(c.muted('\n  el túnel va cifrado extremo a extremo: Cloudflare mueve bytes que no puede leer.'));
+      console.log(c.muted('  fuera:    ') + c.accent(url) + c.muted('   ← funciona desde cualquier red'));
+      console.log(c.muted('\n  va cifrado extremo a extremo: Cloudflare mueve bytes que no puede leer.'));
+      console.log(c.muted('  ¿lo quieres sin Cloudflare? → ') + c.accent('kaip serve --wifi'));
     } catch (e) {
       console.log(c.err('falló'));
       console.log(c.muted('  ' + (e instanceof TunnelError ? e.message : e.message).replace(/\n/g, '\n  ')));
-      console.log(c.muted('\n  sin túnel el móvil solo llega estando en tu wifi.'));
+      await saveLastUrl(null);
+      console.log(c.muted('\n  seguimos en local: el móvil solo llega estando en tu wifi.'));
     }
-  } else {
-    console.log(c.muted('  (sin túnel: solo desde tu wifi)'));
   }
 
-  console.log('\n' + c.muted('  emparejar el móvil:  ') + c.accent('kaip pair'));
-  console.log(c.muted('  Ctrl+C para parar.'));
+  // The pairing QR lives here, not behind a second command. You always need it right after
+  // starting the server — and with a quick tunnel you need it EVERY time, because the URL
+  // changes on each run. Making that a separate command you must remember to type was
+  // friction with no upside.
+  await showPairing(port);
+
+  console.log(c.muted('\n  Ctrl+C para parar.  (el túnel muere con esta ventana)'));
 }
 
-async function cmdPair({ flags }) {
-  const { DEFAULT_PORT, pairingPayload, resetToken, serverConfig } = await import('./lib/server.mjs');
-  const port = Number(flags.port) || DEFAULT_PORT;
-
-  if (flags.reset) {
-    resetToken();
-    console.log(c.warn('secretos rotados: los móviles emparejados dejan de entrar Y de descifrar.\n'));
-  }
-
-  const { apkPath } = await import('./lib/server.mjs');
+/**
+ * The pairing QR: where to connect, the token, and the key that makes the tunnel safe.
+ *
+ * It takes the screen back the moment the phone actually pairs. A QR left up after it has
+ * done its job is not neutral — it is a secret sitting on your monitor, and the natural
+ * thing to do with a code you no longer need is to stop looking at it, not to keep it
+ * displayed while you go and make coffee.
+ */
+async function showPairing(port) {
+  const { pairingPayload, serverConfig } = await import('./lib/server.mjs');
   const { render } = await import('./lib/qr.mjs');
+  const { hardClear } = await import('./lib/ui.mjs');
 
-  const conf = serverConfig();
-  const p = pairingPayload(port, conf.publicUrl || null);
+  const before = (serverConfig().devices ?? []).map((d) => d.url);
+  const p = pairingPayload(port, serverConfig().publicUrl || null);
 
-  if (!p.tunnel) {
-    console.log(c.warn('⚠ no hay túnel activo: el móvil solo llegará estando en tu wifi.'));
-    console.log(c.muted('  levántalo con: ') + c.accent('kaip serve') + '\n');
-  }
-
-  // Two codes, in the order you need them. Downloading the app cannot require the token —
-  // that would be a lock whose key is inside the box.
-  //
-  // The release on GitHub is preferred over serving the file ourselves: that URL is
-  // permanent and works even with this PC switched off, whereas a quick tunnel's address
-  // changes on every restart and would leave a QR that quietly stops working.
-  console.log(c.bold('1. descarga la app') + c.muted('  — escanea esto con la cámara'));
-  const download = APK_RELEASE || (apkPath() ? `${p.url}/apk` : null);
-  if (download) {
-    console.log('\n' + render(download));
-    console.log(c.muted(`   ${download}\n`));
-  } else {
-    console.log(c.muted('\n   (todavía no hay APK: ') + c.accent('kaip app build') + c.muted(')\n'));
-  }
-
-  console.log(c.bold('2. empareja') + c.muted('  — escanea esto DESDE la app'));
-  console.log('\n' + render(JSON.stringify(p)));
-
-  console.log(c.muted('\n   host:  ') + p.host);
-  console.log(c.muted('   url:   ') + p.url + (p.tunnel ? c.ok('   (funciona desde cualquier red)') : ''));
-  console.log(c.muted('   casa:  ') + (p.lan ?? '—'));
+  console.log('\n' + c.bold('  escanea esto DESDE la app') + c.muted('  — para enlazarla con este PC\n'));
+  console.log(render(JSON.stringify(p)).replace(/^/gm, '  '));
 
   // The key is why the tunnel is safe, and why it must go by QR and not down the wire.
-  console.log('\n' + c.muted('   la clave de cifrado viaja DENTRO de ese QR, no por el túnel:'));
-  console.log(c.muted('   la escaneas de tu propia pantalla, así que Cloudflare nunca la ve.'));
-  console.log(c.muted('   perdiste el móvil → ') + c.accent('kaip pair --reset'));
+  console.log(c.muted('\n  la clave de cifrado viaja DENTRO de ese QR, no por el túnel:'));
+  console.log(c.muted('  la escaneas de tu propia pantalla, así que Cloudflare nunca la ve.'));
+  console.log(c.muted('\n  ¿aún no tienes la app? → ') + c.accent('kaip mobile'));
 
-  const { devices = [] } = conf;
-  if (devices.length) {
-    console.log('\n' + c.muted('   emparejados:'));
-    for (const d of devices) console.log(`     ${d.name}  ${c.muted(d.url)}`);
-  }
+  if (before.length) console.log(c.muted('\n  ya emparejados: ') + before.length);
+
+  // Watch for the phone announcing itself. It registers a callback URL the instant it
+  // pairs, so a new device in the config IS the handshake completing.
+  const timer = setInterval(() => {
+    const now = serverConfig().devices ?? [];
+    const fresh = now.find((d) => !before.includes(d.url));
+    if (!fresh) return;
+
+    clearInterval(timer);
+    hardClear();
+    console.log(c.bold(c.accent('  ✦ kaip')) + c.muted('  ·  servidor en marcha\n'));
+    console.log(c.ok(`  ✓ ${fresh.name} emparejado`) + c.muted('  — el QR ya no hace falta.\n'));
+    console.log(c.muted('  te avisará al móvil cuando termine un lanzamiento.'));
+    console.log(c.muted('  Ctrl+C para parar.'));
+  }, 1000);
+  timer.unref?.();
+}
+
+
+/**
+ * The QR that gets the app onto the phone.
+ *
+ * Its own command, because it answers a different question from `pair` and you only need it
+ * once. Mixing the two put a code you will never scan again on the screen every single time
+ * you paired.
+ *
+ * It points at the GitHub release, not at this machine: that URL is permanent and works with
+ * the PC switched off, whereas a quick tunnel gets a new address on every restart — a QR
+ * that quietly stops working is worse than no QR.
+ */
+async function cmdMobile() {
+  const { render } = await import('./lib/qr.mjs');
+
+  console.log(c.bold('descargar Kaiprompt') + c.muted('  — escanea con la cámara del móvil\n'));
+  console.log(render(APK_RELEASE));
+  console.log(c.muted(`\n   ${APK_RELEASE}\n`));
+  console.log(c.muted('   Android te pedirá permiso para instalar de origen desconocido: acéptalo.'));
+  console.log(c.muted('   luego, para enlazarla con este PC: ') + c.accent('kaip serve') + c.muted(' y ') + c.accent('kaip pair'));
 }
 
 function cmdSessions({ pos } = { pos: [] }) {
@@ -504,7 +529,7 @@ try {
     case 'daemon': await cmdDaemon(parsed); break;
     case 'app': await cmdApp(parsed); break;
     case 'serve': await cmdServe(parsed); break;
-    case 'pair': await cmdPair(parsed); break;
+    case 'mobile': await cmdMobile(parsed); break;
     // No subcommand → the GUI, but only with a real terminal: raw mode on a piped
     // stdin (Task Scheduler, cron, a pipe) would hang forever. There, print the help.
     case undefined:
