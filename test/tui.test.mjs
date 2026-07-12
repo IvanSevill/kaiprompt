@@ -281,7 +281,9 @@ test('render: pestañas, jobs, barra de atajos y marca de selección', () => {
   assert.match(out, new RegExp(j.id));
   assert.match(out, /revisa el PR/);
   assert.match(out, /▸/, 'la fila seleccionada va marcada');
-  assert.match(out, /a add · e edit · d del · D daemon · r run now/, 'la barra de atajos');
+  assert.match(out, /a add · e edit · d del/, 'la barra de atajos');
+  // "out" y "chat" no decían en qué se diferenciaban. La barra dice lo que OBTIENES.
+  assert.match(out, /o answer · c conversation · y JOIN chat/, 'los tres niveles, nombrados por lo que dan');
 });
 
 // --- programar no es lanzar ---------------------------------------------------
