@@ -1,0 +1,83 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+
+import { bar, bigText, bigWidth, box, c, centerLine, strip, trunc, width } from '../lib/ui.mjs';
+
+// Sin TTY (los tests corren con la salida redirigida) los helpers de color no pintan:
+// eso es justo lo que garantiza que el modo desatendido salga en texto plano.
+
+test('sin TTY no se emiten códigos de color', () => {
+  assert.equal(c.accent('hola'), 'hola');
+  assert.equal(c.bold('hola'), 'hola');
+});
+
+test('strip/width ignoran los códigos ANSI', () => {
+  const s = '\x1b[38;2;1;2;3mhola\x1b[39m';
+  assert.equal(strip(s), 'hola');
+  assert.equal(width(s), 4);
+});
+
+test('trunc: recorta y añade elipsis, colapsa espacios', () => {
+  assert.equal(trunc('hola   mundo', 20), 'hola mundo');
+  assert.equal(trunc('x'.repeat(30), 10).length, 10);
+  assert.ok(trunc('x'.repeat(30), 10).endsWith('…'));
+  assert.equal(trunc(undefined, 5), '');
+});
+
+test('centerLine centra por ancho visible', () => {
+  assert.equal(centerLine('ab', 10), ' '.repeat(4) + 'ab');
+  assert.equal(width(centerLine('ab', 10)), 6);
+});
+
+// --- dígitos gigantes (el reloj) --------------------------------------------
+test('bigText: siempre 5 filas', () => {
+  assert.equal(bigText('00:00:00').length, 5);
+  assert.equal(bigText('12:34:56').length, 5);
+});
+
+test('bigText: todas las filas miden lo mismo, y bigWidth lo predice', () => {
+  const txt = '02:34:11';
+  const rows = bigText(txt);
+  const anchos = rows.map(width);
+  assert.equal(new Set(anchos).size, 1, 'filas desiguales romperían el centrado');
+  assert.equal(anchos[0], bigWidth(txt), 'bigWidth debe coincidir con el ancho real');
+});
+
+test('bigText: dibuja los 10 dígitos y los dos puntos', () => {
+  for (const ch of '0123456789') {
+    const rows = bigText(ch);
+    assert.ok(rows.some((r) => r.includes('█')), `el dígito ${ch} debe pintar algo`);
+  }
+  assert.ok(bigText(':').some((r) => r.includes('█')));
+});
+
+test('bigText: ignora caracteres no soportados sin romper', () => {
+  assert.equal(bigText('ab').length, 5);
+  assert.equal(bigWidth('ab'), 0);
+});
+
+test('bigText: la escala cambia el ancho, no la altura', () => {
+  assert.equal(bigText('12', { scale: 1 }).length, 5);
+  assert.ok(bigWidth('12', { scale: 2 }) > bigWidth('12', { scale: 1 }));
+});
+
+// --- barra y caja -----------------------------------------------------------
+test('bar: acota entre 0 y 100', () => {
+  assert.ok(strip(bar(0, 10)).startsWith('░'));
+  assert.ok(strip(bar(100, 10)).startsWith('█'.repeat(10)));
+  assert.ok(strip(bar(-50, 10)).includes('0%'));
+  assert.ok(strip(bar(500, 10)).includes('100%'));
+});
+
+test('box: bordes redondeados y contenido dentro', () => {
+  const b = box(['hola'], { title: 'test' });
+  assert.ok(strip(b[0]).startsWith('╭'));
+  assert.ok(strip(b.at(-1)).startsWith('╰'));
+  assert.ok(b.some((l) => l.includes('hola')));
+});
+
+test('box: todas las líneas del mismo ancho (si no, el marco se descuadra)', () => {
+  const b = box(['corto', 'una linea bastante mas larga'], { title: 'x' });
+  const anchos = b.map(width);
+  assert.equal(new Set(anchos).size, 1);
+});

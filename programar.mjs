@@ -13,8 +13,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dir = path.dirname(fileURLToPath(import.meta.url));
-const PROG = path.join(__dir, 'programados.jsonl');
-const PROYECTOS = path.join(__dir, 'projects.json');
+// Los datos pueden vivir fuera del código (tests / instalación); por defecto, aquí mismo.
+const HOME = process.env.PROGRAM_PROMPT_HOME || __dir;
+const PROG = path.join(HOME, 'programados.jsonl');
+const PROYECTOS = path.join(HOME, 'projects.json');
 
 // resuelve carpeta: alias de projects.json → subcarpeta de _base (por nombre) → ruta literal
 function resolveDir(v, fallback) {
