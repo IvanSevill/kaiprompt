@@ -19,7 +19,30 @@ Key cost insight:
 
 ---
 
-## 1. Installation / Shortcut
+## 1. Installation
+
+Clone it and run the installer. **No npm, no dependencies** — Node only:
+
+```bash
+git clone https://github.com/IvanSevill/program-prompt.git
+cd program-prompt
+node install.mjs
+```
+
+The installer does the three things that depend on *your* machine:
+1. Generates the slash commands `/programar` and `/resumen-prompts` into `~/.claude/commands/`, pointing at wherever you cloned this.
+2. Registers the `UserPromptSubmit` hook in `~/.claude/settings.json` — **merged, not overwritten**: your other hooks and settings stay put, and running it twice doesn't duplicate anything.
+3. Creates `projects.json`, asking for the folder where you keep your projects (so `--dir myapp` works by name). An existing `projects.json` is never overwritten.
+
+Then it prints the shell shortcut to add to your profile. **Restart Claude Code** so the hook is picked up.
+
+```bash
+node install.mjs --base "C:/path/to/your/projects"   # skip the question
+node install.mjs --yes                               # no questions at all
+node uninstall.mjs                                   # undo 1 and 2; your data stays
+```
+
+### The shortcut
 
 The real command is `node program-prompt.mjs`. To type just `program-prompt`:
 
@@ -104,7 +127,7 @@ Change a launch **before it runs**:
 
 ```powershell
 program-prompt edit jlzz4t3h6 --at "tomorrow 09:00" --perm acceptEdits
-program-prompt edit jlzz4t3h6 --prompt "review the PR and summarize" --dir FacturaSevi
+program-prompt edit jlzz4t3h6 --prompt "review the PR and summarize" --dir myapp
 program-prompt edit jlzz4t3h6 --target none        # none/- clears --target, --dir or --at
 ```
 
@@ -218,10 +241,10 @@ Besides the CLI, you can schedule launches from inside Claude Code:
 /programar <when> | <prompt> [| <target>] [| <folder>]
 ```
 - `<when>`: `09:00` · `mañana 09:00` · `+2h` · `lun 09:00` · `2026-07-12 09:00`
-- `<folder>` *(optional)*: **project name** (e.g. `FacturaSevi`, `GymHub` — any subfolder of the
+- `<folder>` *(optional)*: **project name** (e.g. `myapp`, `my-api` — any subfolder of the
   `_base` in `projects.json`), an alias, or a full path. Defaults to the folder you're in.
 
-Example: `/programar mañana 08:30 | review the PR and summarize | review | FacturaSevi`
+Example: `/programar mañana 08:30 | review the PR and summarize | review | myapp`
 
 A `UserPromptSubmit` hook (registered in `~/.claude/settings.json`, running `programar.mjs`)
 intercepts it, appends a line to `programados.jsonl` and **blocks the turn with `exit 2`** → the
@@ -238,7 +261,7 @@ summarizes each launch), or `program-prompt out` from the terminal.
 - **Simple:** leave a terminal with `program-prompt claude run` open and the PC not sleeping.
 - **Robust:** a **Windows Task Scheduler** task that at the desired time runs:
   ```powershell
-  node "C:\Users\ivans\.claude\tools\chat-queue\program-prompt.mjs" claude run --once
+  node "$env:USERPROFILE\.claude\tools\chat-queue\program-prompt.mjs" claude run --once
   ```
   With permission to *wake the computer*.
 
@@ -249,6 +272,7 @@ summarizes each launch), or `program-prompt out` from the terminal.
 ```
 program-prompt.mjs         CLI: argument parsing + dispatch (no args → the GUI)
 programar.mjs              the /programar hook (writes programados.jsonl, 0 tokens)
+install.mjs / uninstall.mjs  wire this clone into Claude Code (commands + hook + projects.json)
 program-prompt.cmd         Windows wrapper (cmd/PowerShell)
 lib/
   store.mjs                data layer: queue · sessions · projects · /programar inbox
@@ -259,6 +283,7 @@ lib/
   chat.mjs                 find and render session transcripts
   edit.mjs                 edit a pending job
   tui.mjs                  the guided GUI (state machine + renderer)
+  install.mjs              slash commands · the settings.json hook · projects.json
 adapters/
   claude.mjs               launches `claude -p` (subscription; runs in the job's folder)
   opencode.mjs             stub — implement when needed

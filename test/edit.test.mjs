@@ -40,10 +40,10 @@ test('edit: --at none lo devuelve a secuencial', () => {
 });
 
 test('edit: --dir resuelve alias/proyecto igual que add', () => {
-  saveProjects({ mifac: 'C:/algun/sitio/FacturaSevi' });
+  saveProjects({ mialias: 'C:/algun/sitio/MiApp' });
   const j = only({});
-  const { job: n } = editJob(j.id, { dir: 'mifac' });
-  assert.equal(n.dir, 'C:/algun/sitio/FacturaSevi');
+  const { job: n } = editJob(j.id, { dir: 'mialias' });
+  assert.equal(n.dir, 'C:/algun/sitio/MiApp');
 });
 
 test('edit: varios flags a la vez', () => {

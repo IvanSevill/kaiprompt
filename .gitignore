@@ -4,3 +4,6 @@ out/
 programados.jsonl
 projects.json
 node_modules/
+
+# Notas y tareas locales (rutas personales)
+.tasks/

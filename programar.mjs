@@ -43,8 +43,8 @@ const nid = () => 'p' + Date.now().toString(36).slice(-5) + Math.floor(Math.rand
 
 const USAGE = 'uso: /programar <cuándo> | <prompt> [| <target>] [| <carpeta>]\n' +
   '  cuándo:  09:00 · mañana 09:00 · +2h · lun 09:00 · 2026-07-12 09:00\n' +
-  '  carpeta: nombre de proyecto (p.ej. FacturaSevi), alias o ruta. Por defecto, la actual.\n' +
-  '  ej: /programar mañana 08:30 | revisa el PR y resume | repaso | FacturaSevi';
+  '  carpeta: nombre de proyecto (p.ej. miapp), alias o ruta. Por defecto, la actual.\n' +
+  '  ej: /programar mañana 08:30 | revisa el PR y resume | repaso | miapp';
 
 function parseWhen(input) {
   const s = String(input).trim().toLowerCase();

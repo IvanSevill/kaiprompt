@@ -219,16 +219,16 @@ test('d: pregunta antes de borrar; "n" no borra, "y" sí', () => {
 // --- efectos que tocan el store ----------------------------------------------
 test('applyEffect add: crea el job de verdad (mismo camino que la CLI)', () => {
   saveQueue([]);
-  saveProjects({ mifac: 'C:/algun/sitio/FacturaSevi' });
+  saveProjects({ mialias: 'C:/algun/sitio/MiApp' });
   const line = applyEffect({
     type: 'add',
-    values: { prompt: '/test', when: '+2h', target: 'fixes', dir: 'mifac', perm: 'acceptEdits' },
+    values: { prompt: '/test', when: '+2h', target: 'fixes', dir: 'mialias', perm: 'acceptEdits' },
   });
 
   const [j] = loadQueue();
   assert.equal(j.prompt, '/test');
   assert.equal(j.target, 'fixes');
-  assert.equal(j.dir, 'C:/algun/sitio/FacturaSevi', 'la carpeta se resuelve como en add');
+  assert.equal(j.dir, 'C:/algun/sitio/MiApp', 'la carpeta se resuelve como en add');
   assert.equal(j.permMode, 'acceptEdits');
   assert.ok(j.when > Date.now());
   assert.match(strip(line), new RegExp(`\\+ ${j.id}`));

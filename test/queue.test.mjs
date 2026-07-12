@@ -22,11 +22,11 @@ test('addJob: crea un job pending y lo mete en la cola', () => {
 
 test('addJob: --at pasa por parseWhen y --dir por resolveDir (como en la CLI)', () => {
   saveQueue([]);
-  saveProjects({ mifac: 'C:/algun/sitio/FacturaSevi' });
-  const j = addJob({ prompt: 'x', at: '+2h', dir: 'mifac' });
+  saveProjects({ mialias: 'C:/algun/sitio/MiApp' });
+  const j = addJob({ prompt: 'x', at: '+2h', dir: 'mialias' });
 
   assert.ok(Math.abs(j.when - (Date.now() + 2 * 3600_000)) < 5000);
-  assert.equal(j.dir, 'C:/algun/sitio/FacturaSevi');
+  assert.equal(j.dir, 'C:/algun/sitio/MiApp');
 });
 
 test('addJob: sin --dir cae en la carpeta actual', () => {

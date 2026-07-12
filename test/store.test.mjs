@@ -66,16 +66,16 @@ test('resolveDir: sin valor → fallback', () => {
 });
 
 test('resolveDir: alias explícito de projects.json', () => {
-  saveProjects({ mifac: 'C:/algun/sitio/FacturaSevi' });
-  assert.equal(resolveDir('mifac', 'X'), 'C:/algun/sitio/FacturaSevi');
-  assert.equal(resolveDir('MIFAC', 'X'), 'C:/algun/sitio/FacturaSevi', 'sin distinguir mayúsculas');
+  saveProjects({ mialias: 'C:/algun/sitio/MiApp' });
+  assert.equal(resolveDir('mialias', 'X'), 'C:/algun/sitio/MiApp');
+  assert.equal(resolveDir('MIALIAS', 'X'), 'C:/algun/sitio/MiApp', 'sin distinguir mayúsculas');
 });
 
 test('resolveDir: nombre de proyecto = subcarpeta de _base (sin distinguir mayúsculas)', () => {
   const base = path.join(TMP, 'Programas');
-  fs.mkdirSync(path.join(base, 'GymHub'), { recursive: true });
+  fs.mkdirSync(path.join(base, 'MiApp'), { recursive: true });
   saveProjects({ _base: base });
-  assert.equal(resolveDir('gymhub', 'X'), base.replace(/\\/g, '\\') + '/GymHub');
+  assert.equal(resolveDir('miapp', 'X'), base.replace(/\\/g, '\\') + '/MiApp');
 });
 
 test('resolveDir: ruta literal si no casa con nada', () => {

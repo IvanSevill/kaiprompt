@@ -201,7 +201,7 @@ Notes:
              c chat · ? help · q quit. Without a terminal it prints this help instead.
 
 Examples:
-  program-prompt claude add "/test" --target fixes --dir FacturaSevi
+  program-prompt claude add "/test" --target fixes --dir myapp
   program-prompt claude run
   program-prompt list
   program-prompt out
