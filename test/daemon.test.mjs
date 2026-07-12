@@ -187,12 +187,31 @@ test('un "missed" se recupera reprogramándolo (vuelve a pending)', () => {
   assert.equal(job(j.id).status, 'pending', 'reprogramar lo devuelve a la cola');
 });
 
-test('dos runners no se pisan: el segundo se retira', () => {
-  seed([mockJob({ when: Date.now() + 60_000 })]);         // algo pendiente pero no vencido
+test('un "run" manual le QUITA el turno al daemon, y se lo devuelve al salir', () => {
+  // Delante del terminal manda la persona. Antes, el daemon (que se arma solo al
+  // programar algo) tenia el cerrojo y al escribir "run" te soltaba un
+  // "another runner is already active" sin que hubiera nada visible corriendo.
+  seed([mockJob({ when: Date.now() + 60_000 })]);         // pendiente pero no vencido
   cli('daemon', 'start');
 
-  const second = cli('run');                              // intenta correr con el daemon vivo
+  const manual = cli('run', '--once');
+  assert.match(manual.stdout, /took over from the daemon/i);
+  assert.doesNotMatch(manual.stdout, /another runner is already active/i);
+
+  const back = cli('daemon', 'status');
+  assert.match(back.stdout, /daemon: on/i, 'y el daemon vuelve solo');
   cli('daemon', 'stop');
+});
+
+test('dos runners MANUALES si se respetan: el segundo se retira', () => {
+  // El cerrojo sigue haciendo su trabajo donde importa: nadie puede lanzar dos veces
+  // el mismo job. Lo que ya no bloquea es al humano frente al daemon.
+  seed([mockJob({ when: Date.now() + 60_000 })]);
+  const lock = path.join(TMP, 'data', 'runner.lock');
+  fs.writeFileSync(lock, JSON.stringify({ pid: 999999, at: Date.now() }));   // otro run vivo
+
+  const second = cli('run', '--once');
+  fs.rmSync(lock, { force: true });
 
   assert.match(second.stdout, /another runner is already active/i);
 });

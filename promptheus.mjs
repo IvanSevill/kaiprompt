@@ -334,12 +334,16 @@ try {
     case 'add': await cmdAdd(parsed); break;
     case 'list': case 'ls': cmdList(parsed); break;
     case 'show': cmdShow(parsed); break;
+    // `run` STAYS UP by default, including on an empty queue. You leave it going and feed
+    // it — from another terminal, or with /programar — and it picks the work up on its own.
+    // A runner that quit the moment it ran dry was useless for exactly the case it exists
+    // for. Scripts that want drain-and-exit ask for it with --once.
     case 'run': await runQueue({
       once: !!parsed.flags.once,
       dryRun: !!parsed.flags['dry-run'],
       parallel: Number(parsed.flags.parallel) || 1,
       plain: !!parsed.flags.plain || !!parsed.flags['no-tui'],
-      watch: !!parsed.flags.watch,
+      watch: !parsed.flags.once && parsed.flags.watch !== false && !parsed.flags['no-watch'],
     }); break;
     case 'rm': cmdRm(parsed); break;
     case 'clear': cmdClear(); break;
