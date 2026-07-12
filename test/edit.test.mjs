@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-edit-'));
-process.env.PROMPTHEUS_HOME = TMP;
+process.env.KAIP_HOME = TMP;
 const { loadQueue, nid, saveProjects, saveQueue } = await import('../lib/store.mjs');
 const { applyEdits, editJob } = await import('../lib/edit.mjs');
 

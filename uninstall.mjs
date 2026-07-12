@@ -10,7 +10,7 @@ import { claudeHome, posix, uninstall } from './lib/install.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 
-console.log(`\n${c.accent('promptheus')} → uninstalling`);
+console.log(`\n${c.accent('kaip')} → uninstalling`);
 console.log(c.muted(`  from: ${posix(claudeHome())}\n`));
 
 for (const line of uninstall({ root: ROOT })) console.log('  ' + c.ok('✓') + ' ' + line);

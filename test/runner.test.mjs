@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-run-'));
-process.env.PROMPTHEUS_HOME = TMP;
+process.env.KAIP_HOME = TMP;
 const { loadQueue, loadSessions, nid, outPath, saveQueue, saveSessions } = await import('../lib/store.mjs');
 const { executeJob, requeue, runQueue, settle } = await import('../lib/runner.mjs');
 
@@ -234,9 +234,9 @@ test('--watch: la cola vacia NO termina el run; se queda esperando y ejecuta lo 
   const { addJob } = await import('../lib/queue.mjs');
   saveQueue([]);
 
-  const cli = path.join(path.dirname(new URL(import.meta.url).pathname).replace(/^\//, ''), '..', 'promptheus.mjs');
+  const cli = path.join(path.dirname(new URL(import.meta.url).pathname).replace(/^\//, ''), '..', 'kaip.mjs');
   const run = spawn(process.execPath, [cli, 'run', '--watch', '--plain'], {
-    env: { ...process.env, PROMPTHEUS_HOME: TMP },
+    env: { ...process.env, KAIP_HOME: TMP },
     stdio: 'ignore',
   });
 
