@@ -246,26 +246,43 @@ async function cmdDaemon({ flags, pos }) {
   }
 }
 
+/** Where the pairing info gets written, so `kaip pair` can show it without re-tunnelling. */
+async function saveLastUrl(url) {
+  const { saveServerConfig, serverConfig } = await import('./lib/server.mjs');
+  const conf = serverConfig();
+  conf.publicUrl = url;
+  conf.publicUrlAt = Date.now();
+  saveServerConfig(conf);
+}
+
 async function cmdServe({ flags }) {
-  const { DEFAULT_PORT, addresses, createServer, pairingPayload } = await import('./lib/server.mjs');
+  const { DEFAULT_PORT, addresses, createServer } = await import('./lib/server.mjs');
   const port = Number(flags.port) || DEFAULT_PORT;
 
   createServer({ port });
-  const nets = addresses(port);
-  const tail = nets.find((a) => a.tailscale);
-
   console.log(c.bold('kaip serve') + c.muted(`  ·  puerto ${port}`));
-  console.log(c.muted('  la conversación completa, sin recortar: nada sale de esta máquina.\n'));
 
-  for (const a of nets) {
-    const tag = a.tailscale ? c.ok('  ← usa esta desde el móvil (Tailscale)') : c.muted('  (solo en la red de casa)');
-    console.log(`  ${a.url.padEnd(28)}${tag}`);
-  }
+  const lan = addresses(port)[0];
+  if (lan) console.log(c.muted('  en casa:  ') + lan.url);
 
-  if (!tail) {
-    console.log('\n' + c.warn('  no veo ninguna dirección de Tailscale.'));
-    console.log(c.muted('  sin ella el móvil solo llega estando en tu wifi. Instálalo en ambos: ')
-      + c.accent('https://tailscale.com'));
+  // The tunnel is what makes the phone work from ANYWHERE without a VPN — which is the
+  // whole point when a firewall app already owns the phone's single VPN slot.
+  if (flags.tunnel !== false && !flags['no-tunnel']) {
+    const { startTunnel, TunnelError } = await import('./lib/tunnel.mjs');
+    process.stdout.write(c.muted('  abriendo el túnel de Cloudflare… '));
+    try {
+      const { url } = await startTunnel(port);
+      await saveLastUrl(url);
+      console.log(c.ok('listo'));
+      console.log(c.muted('  fuera:    ') + c.accent(url) + c.muted('   ← el móvil usa esta'));
+      console.log(c.muted('\n  el túnel va cifrado extremo a extremo: Cloudflare mueve bytes que no puede leer.'));
+    } catch (e) {
+      console.log(c.err('falló'));
+      console.log(c.muted('  ' + (e instanceof TunnelError ? e.message : e.message).replace(/\n/g, '\n  ')));
+      console.log(c.muted('\n  sin túnel el móvil solo llega estando en tu wifi.'));
+    }
+  } else {
+    console.log(c.muted('  (sin túnel: solo desde tu wifi)'));
   }
 
   console.log('\n' + c.muted('  emparejar el móvil:  ') + c.accent('kaip pair'));
@@ -278,26 +295,32 @@ async function cmdPair({ flags }) {
 
   if (flags.reset) {
     resetToken();
-    console.log(c.warn('token rotado: los móviles ya emparejados dejan de funcionar.\n'));
+    console.log(c.warn('secretos rotados: los móviles emparejados dejan de entrar Y de descifrar.\n'));
   }
 
-  const p = pairingPayload(port);
-  console.log(c.bold('emparejar el móvil'));
-  console.log(c.muted('  esto es lo que va dentro del QR:\n'));
+  const conf = serverConfig();
+  const p = pairingPayload(port, conf.publicUrl || null);
+
+  console.log(c.bold('emparejar el móvil') + c.muted('  — esto va dentro del QR\n'));
   console.log('  ' + c.accent(JSON.stringify(p)));
-  console.log('\n' + c.muted('  url:   ') + p.url);
-  console.log(c.muted('  token: ') + p.token);
+  console.log('\n' + c.muted('  url:    ') + p.url + (p.tunnel ? c.ok('   (túnel: funciona desde fuera)') : ''));
+  console.log(c.muted('  en casa:') + ' ' + (p.lan ?? '—'));
 
-  if (!p.tailscale) {
-    console.log('\n' + c.warn('  ⚠ esa dirección es de tu red local, no de Tailscale.'));
-    console.log(c.muted('    el móvil solo llegará estando en tu wifi.'));
+  if (!p.tunnel) {
+    console.log('\n' + c.warn('  ⚠ no hay túnel activo: esa dirección solo vale en tu wifi.'));
+    console.log(c.muted('    levántalo con: ') + c.accent('kaip serve'));
   }
-  console.log('\n' + c.muted('  el servidor tiene que estar levantado: ') + c.accent('kaip serve'));
-  console.log(c.muted('  rotar el token (y desemparejar todo): ') + c.accent('kaip pair --reset'));
 
-  const { devices = [] } = serverConfig();
+  // The key is why the tunnel is safe. It goes from this screen to that phone by QR and
+  // never travels the wire it protects.
+  console.log('\n' + c.muted('  la clave de cifrado va en el QR y NO viaja por el túnel:'));
+  console.log(c.muted('  la escaneas de tu propia pantalla, así que Cloudflare nunca la ve.'));
+
+  console.log('\n' + c.muted('  perdiste el móvil → ') + c.accent('kaip pair --reset'));
+
+  const { devices = [] } = conf;
   if (devices.length) {
-    console.log('\n' + c.muted('  dispositivos emparejados:'));
+    console.log('\n' + c.muted('  emparejados:'));
     for (const d of devices) console.log(`    ${d.name}  ${c.muted(d.url)}`);
   }
 }

@@ -218,3 +218,49 @@ test('/api/events: SSE, y lo que publique el runner llega al móvil', async () =
   assert.match(got, /"type":"job"/);
   assert.match(got, /"status":"running"/);
 });
+
+// --- lo que ve Cloudflare -----------------------------------------------------
+// El tunel pasa por Cloudflare, que termina el TLS. Estos tests fijan la unica cosa
+// que hace eso aceptable: que lo que viaja sea ilegible para quien mueve el cable.
+
+test('la app pide sobre sellado y el prompt NO viaja en claro por el tunel', async () => {
+  const { open } = await import('../lib/crypto.mjs');
+  saveQueue([]);
+  addJob({ prompt: 'la clave del servidor es hunter2', adapter: 'mock' });
+
+  const r = await fetch(`http://127.0.0.1:${PORT}/api/state`, {
+    headers: { authorization: `Bearer ${token}`, 'x-kaip-enc': '1' },
+  });
+  const crudo = await r.text();
+
+  assert.equal(r.headers.get('x-kaip-enc'), '1', 'avisa de que va sellado');
+  assert.ok(!crudo.includes('hunter2'), 'Cloudflare NO puede leer el prompt');
+  assert.ok(!crudo.includes('prompt'), 'ni los nombres de los campos');
+
+  // Y el movil, que si tiene la clave, lo abre entero.
+  const s = open(JSON.parse(crudo), serverConfig().key);
+  assert.equal(s.jobs[0].prompt, 'la clave del servidor es hunter2');
+});
+
+test('sin pedirlo, sigue saliendo JSON plano (curl, tests, y una LAN donde no hay nada que esconder)', async () => {
+  saveQueue([]);
+  addJob({ prompt: 'a la vista', adapter: 'mock' });
+  const s = await (await get('/api/state')).json();
+  assert.equal(s.jobs[0].prompt, 'a la vista');
+});
+
+test('el 401 NO va sellado: quien trae la clave mal debe poder leer POR QUE se le echa', async () => {
+  const r = await fetch(`http://127.0.0.1:${PORT}/api/state`, {
+    headers: { authorization: 'Bearer noesvalido', 'x-kaip-enc': '1' },
+  });
+  assert.equal(r.status, 401);
+  assert.match(await r.text(), /unauthorized/);
+});
+
+test('pair --reset rota TAMBIEN la clave: un movil perdido no puede seguir descifrando', async () => {
+  const { resetToken: rota } = await import('../lib/server.mjs');
+  const claveVieja = serverConfig().key;
+  rota();
+  assert.notEqual(serverConfig().key, claveVieja, 'la clave se va con el token');
+  token = serverConfig().token;
+});
