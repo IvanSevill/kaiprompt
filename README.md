@@ -1,18 +1,17 @@
-# promptheus
+# Kaiprompt
 
 **Prompts that send themselves, on time.**
 
 Queue prompts for Claude Code, schedule them, and let them run while you sleep. Wake up to
 the work done.
 
-*Prometheus* literally means **"forethought"** — the one who thinks ahead. That is the whole
-tool: you write down **what** you want done and **when**, and it launches Claude Code on its
-own, with nobody at the keyboard.
+You write down **what** you want done and **when**. It launches Claude Code on its own, with
+nobody at the keyboard.
 
 Zero dependencies. Just Node.
 
 ```
-promptheus add "run the tests and fix whatever breaks" --at 03:00 --dir myapp
+kaip add "run the tests and fix whatever breaks" --at 03:00 --dir myapp
 ```
 
 ---
@@ -29,7 +28,7 @@ This trips everyone up, so it is worth stating plainly:
 **Adding a job never launches it.** Not from the GUI, not from `add`, not from `/programar`.
 
 For a scheduled job to actually fire, something has to be processing the queue at that
-moment: either the **daemon** (`promptheus daemon start`) or a `run` you left up. The GUI
+moment: either the **daemon** (`kaip daemon start`) or a `run` you left up. The GUI
 tells you at a glance whether the daemon is armed — if it says `◇ daemon off`, nothing will
 fire.
 
@@ -38,8 +37,8 @@ fire.
 ## Install
 
 ```bash
-git clone https://github.com/IvanSevill/promptheus.git
-cd promptheus
+git clone https://github.com/IvanSevill/kaiprompt.git
+cd kaiprompt
 node install.mjs
 ```
 
@@ -49,13 +48,13 @@ commands, and prints the shell alias to add. `node uninstall.mjs` reverses all o
 **Shell alias** — PowerShell (`notepad $PROFILE`):
 
 ```powershell
-function promptheus { node "$env:USERPROFILE\.claude\tools\promptheus\promptheus.mjs" @args }
+function kaip { node "$env:USERPROFILE\.claude\tools\kaiprompt\kaip.mjs" @args }
 ```
 
 bash / zsh:
 
 ```bash
-alias promptheus='node "$HOME/.claude/tools/promptheus/promptheus.mjs"'
+alias kaip='node "$HOME/.claude/tools/kaiprompt/kaip.mjs"'
 ```
 
 ---
@@ -76,20 +75,20 @@ work *even when you are almost out of quota* — which is exactly when you most 
 ### 2. From the terminal
 
 ```bash
-promptheus add "<prompt>" --at 03:00 --target fixes --dir myapp
-promptheus list                    # the queue, with status
-promptheus run                     # process it: full-screen countdown + live view
-promptheus run --watch             # ...and stay up, so you can keep feeding it
-promptheus out <id>                # the answer a launch gave
-promptheus show <id>               # the job AND the whole conversation it had
-promptheus chat <target>           # the conversation, by name
-promptheus edit <id> --at +1h      # change a pending job
-promptheus daemon start            # fire scheduled jobs with no terminal open
+kaip add "<prompt>" --at 03:00 --target fixes --dir myapp
+kaip list                    # the queue, with status
+kaip run                     # process it: full-screen countdown + live view
+kaip run --watch             # ...and stay up, so you can keep feeding it
+kaip out <id>                # the answer a launch gave
+kaip show <id>               # the job AND the whole conversation it had
+kaip chat <target>           # the conversation, by name
+kaip edit <id> --at +1h      # change a pending job
+kaip daemon start            # fire scheduled jobs with no terminal open
 ```
 
 ### 3. The guided GUI
 
-`promptheus` with no arguments.
+`kaip` with no arguments.
 
 Views: **Queue · Chats · Projects · Help**.
 Keys: `↑↓` move · `a` add (guided) · `e` edit · `d` delete · `x` clear finished ·
@@ -156,7 +155,7 @@ computed from whichever comes back first.
 ## Feeding a run that is already going
 
 ```bash
-promptheus run --watch
+kaip run --watch
 ```
 
 `--watch` keeps the runner up even when the queue empties.
@@ -174,7 +173,7 @@ work and walk away.
 ## Parallel launches
 
 ```bash
-promptheus run --parallel 3
+kaip run --parallel 3
 ```
 
 Two prompts aimed at different conversations have no reason to wait for each other.
@@ -188,11 +187,11 @@ at a time, while different lanes run at once.
 ## The daemon
 
 ```bash
-promptheus daemon start      # detached background runner
-promptheus daemon status
-promptheus daemon log --last 50
-promptheus daemon install    # bring it back on login (Windows)
-promptheus daemon stop
+kaip daemon start      # detached background runner
+kaip daemon status
+kaip daemon log --last 50
+kaip daemon install    # bring it back on login (Windows)
+kaip daemon stop
 ```
 
 The daemon only takes **scheduled** jobs. Sequential ones still wait for an explicit run —
@@ -204,7 +203,7 @@ avoids.
 ## Servers and CI
 
 ```bash
-promptheus run --plain        # no full-screen TUI, just a log
+kaip run --plain        # no full-screen TUI, just a log
 ```
 
 The plain path is also what runs under a pipe, a scheduled task, or with no TTY at all — so
@@ -215,13 +214,13 @@ logs stay readable and nothing tries to paint a full-screen interface into them.
 ## Reviewing what happened
 
 ```bash
-promptheus list              # status of everything
-promptheus show <id>         # the job and the full conversation it had
-promptheus out <id>          # just the final answer
-promptheus chat <target>     # a conversation by name  [--last N] [--full] [--raw]
+kaip list              # status of everything
+kaip show <id>         # the job and the full conversation it had
+kaip out <id>          # just the final answer
+kaip chat <target>     # a conversation by name  [--last N] [--full] [--raw]
 ```
 
-From a Claude chat, `/promptheus-summary` reads the queue and the outputs, tells you what
+From a Claude chat, `/kaip-summary` reads the queue and the outputs, tells you what
 each launch actually did, flags anything **cut short by quota**, and offers to reschedule the
 unfinished work with a *continuation* prompt rather than the original one.
 
@@ -230,7 +229,7 @@ unfinished work with a *continuation* prompt rather than the original one.
 ## Layout
 
 ```
-promptheus.mjs      CLI dispatch
+kaip.mjs      CLI dispatch
 programar.mjs       the /programar hook (0 tokens)
 install.mjs         hook + slash commands + alias
 lib/
@@ -249,7 +248,7 @@ adapters/
 ```
 
 Your data lives outside the repo and is gitignored: `data/`, `out/`, `projects.json`,
-`programados.jsonl`. Set `PROMPTHEUS_HOME` to keep it somewhere else.
+`programados.jsonl`. Set `KAIP_HOME` to keep it somewhere else.
 
 ---
 

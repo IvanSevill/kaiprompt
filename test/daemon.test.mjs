@@ -16,14 +16,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const CLI = path.join(ROOT, 'promptheus.mjs');
+const CLI = path.join(ROOT, 'kaip.mjs');
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-daemon-'));
 const DATA = path.join(TMP, 'data');
 const QUEUE = path.join(DATA, 'queue.json');
 
 // Aquí sí se levantan daemons de verdad (es lo que hay que probar), pero siempre en un
 // HOME temporal y siempre parados en el after: nada sobrevive al test.
-const ENV = { ...process.env, PROMPTHEUS_HOME: TMP, PROMPTHEUS_NO_DAEMON: '' };
+const ENV = { ...process.env, KAIP_HOME: TMP, KAIP_NO_DAEMON: '' };
 const cli = (...args) => spawnSync(process.execPath, [CLI, ...args], { env: ENV, encoding: 'utf8' });
 
 const queue = () => JSON.parse(fs.readFileSync(QUEUE, 'utf8'));

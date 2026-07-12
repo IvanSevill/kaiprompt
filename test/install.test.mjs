@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-inst-'));
-process.env.PROMPTHEUS_HOME = TMP;
+process.env.KAIP_HOME = TMP;
 process.env.CLAUDE_CONFIG_DIR = path.join(TMP, 'claude');   // un ~/.claude de mentira
 
 const { readJSON } = await import('../lib/store.mjs');
@@ -14,7 +14,7 @@ const {
   removeHook, shellSnippets, uninstall,
 } = await import('../lib/install.mjs');
 
-const ROOT = 'C:/tools/promptheus';                          // una instalación de ejemplo
+const ROOT = 'C:/tools/kaiprompt';                          // una instalación de ejemplo
 const CLAUDE = path.join(TMP, 'claude');
 const settingsFile = path.join(CLAUDE, 'settings.json');
 const cmdFile = (n) => path.join(CLAUDE, 'commands', n);
@@ -30,9 +30,9 @@ test('commandFiles: los dos comandos llevan la ruta REAL de instalación', () =>
   const files = commandFiles(ROOT);
   assert.deepEqual(Object.keys(files).sort(), ['programar.md', 'resumen-prompts.md']);
 
-  assert.match(files['programar.md'], /C:\/tools\/promptheus\/programar\.mjs/);
-  assert.match(files['resumen-prompts.md'], /C:\/tools\/promptheus\/promptheus\.mjs/);
-  assert.match(files['resumen-prompts.md'], /C:\/tools\/promptheus\/out/);
+  assert.match(files['programar.md'], /C:\/tools\/kaip\/programar\.mjs/);
+  assert.match(files['resumen-prompts.md'], /C:\/tools\/kaip\/kaip\.mjs/);
+  assert.match(files['resumen-prompts.md'], /C:\/tools\/kaip\/out/);
 });
 
 test('commandFiles: resumen-prompts apunta al binario que existe (no al nombre viejo)', () => {
@@ -187,11 +187,11 @@ test('detectBase: encuentra una carpeta de proyectos típica, o null', () => {
 
 test('shellSnippets: el atajo lleva la ruta real, y entrecomillada', () => {
   const { powershell, bash } = shellSnippets('C:/tools/chat queue');
-  assert.match(powershell, /function promptheus/);
-  assert.match(powershell, /"C:\/tools\/chat queue\/promptheus\.mjs"/, 'con espacios debe ir entre comillas');
-  assert.match(bash, /alias promptheus=/);
+  assert.match(powershell, /function kaip/);
+  assert.match(powershell, /"C:\/tools\/chat queue\/kaip\.mjs"/, 'con espacios debe ir entre comillas');
+  assert.match(bash, /alias kaip=/);
 });
 
 test('posix: en el JSON van barras normales (una barra invertida habría que escaparla)', () => {
-  assert.equal(posix('C:\\tools\\promptheus'), 'C:/tools/promptheus');
+  assert.equal(posix('C:\\tools\\kaip'), 'C:/tools/kaiprompt');
 });

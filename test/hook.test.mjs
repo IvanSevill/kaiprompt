@@ -20,7 +20,7 @@ const BLOCK = 2;   // bloquea el turno → 0 tokens
 // Al programar, el hook levanta el daemon (si no, la hora programada no llegaría a
 // nadie). Aquí lo desactivamos: un test no debe dejar procesos sueltos en la máquina.
 // Que el daemon se arme de verdad se prueba en daemon.test.mjs.
-const ENV = { ...process.env, PROMPTHEUS_HOME: TMP, PROMPTHEUS_NO_DAEMON: '1' };
+const ENV = { ...process.env, KAIP_HOME: TMP, KAIP_NO_DAEMON: '1' };
 
 function hook(input, cwd = 'C:/tmp') {
   fs.rmSync(PROG, { force: true });
