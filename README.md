@@ -56,6 +56,8 @@ program-prompt <engine> <subcommand> [args]
 | `show <id>` | View full details of a specific job |
 | `run [--once] [--dry-run]` | Process the queue (launch) |
 | `out [<id>]` | View the output of a launch (or the latest) |
+| `chat <id\|target\|session-id> [--last N] [--full] [--raw]` | Read the whole **conversation** of a launch |
+| `edit <id> [--prompt …] [--at …] [--target …] [--dir …] [--perm …] [--adapter …]` | Change a **pending** job |
 | `rm <id> [<id>...]` | Remove jobs |
 | `clear` | Clear finished/error entries |
 | `sessions` | Saved sessions (name → session-id) |
@@ -78,6 +80,37 @@ While waiting for future jobs, `run` shows a live-updating status bar with progr
 
 > `run` (without `--once`) is a **live** process: it must keep running to trigger scheduled launches. Leave it in a terminal, or schedule it with Windows Task Scheduler.
 
+### `chat`
+`out` gives you the **final answer** of a launch. `chat` gives you the **whole conversation**: what you asked, what Claude replied and every tool it used along the way.
+
+```powershell
+program-prompt chat fixes              # by target (its session, from data/sessions.json)
+program-prompt chat jlzz4t3h6          # by job id
+program-prompt chat ff679ec5-531d-…    # by session-id
+```
+
+It reads the session transcript that Claude Code itself writes
+(`~/.claude/projects/<encoded-folder>/<session-id>.jsonl`), so it works for **any** session, not just the ones launched from here.
+
+- **`--last N`** — how many turns to show (default: `20`, the tail of the conversation).
+- **`--full`** — everything, untruncated: also the *thinking* and the tool results.
+- **`--raw`** — the transcript lines as they are on disk (JSONL), for piping into other tools.
+
+Tool calls are summarized to one line (`Read(app/main.py)`, `Bash(npm test)`). The footer gives you the `claude --resume` command, with the right folder already filled in (see §3).
+
+### `edit`
+Change a launch **before it runs**:
+
+```powershell
+program-prompt edit jlzz4t3h6 --at "tomorrow 09:00" --perm acceptEdits
+program-prompt edit jlzz4t3h6 --prompt "review the PR and summarize" --dir FacturaSevi
+program-prompt edit jlzz4t3h6 --target none        # none/- clears --target, --dir or --at
+```
+
+Same flags as `add` (`--prompt`, `--at`, `--target`, `--dir`, `--perm`, `--adapter`), same rules (`--at` accepts `HH:MM`, `+2h`, ISO…; `--dir` accepts a project name or an alias). It prints the resulting job.
+
+Only **pending** jobs can be edited — a `running` one is already in the adapter's hands, and a `done` one is history (use `out`/`chat` to read it). Launches scheduled from the chat with `/programar` can be edited too: `edit` imports them first.
+
 ### Examples
 ```powershell
 program-prompt claude add "/test" --target fixes
@@ -93,6 +126,8 @@ program-prompt list
 program-prompt show jlzz4t3h6
 program-prompt list --full
 program-prompt out                        # output of the latest launch
+program-prompt chat fixes --last 40       # the whole conversation of the "fixes" target
+program-prompt edit jlzz4t3h6 --at +1h    # postpone a pending launch
 ```
 
 ---
@@ -176,18 +211,29 @@ summarizes each launch), or `program-prompt out` from the terminal.
 ## 6. File Structure
 
 ```
-program-prompt.mjs         CLI: queue + scheduler
+program-prompt.mjs         CLI: argument parsing + dispatch
+programar.mjs              the /programar hook (writes programados.jsonl, 0 tokens)
 program-prompt.cmd         Windows wrapper (cmd/PowerShell)
+lib/
+  store.mjs                data layer: queue · sessions · projects · /programar inbox
+  time.mjs                 parseWhen, formatting, durations
+  ui.mjs                   ANSI primitives: palette, boxes, big digits, wrapping
+  runner.mjs               execution loop + countdown clock + live view
+  chat.mjs                 find and render session transcripts
+  edit.mjs                 edit a pending job
 adapters/
   claude.mjs               launches `claude -p` (subscription; runs in the job's folder)
   opencode.mjs             stub — implement when needed
   mock.mjs                 test adapter (no tokens spent)
+test/                      node --test suite (no dependencies)
 data/
   queue.json               the work queue
   sessions.json            target → session-id
   projects.json            alias/base folder registry
 out/<id>.txt               output of each launch
 ```
+
+Run the tests with `npm test` (or `node --test test/*.test.mjs`).
 
 ---
 

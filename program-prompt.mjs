@@ -17,6 +17,8 @@ import {
 } from './lib/store.mjs';
 import { fmt, parseWhen } from './lib/time.mjs';
 import { runQueue } from './lib/runner.mjs';
+import { renderChat } from './lib/chat.mjs';
+import { editJob } from './lib/edit.mjs';
 
 // --- argument parsing --------------------------------------------------------
 function parseArgs(argv) {
@@ -112,6 +114,19 @@ function cmdShow({ pos }) {
   console.log(jobDetails(job));
 }
 
+function cmdChat({ flags, pos }) {
+  importProgramados();                    // a job scheduled from the chat may not be in the queue yet
+  const last = typeof flags.last === 'string' ? Number(flags.last) : 20;
+  if (!Number.isFinite(last) || last < 1) throw new Error('--last needs a positive number of turns');
+  console.log(renderChat(pos[0], { last, full: !!flags.full, raw: !!flags.raw }));
+}
+
+function cmdEdit({ flags, pos }) {
+  const { job, changes } = editJob(pos[0], flags);
+  console.log(`✎ ${job.id}  updated: ${changes.join(', ')}\n`);
+  console.log(jobDetails(job));
+}
+
 function cmdRm({ pos }) {
   if (!pos.length) throw new Error('usage: program-prompt rm <id> [<id>...]');
   const set = new Set(pos); const q = loadQueue();
@@ -190,6 +205,8 @@ Subcommands:
   show <id>                   full details of one job
   run [--once] [--dry-run]    process the queue (full-screen countdown + live view)
   out [<id>]                  output of a launch (or the latest)
+  chat <id|target|session>    read the conversation of a launch [--last N] [--full] [--raw]
+  edit <id>                   change a pending job (--prompt --at --target --dir --perm --adapter)
   rm <id> [<id>...]           remove jobs
   clear                       clear finished/error entries
   sessions                    saved sessions (name → session-id)
@@ -210,12 +227,19 @@ Notes:
              edits + Bash + installs, no prompts). Use "acceptEdits" for edits only.
   run        due scheduled jobs first, then sequential ones, then waits for the future
              ones (unless --once). Output of each job → out/<id>.txt
+  chat       the whole conversation, not just the last answer (that's "out"). Takes a
+             target, a job id or a session-id. --last N turns (default 20), --full for
+             everything (thinking + tool results), --raw for the transcript as-is.
+  edit       only PENDING jobs (a running/finished one is already history). Same flags
+             as "add"; --target/--dir/--perm accept "none" to clear them.
 
 Examples:
   program-prompt claude add "/test" --target fixes --dir FacturaSevi
   program-prompt claude run
   program-prompt list
   program-prompt out
+  program-prompt chat fixes --last 40
+  program-prompt edit jlzz4t3h6 --at "tomorrow 09:00" --perm acceptEdits
 `;
 
 // --- dispatch ----------------------------------------------------------------
@@ -236,6 +260,8 @@ try {
     case 'rm': cmdRm(parsed); break;
     case 'clear': cmdClear(); break;
     case 'out': cmdOut(parsed); break;
+    case 'chat': cmdChat(parsed); break;
+    case 'edit': cmdEdit(parsed); break;
     case 'projects': case 'project': cmdProjects(parsed); break;
     case 'sessions': cmdSessions(parsed); break;
     case undefined: case 'help': case '--help': case '-h': console.log(HELP); break;

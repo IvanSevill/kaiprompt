@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { bar, bigText, bigWidth, box, c, centerLine, strip, trunc, width } from '../lib/ui.mjs';
+import {
+  bar, bigText, bigWidth, box, c, centerLine, strip, toolSummary, trunc, width, wrap,
+} from '../lib/ui.mjs';
 
 // Sin TTY (los tests corren con la salida redirigida) los helpers de color no pintan:
 // eso es justo lo que garantiza que el modo desatendido salga en texto plano.
@@ -27,6 +29,46 @@ test('trunc: recorta y añade elipsis, colapsa espacios', () => {
 test('centerLine centra por ancho visible', () => {
   assert.equal(centerLine('ab', 10), ' '.repeat(4) + 'ab');
   assert.equal(width(centerLine('ab', 10)), 6);
+});
+
+// --- wrap (párrafos del visor de chat) --------------------------------------
+test('wrap: parte por palabras sin pasarse del ancho', () => {
+  const lineas = wrap('uno dos tres cuatro cinco seis', 10);
+  assert.ok(lineas.every((l) => l.length <= 10));
+  assert.equal(lineas.join(' '), 'uno dos tres cuatro cinco seis', 'sin perder ni una palabra');
+});
+
+test('wrap: respeta los saltos de línea que ya había', () => {
+  assert.deepEqual(wrap('uno\ndos', 20), ['uno', 'dos']);
+});
+
+test('wrap: una palabra más larga que el ancho se trocea (si no, descuadra la caja)', () => {
+  const lineas = wrap('x'.repeat(25), 10);
+  assert.ok(lineas.every((l) => l.length <= 10));
+  assert.equal(lineas.join(''), 'x'.repeat(25));
+});
+
+test('wrap: vacío o nulo no rompe', () => {
+  assert.deepEqual(wrap('', 10), ['']);
+  assert.deepEqual(wrap(undefined, 10), ['']);
+});
+
+// --- toolSummary (una llamada a herramienta en una línea) -------------------
+test('toolSummary: elige el argumento que importa de cada herramienta', () => {
+  assert.deepEqual(toolSummary('Read', { file_path: 'app/main.py' }), { name: 'Read', arg: 'app/main.py' });
+  assert.deepEqual(toolSummary('Bash', { command: 'npm test' }), { name: 'Bash', arg: 'npm test' });
+  assert.deepEqual(toolSummary('Grep', { pattern: 'TODO' }), { name: 'Grep', arg: 'TODO' });
+});
+
+test('toolSummary: sin argumento reconocible, solo el nombre', () => {
+  assert.deepEqual(toolSummary('TodoWrite', { todos: [] }), { name: 'TodoWrite', arg: '' });
+  assert.deepEqual(toolSummary('X', undefined), { name: 'X', arg: '' });
+});
+
+test('toolSummary: recorta el argumento largo al ancho disponible', () => {
+  const { arg } = toolSummary('Bash', { command: 'x'.repeat(200) }, 40);
+  assert.ok(arg.length <= 40);
+  assert.ok(arg.endsWith('…'));
 });
 
 // --- dígitos gigantes (el reloj) --------------------------------------------
