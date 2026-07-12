@@ -418,3 +418,73 @@ test('sin TTY, "program-prompt" a secas imprime la ayuda y NO abre la GUI', () =
   assert.match(out, /Subcommands:/);
   assert.doesNotMatch(out, /\x1b\[\?1049h/, 'ni rastro de la pantalla alternativa');
 });
+
+// --- reiniciar la interfaz ---------------------------------------------------
+// Cualquier cosa que escriba en el terminal por detrás de la GUI (la salida suelta de
+// un lanzamiento, un resize que el terminal se comió) deja basura en pantalla, y no
+// había forma de recuperar un frame limpio salvo salir.
+
+test('R pide reiniciar la interfaz', () => {
+  const { effect } = reduce(refresh(initialState()), 'R');
+  assert.deepEqual(effect, { type: 'restart' });
+});
+
+test('R dentro del asistente NO reinicia: ahí es una letra que se escribe', () => {
+  const st = reduce(refresh(initialState()), 'a').state;      // abre el asistente
+  const { state: next, effect } = reduce(st, 'R');
+  assert.equal(effect, null, 'no dispara efecto');
+  assert.ok(next.wizard.buffer.endsWith('R'), 'se escribe en el prompt');
+});
+
+// --- conversaciones sugeridas ------------------------------------------------
+// Reutilizar un target retoma una sesión que YA tiene el contexto cargado: es el mayor
+// ahorro de tokens de la herramienta. Por eso el asistente las ofrece.
+
+test('el asistente sugiere las conversaciones existentes, y ↑↓ las elige', () => {
+  saveQueue([]);
+  saveSessions({ fixes: { sessionId: 'sess-abcdef12', adapter: 'claude', updatedAt: Date.now() } });
+
+  // add → prompt → when → llegamos al paso "target"
+  let st = refresh(initialState());
+  st = reduce(st, 'a').state;
+  for (const ch of 'algo') st = reduce(st, ch).state;
+  st = reduce(st, 'enter').state;                              // prompt hecho
+  st = reduce(st, 'enter').state;                              // when vacío → secuencial
+
+  assert.equal(st.wizard.step, 2, 'estamos en el paso del target');
+
+  const pantalla = render(st).map(strip).join('\n');
+  assert.ok(pantalla.includes('fixes'), 'la sesión existente se ofrece en pantalla');
+
+  st = reduce(st, 'down').state;                               // elegirla con la flecha
+  assert.equal(st.wizard.buffer, 'fixes');
+  assert.equal(st.wizard.pick, 0);
+});
+
+test('escribir por encima de una sugerencia la descarta (es tu valor, no el suyo)', () => {
+  saveQueue([]);
+  saveSessions({ fixes: { sessionId: 's1', adapter: 'claude', updatedAt: 1 } });
+
+  let st = refresh(initialState());
+  st = reduce(st, 'a').state;
+  for (const ch of 'algo') st = reduce(st, ch).state;
+  st = reduce(st, 'enter').state;
+  st = reduce(st, 'enter').state;
+  st = reduce(st, 'down').state;                               // coge "fixes"
+  assert.equal(st.wizard.pick, 0);
+
+  st = reduce(st, 'X').state;                                  // y escribe encima
+  assert.equal(st.wizard.pick, null, 'ya no está eligiendo de la lista');
+  assert.equal(st.wizard.buffer, 'fixesX');
+});
+
+test('sin sesiones guardadas, las flechas no rompen el asistente', () => {
+  saveQueue([]); saveSessions({});
+  let st = refresh(initialState());
+  st = reduce(st, 'a').state;
+  for (const ch of 'algo') st = reduce(st, ch).state;
+  st = reduce(st, 'enter').state;
+  st = reduce(st, 'enter').state;
+  const { state: next } = reduce(st, 'down');
+  assert.ok(next.wizard, 'el asistente sigue en pie');
+});
