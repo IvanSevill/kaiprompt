@@ -246,6 +246,10 @@ async function cmdDaemon({ flags, pos }) {
   }
 }
 
+// The app, published. A permanent address beats one we serve ourselves: it survives this
+// machine being off, and it survives the tunnel getting a new URL on every restart.
+const APK_RELEASE = 'https://github.com/IvanSevill/kaiprompt/releases/latest/download/kaiprompt.apk';
+
 /** Where the pairing info gets written, so `kaip pair` can show it without re-tunnelling. */
 async function saveLastUrl(url) {
   const { saveServerConfig, serverConfig } = await import('./lib/server.mjs');
@@ -253,6 +257,44 @@ async function saveLastUrl(url) {
   conf.publicUrl = url;
   conf.publicUrlAt = Date.now();
   saveServerConfig(conf);
+}
+
+async function cmdApp({ pos }) {
+  const { spawnSync } = await import('node:child_process');
+  const { ROOT } = await import('./lib/store.mjs');
+  const { apkPath } = await import('./lib/server.mjs');
+  const appDir = path.join(ROOT, 'app');
+
+  if (pos[0] === 'build' || !pos.length) {
+    if (!fs.existsSync(path.join(appDir, 'local.properties'))) {
+      // Gradle cannot find the Android SDK without this, and its own error message about it
+      // is famously unhelpful.
+      console.log(c.warn('falta app/local.properties (Gradle no sabe dónde está el SDK de Android).'));
+      console.log(c.muted('  créalo con una línea:'));
+      console.log(c.accent('  sdk.dir=C:/Users/<tu-usuario>/AppData/Local/Android/Sdk'));
+      return;
+    }
+
+    console.log(c.muted('compilando el APK… (la primera vez tarda unos minutos)'));
+    const gradlew = process.platform === 'win32' ? 'gradlew.bat' : './gradlew';
+    const r = spawnSync(gradlew, [':app:assembleRelease'], {
+      cwd: appDir, stdio: 'inherit', shell: true,
+    });
+    if (r.status !== 0) return console.log(c.err('\nla compilación falló.'));
+
+    const apk = apkPath();
+    console.log('\n' + c.ok('✓ APK listo') + c.muted(`  ${apk}`));
+    console.log(c.muted('  instálalo escaneando el QR de ') + c.accent('kaip pair'));
+    return;
+  }
+
+  if (pos[0] === 'test') {
+    const gradlew = process.platform === 'win32' ? 'gradlew.bat' : './gradlew';
+    spawnSync(gradlew, [':app:testDebugUnitTest'], { cwd: appDir, stdio: 'inherit', shell: true });
+    return;
+  }
+
+  console.log('uso: kaip app [build|test]');
 }
 
 async function cmdServe({ flags }) {
@@ -311,12 +353,17 @@ async function cmdPair({ flags }) {
 
   // Two codes, in the order you need them. Downloading the app cannot require the token —
   // that would be a lock whose key is inside the box.
+  //
+  // The release on GitHub is preferred over serving the file ourselves: that URL is
+  // permanent and works even with this PC switched off, whereas a quick tunnel's address
+  // changes on every restart and would leave a QR that quietly stops working.
   console.log(c.bold('1. descarga la app') + c.muted('  — escanea esto con la cámara'));
-  if (apkPath()) {
-    console.log('\n' + render(`${p.url}/apk`));
-    console.log(c.muted(`   ${p.url}/apk\n`));
+  const download = APK_RELEASE || (apkPath() ? `${p.url}/apk` : null);
+  if (download) {
+    console.log('\n' + render(download));
+    console.log(c.muted(`   ${download}\n`));
   } else {
-    console.log(c.muted('\n   (todavía no hay APK compilado: ') + c.accent('kaip app build') + c.muted(')\n'));
+    console.log(c.muted('\n   (todavía no hay APK: ') + c.accent('kaip app build') + c.muted(')\n'));
   }
 
   console.log(c.bold('2. empareja') + c.muted('  — escanea esto DESDE la app'));
@@ -455,6 +502,7 @@ try {
     case 'projects': case 'project': cmdProjects(parsed); break;
     case 'sessions': cmdSessions(parsed); break;
     case 'daemon': await cmdDaemon(parsed); break;
+    case 'app': await cmdApp(parsed); break;
     case 'serve': await cmdServe(parsed); break;
     case 'pair': await cmdPair(parsed); break;
     // No subcommand → the GUI, but only with a real terminal: raw mode on a piped
