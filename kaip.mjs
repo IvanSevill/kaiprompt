@@ -246,6 +246,85 @@ async function cmdDaemon({ flags, pos }) {
   }
 }
 
+/** Where the pairing info gets written, so `kaip pair` can show it without re-tunnelling. */
+async function saveLastUrl(url) {
+  const { saveServerConfig, serverConfig } = await import('./lib/server.mjs');
+  const conf = serverConfig();
+  conf.publicUrl = url;
+  conf.publicUrlAt = Date.now();
+  saveServerConfig(conf);
+}
+
+async function cmdServe({ flags }) {
+  const { DEFAULT_PORT, addresses, createServer } = await import('./lib/server.mjs');
+  const port = Number(flags.port) || DEFAULT_PORT;
+
+  createServer({ port });
+  console.log(c.bold('kaip serve') + c.muted(`  ·  puerto ${port}`));
+
+  const lan = addresses(port)[0];
+  if (lan) console.log(c.muted('  en casa:  ') + lan.url);
+
+  // The tunnel is what makes the phone work from ANYWHERE without a VPN — which is the
+  // whole point when a firewall app already owns the phone's single VPN slot.
+  if (flags.tunnel !== false && !flags['no-tunnel']) {
+    const { startTunnel, TunnelError } = await import('./lib/tunnel.mjs');
+    process.stdout.write(c.muted('  abriendo el túnel de Cloudflare… '));
+    try {
+      const { url } = await startTunnel(port);
+      await saveLastUrl(url);
+      console.log(c.ok('listo'));
+      console.log(c.muted('  fuera:    ') + c.accent(url) + c.muted('   ← el móvil usa esta'));
+      console.log(c.muted('\n  el túnel va cifrado extremo a extremo: Cloudflare mueve bytes que no puede leer.'));
+    } catch (e) {
+      console.log(c.err('falló'));
+      console.log(c.muted('  ' + (e instanceof TunnelError ? e.message : e.message).replace(/\n/g, '\n  ')));
+      console.log(c.muted('\n  sin túnel el móvil solo llega estando en tu wifi.'));
+    }
+  } else {
+    console.log(c.muted('  (sin túnel: solo desde tu wifi)'));
+  }
+
+  console.log('\n' + c.muted('  emparejar el móvil:  ') + c.accent('kaip pair'));
+  console.log(c.muted('  Ctrl+C para parar.'));
+}
+
+async function cmdPair({ flags }) {
+  const { DEFAULT_PORT, pairingPayload, resetToken, serverConfig } = await import('./lib/server.mjs');
+  const port = Number(flags.port) || DEFAULT_PORT;
+
+  if (flags.reset) {
+    resetToken();
+    console.log(c.warn('secretos rotados: los móviles emparejados dejan de entrar Y de descifrar.\n'));
+  }
+
+  const conf = serverConfig();
+  const p = pairingPayload(port, conf.publicUrl || null);
+
+  console.log(c.bold('emparejar el móvil') + c.muted('  — esto va dentro del QR\n'));
+  console.log('  ' + c.accent(JSON.stringify(p)));
+  console.log('\n' + c.muted('  url:    ') + p.url + (p.tunnel ? c.ok('   (túnel: funciona desde fuera)') : ''));
+  console.log(c.muted('  en casa:') + ' ' + (p.lan ?? '—'));
+
+  if (!p.tunnel) {
+    console.log('\n' + c.warn('  ⚠ no hay túnel activo: esa dirección solo vale en tu wifi.'));
+    console.log(c.muted('    levántalo con: ') + c.accent('kaip serve'));
+  }
+
+  // The key is why the tunnel is safe. It goes from this screen to that phone by QR and
+  // never travels the wire it protects.
+  console.log('\n' + c.muted('  la clave de cifrado va en el QR y NO viaja por el túnel:'));
+  console.log(c.muted('  la escaneas de tu propia pantalla, así que Cloudflare nunca la ve.'));
+
+  console.log('\n' + c.muted('  perdiste el móvil → ') + c.accent('kaip pair --reset'));
+
+  const { devices = [] } = conf;
+  if (devices.length) {
+    console.log('\n' + c.muted('  emparejados:'));
+    for (const d of devices) console.log(`    ${d.name}  ${c.muted(d.url)}`);
+  }
+}
+
 function cmdSessions({ pos } = { pos: [] }) {
   if (pos[0] === 'set') {                          // sessions set <target> <session-id>
     const [, target, sid] = pos;
@@ -363,6 +442,8 @@ try {
     case 'projects': case 'project': cmdProjects(parsed); break;
     case 'sessions': cmdSessions(parsed); break;
     case 'daemon': await cmdDaemon(parsed); break;
+    case 'serve': await cmdServe(parsed); break;
+    case 'pair': await cmdPair(parsed); break;
     // No subcommand → the GUI, but only with a real terminal: raw mode on a piped
     // stdin (Task Scheduler, cron, a pipe) would hang forever. There, print the help.
     case undefined:
