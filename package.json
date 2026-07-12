@@ -1,8 +1,8 @@
 {
-  "name": "program-prompt",
+  "name": "promptheus",
   "version": "2.0.0",
   "description": "Queue, schedule and launch prompts to Claude Code, with persistent sessions",
-  "bin": { "program-prompt": "./program-prompt.mjs" },
+  "bin": { "promptheus": "./promptheus.mjs" },
   "type": "module",
   "scripts": { "test": "node --test test/*.test.mjs" },
   "license": "MIT"

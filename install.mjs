@@ -38,17 +38,17 @@ async function askBase() {
 
 const base = typeof flag('base') === 'string' ? flag('base') : await askBase();
 
-console.log(`\n${c.accent('program-prompt')} → installing`);
+console.log(`\n${c.accent('promptheus')} → installing`);
 console.log(c.muted(`  from: ${posix(ROOT)}`));
 console.log(c.muted(`  into: ${posix(claudeHome())}\n`));
 
 for (const line of install({ root: ROOT, base })) console.log('  ' + c.ok('✓') + ' ' + line);
 
 const { powershell, bash } = shellSnippets(ROOT);
-console.log(`\n${c.bold('One last step')} — the shortcut, so you can type ${c.accent('program-prompt')}:\n`);
+console.log(`\n${c.bold('One last step')} — the shortcut, so you can type ${c.accent('promptheus')}:\n`);
 console.log(c.muted('  PowerShell (add it to your $PROFILE):'));
 console.log(`    ${powershell}\n`);
 console.log(c.muted('  bash / git-bash (add it to your ~/.bashrc):'));
 console.log(`    ${bash}\n`);
 console.log(c.muted('Restart Claude Code so the /programar hook is picked up.'));
-console.log(c.muted('Then try:  program-prompt        (the guided GUI)\n'));
+console.log(c.muted('Then try:  promptheus        (the guided GUI)\n'));

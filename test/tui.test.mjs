@@ -7,10 +7,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-tui-'));
-process.env.PROGRAM_PROMPT_HOME = TMP;
+process.env.PROMPTHEUS_HOME = TMP;
 // Añadir un job con hora arma el daemon (esa es la gracia). Aquí no: un test no puede
 // dejar procesos de fondo vivos. Que se arme de verdad se prueba en daemon.test.mjs.
-process.env.PROGRAM_PROMPT_NO_DAEMON = '1';
+process.env.PROMPTHEUS_NO_DAEMON = '1';
 const { loadQueue, saveQueue, saveProjects, saveSessions } = await import('../lib/store.mjs');
 const { addJob } = await import('../lib/queue.mjs');
 const { strip } = await import('../lib/ui.mjs');
@@ -276,7 +276,7 @@ test('render: pestañas, jobs, barra de atajos y marca de selección', () => {
   const j = addJob({ prompt: 'revisa el PR', target: 'review' });
   const out = view(fresh());
 
-  assert.match(out, /program-prompt/);
+  assert.match(out, /promptheus/);
   assert.match(out, /Queue \(1\).*Chats.*Projects.*Help/s, 'las cuatro vistas');
   assert.match(out, new RegExp(j.id));
   assert.match(out, /revisa el PR/);
@@ -404,14 +404,14 @@ test('VIEWS: las cuatro vistas del plan, en orden', () => {
 });
 
 // --- lo desatendido no se puede romper ---------------------------------------
-test('sin TTY, "program-prompt" a secas imprime la ayuda y NO abre la GUI', () => {
+test('sin TTY, "promptheus" a secas imprime la ayuda y NO abre la GUI', () => {
   // Esto es el caso del Task Scheduler y de las tuberías: la GUI en raw mode
   // se quedaría colgada para siempre esperando una tecla que nadie va a pulsar.
-  const cli = fileURLToPath(new URL('../program-prompt.mjs', import.meta.url));
+  const cli = fileURLToPath(new URL('../promptheus.mjs', import.meta.url));
   const out = execFileSync(process.execPath, [cli], {
     encoding: 'utf8',
     timeout: 10_000,                            // si abriera la GUI, colgaría aquí
-    env: { ...process.env, PROGRAM_PROMPT_HOME: TMP },
+    env: { ...process.env, PROMPTHEUS_HOME: TMP },
   });
 
   assert.match(out, /Usage:/, 'debe salir la ayuda');

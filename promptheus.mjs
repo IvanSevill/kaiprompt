@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// program-prompt — portable prompt queue for Claude Code (and opencode later).
+// promptheus — portable prompt queue for Claude Code (and opencode later).
 //
 // - Queues prompts and launches them headless, in order or at a scheduled time.
 // - Persistent sessions: jobs sharing a --target resume the same conversation.
@@ -42,7 +42,7 @@ async function cmdAdd({ flags, pos, engine }) {
   const prompt = (pos.join(' ').trim())
     || (typeof flags.file === 'string' ? fs.readFileSync(flags.file, 'utf8') : '');
   if (!prompt) {
-    throw new Error('missing prompt.\n  usage: program-prompt <engine> add "your message" '
+    throw new Error('missing prompt.\n  usage: promptheus <engine> add "your message" '
       + '[--target name] [--at HH:MM|+30m] [--dir project] [--session id] [--perm mode]');
   }
   const job = addJob({
@@ -86,7 +86,7 @@ function cmdList({ flags, pos }) {
 }
 
 function cmdShow({ flags, pos }) {
-  if (!pos.length) throw new Error('usage: program-prompt show <id>');
+  if (!pos.length) throw new Error('usage: promptheus show <id>');
   importProgramados();                    // the id may be a scheduled job not imported yet
   const job = loadQueue().find((j) => j.id === pos[0]);
   if (!job) return console.log(`no job found with id "${pos[0]}"`);
@@ -121,7 +121,7 @@ function cmdEdit({ flags, pos }) {
 }
 
 function cmdRm({ pos }) {
-  if (!pos.length) throw new Error('usage: program-prompt rm <id> [<id>...]');
+  if (!pos.length) throw new Error('usage: promptheus rm <id> [<id>...]');
   console.log(`removed ${removeJobs(pos)}`);
 }
 
@@ -134,7 +134,7 @@ function cmdOut({ pos }) {
   const job = pos.length
     ? q.find((j) => j.id === pos[0])
     : q.filter((j) => j.output).sort((a, b) => (b.finishedAt || 0) - (a.finishedAt || 0))[0];
-  if (!job) return console.log('(no outputs yet; run something with "program-prompt run")');
+  if (!job) return console.log('(no outputs yet; run something with "promptheus run")');
   console.log(`── ${job.id} [${job.status}]${job.target ? ' ' + job.target : ''}  ${preview(job.prompt)} ──`);
   if (job.dir) console.log(`   folder: ${job.dir}`);
   if (job.sessionId) {
@@ -163,7 +163,7 @@ function cmdProjects({ pos }) {
   }
   const alias = Object.keys(map).filter((k) => k !== '_base');
   if (alias.length) { console.log('aliases:'); for (const k of alias) console.log(`  ${k} → ${map[k]}`); }
-  if (!map._base && !alias.length) console.log('(no projects; use: program-prompt projects <alias> <path>)');
+  if (!map._base && !alias.length) console.log('(no projects; use: promptheus projects <alias> <path>)');
 }
 
 // The daemon is what makes a scheduled launch fire on its own. `run` is the loop
@@ -202,7 +202,7 @@ async function cmdDaemon({ flags, pos }) {
       console.log(d.statusLine(st));
       if (st.running) console.log(`  since ${fmt(st.startedAt)}`);
       console.log(`  autostart at logon: ${auto ? 'installed' : 'not installed'}`
-        + `${auto ? '' : '  (program-prompt daemon install)'}`);
+        + `${auto ? '' : '  (promptheus daemon install)'}`);
       return console.log(`  log: ${st.log}`);
     }
 
@@ -234,7 +234,7 @@ async function cmdDaemon({ flags, pos }) {
 function cmdSessions({ pos } = { pos: [] }) {
   if (pos[0] === 'set') {                          // sessions set <target> <session-id>
     const [, target, sid] = pos;
-    if (!target || !sid) throw new Error('usage: program-prompt sessions set <target> <session-id>');
+    if (!target || !sid) throw new Error('usage: promptheus sessions set <target> <session-id>');
     const s = loadSessions();
     s[target] = { sessionId: sid, adapter: 'claude', updatedAt: nowMs() };
     saveSessions(s);
@@ -245,11 +245,11 @@ function cmdSessions({ pos } = { pos: [] }) {
   for (const k of keys) console.log(`${k}  →  ${s[k].sessionId}  [${s[k].adapter}]  ${fmt(s[k].updatedAt)}`);
 }
 
-const HELP = `program-prompt — portable prompt queue for Claude Code (and opencode later)
+const HELP = `promptheus — portable prompt queue for Claude Code (and opencode later)
 
 Usage:
-  program-prompt                       open the guided GUI (needs a terminal)
-  program-prompt <engine> <subcommand> [args]
+  promptheus                       open the guided GUI (needs a terminal)
+  promptheus <engine> <subcommand> [args]
   <engine> = claude | opencode   (optional; defaults to claude)
 
 Subcommands:
@@ -306,13 +306,13 @@ Notes:
              Adding a launch never sends it. Without a terminal it prints this help.
 
 Examples:
-  program-prompt daemon start                       arm it once; scheduled jobs now fire alone
-  program-prompt claude add "/test" --at "tomorrow 09:00" --target fixes --dir myapp
-  program-prompt claude run
-  program-prompt list
-  program-prompt out
-  program-prompt chat fixes --last 40
-  program-prompt edit jlzz4t3h6 --at "tomorrow 09:00" --perm acceptEdits
+  promptheus daemon start                       arm it once; scheduled jobs now fire alone
+  promptheus claude add "/test" --at "tomorrow 09:00" --target fixes --dir myapp
+  promptheus claude run
+  promptheus list
+  promptheus out
+  promptheus chat fixes --last 40
+  promptheus edit jlzz4t3h6 --at "tomorrow 09:00" --perm acceptEdits
 `;
 
 // --- dispatch ----------------------------------------------------------------

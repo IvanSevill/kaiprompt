@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-queue-'));
-process.env.PROGRAM_PROMPT_HOME = TMP;
+process.env.PROMPTHEUS_HOME = TMP;
 const { loadQueue, loadSessions, saveProjects, saveQueue, saveSessions } = await import('../lib/store.mjs');
 const {
   addJob, clearFinished, jobDetails, removeJobs, suggestDirs, suggestTargets,

@@ -14,7 +14,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dir = path.dirname(fileURLToPath(import.meta.url));
 // Los datos pueden vivir fuera del código (tests / instalación); por defecto, aquí mismo.
-const HOME = process.env.PROGRAM_PROMPT_HOME || __dir;
+const HOME = process.env.PROMPTHEUS_HOME || __dir;
 const PROG = path.join(HOME, 'programados.jsonl');
 const PROYECTOS = path.join(HOME, 'projects.json');
 
@@ -113,14 +113,14 @@ const confirm = (e) => `✓ programado para ${new Date(e.when).toLocaleString()}
  * haya nada abierto. Si falla, el lanzamiento sigue en la cola: nunca rompemos el hook.
  */
 async function armDaemon() {
-  if (process.env.PROGRAM_PROMPT_NO_DAEMON) return '  (daemon desactivado por entorno)';
+  if (process.env.PROMPTHEUS_NO_DAEMON) return '  (daemon desactivado por entorno)';
   try {
     const d = await import(pathToFileURL(path.join(__dir, 'lib', 'daemon.mjs')).href);
     const st = d.ensure();
     return '  ' + (st.started ? `daemon arrancado (pid ${st.pid}) — se lanzará solo a su hora`
       : `daemon ya activo (pid ${st.pid}) — se lanzará solo a su hora`);
   } catch (e) {
-    return `  ⚠ no pude arrancar el daemon (${e.message}); lánzalo con: program-prompt daemon start`;
+    return `  ⚠ no pude arrancar el daemon (${e.message}); lánzalo con: promptheus daemon start`;
   }
 }
 

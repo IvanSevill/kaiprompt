@@ -1,15 +1,15 @@
-# program-prompt
+# promptheus
 
-System for **queuing, scheduling and launching prompts** to Claude Code (and opencode in the future), with persistent sessions. Everything lives in this folder (`~/.claude/tools/chat-queue/`), no external dependencies (Node only), and it's relocatable.
+System for **queuing, scheduling and launching prompts** to Claude Code (and opencode in the future), with persistent sessions. Everything lives in this folder (`~/.claude/tools/promptheus/`), no external dependencies (Node only), and it's relocatable.
 
 ```
-program-prompt <engine> <subcommand> [args]
+promptheus <engine> <subcommand> [args]
 ```
 
 | Interface | How | Purpose |
 |---|---|---|
-| **GUI** | `program-prompt` *(no arguments)* | Guided full-screen mode: queue, chats, projects (see §2b) |
-| **Terminal (CLI)** | `program-prompt <engine> …` | Manage and **launch** the queue (add, list, run, out…) |
+| **GUI** | `promptheus` *(no arguments)* | Guided full-screen mode: queue, chats, projects (see §2b) |
+| **Terminal (CLI)** | `promptheus <engine> …` | Manage and **launch** the queue (add, list, run, out…) |
 | **Claude chat** | `/programar <when> \| <prompt>` | **Schedule** a launch with **0 tokens** (see §4c) |
 | **Claude chat** | `/resumen-prompts` | Have Claude **summarize** what the launches did |
 
@@ -24,8 +24,8 @@ Key cost insight:
 Clone it and run the installer. **No npm, no dependencies** — Node only:
 
 ```bash
-git clone https://github.com/IvanSevill/program-prompt.git
-cd program-prompt
+git clone https://github.com/IvanSevill/promptheus.git
+cd promptheus
 node install.mjs
 ```
 
@@ -44,30 +44,30 @@ node uninstall.mjs                                   # undo 1 and 2; your data s
 
 ### The shortcut
 
-The real command is `node program-prompt.mjs`. To type just `program-prompt`:
+The real command is `node promptheus.mjs`. To type just `promptheus`:
 
 **PowerShell** (recommended) — add the function to your profile once:
 ```powershell
-Add-Content $PROFILE 'function program-prompt { node "$env:USERPROFILE\.claude\tools\chat-queue\program-prompt.mjs" @args }'
+Add-Content $PROFILE 'function promptheus { node "$env:USERPROFILE\.claude\tools\promptheus\promptheus.mjs" @args }'
 . $PROFILE
 ```
 
 **git-bash**:
 ```bash
-alias program-prompt='node ~/.claude/tools/chat-queue/program-prompt.mjs'
+alias promptheus='node ~/.claude/tools/promptheus/promptheus.mjs'
 ```
 
-**cmd**: use the wrapper `program-prompt.cmd` (put it in your PATH or call it by full path).
+**cmd**: use the wrapper `promptheus.cmd` (put it in your PATH or call it by full path).
 
 > PowerShell note: don't use `~` in paths for `node` (it won't expand); use `$env:USERPROFILE`.
 > If an argument contains `|`, wrap it in quotes (in PowerShell `|` is a pipe).
 
 ---
 
-## 2. CLI: `program-prompt`
+## 2. CLI: `promptheus`
 
 ```
-program-prompt <engine> <subcommand> [args]
+promptheus <engine> <subcommand> [args]
 ```
 
 - **`<engine>`** = `claude` | `opencode` (optional; defaults to `claude`). Defines the adapter used to **launch**. Designed to expand to opencode without changing anything else.
@@ -108,9 +108,9 @@ While waiting for future jobs, `run` shows a live-updating status bar with progr
 `out` gives you the **final answer** of a launch. `chat` gives you the **whole conversation**: what you asked, what Claude replied and every tool it used along the way.
 
 ```powershell
-program-prompt chat fixes              # by target (its session, from data/sessions.json)
-program-prompt chat jlzz4t3h6          # by job id
-program-prompt chat ff679ec5-531d-…    # by session-id
+promptheus chat fixes              # by target (its session, from data/sessions.json)
+promptheus chat jlzz4t3h6          # by job id
+promptheus chat ff679ec5-531d-…    # by session-id
 ```
 
 It reads the session transcript that Claude Code itself writes
@@ -126,9 +126,9 @@ Tool calls are summarized to one line (`Read(app/main.py)`, `Bash(npm test)`). T
 Change a launch **before it runs**:
 
 ```powershell
-program-prompt edit jlzz4t3h6 --at "tomorrow 09:00" --perm acceptEdits
-program-prompt edit jlzz4t3h6 --prompt "review the PR and summarize" --dir myapp
-program-prompt edit jlzz4t3h6 --target none        # none/- clears --target, --dir or --at
+promptheus edit jlzz4t3h6 --at "tomorrow 09:00" --perm acceptEdits
+promptheus edit jlzz4t3h6 --prompt "review the PR and summarize" --dir myapp
+promptheus edit jlzz4t3h6 --target none        # none/- clears --target, --dir or --at
 ```
 
 Same flags as `add` (`--prompt`, `--at`, `--target`, `--dir`, `--perm`, `--adapter`), same rules (`--at` accepts `HH:MM`, `+2h`, ISO…; `--dir` accepts a project name or an alias). It prints the resulting job.
@@ -137,31 +137,31 @@ Only **pending** jobs can be edited — a `running` one is already in the adapte
 
 ### Examples
 ```powershell
-program-prompt claude add "/test" --target fixes
-program-prompt claude add "fix whatever fails and re-run tests" --target fixes
-program-prompt claude run --once           # launches both, in order, same conversation
+promptheus claude add "/test" --target fixes
+promptheus claude add "fix whatever fails and re-run tests" --target fixes
+promptheus claude run --once           # launches both, in order, same conversation
 
-program-prompt claude add "review the PR and summarize" --target review --at 09:00
-program-prompt claude run                  # waits until 09:00 and launches
+promptheus claude add "review the PR and summarize" --target review --at 09:00
+promptheus claude run                  # waits until 09:00 and launches
 
-program-prompt claude add "implement feature X" --session abc123  # uses existing session
+promptheus claude add "implement feature X" --session abc123  # uses existing session
 
-program-prompt list
-program-prompt show jlzz4t3h6
-program-prompt list --full
-program-prompt out                        # output of the latest launch
-program-prompt chat fixes --last 40       # the whole conversation of the "fixes" target
-program-prompt edit jlzz4t3h6 --at +1h    # postpone a pending launch
+promptheus list
+promptheus show jlzz4t3h6
+promptheus list --full
+promptheus out                        # output of the latest launch
+promptheus chat fixes --last 40       # the whole conversation of the "fixes" target
+promptheus edit jlzz4t3h6 --at +1h    # postpone a pending launch
 ```
 
 ---
 
-## 2b. The GUI (`program-prompt` with no arguments)
+## 2b. The GUI (`promptheus` with no arguments)
 
-Running `program-prompt` with no arguments opens a **guided full-screen mode** — the same queue, without memorizing flags:
+Running `promptheus` with no arguments opens a **guided full-screen mode** — the same queue, without memorizing flags:
 
 ```powershell
-program-prompt          # or: program-prompt gui
+promptheus          # or: promptheus gui
 ```
 
 Four views, switched with `←` `→`, `tab` or `1`-`4`:
@@ -187,7 +187,7 @@ Four views, switched with `←` `→`, `tab` or `1`-`4`:
 
 The wizard checks as you type: an empty prompt or a time it can't parse (`"a las tantas"`) is caught **there**, while you can still retype it — not at 3am when the launch fires. Permissions are picked from a list (`bypass` · `acceptEdits` · `default`), so you can't invent a mode that doesn't exist.
 
-> **Without a terminal there is no GUI.** If stdout/stdin aren't a TTY (Task Scheduler, a pipe, a background `run`), `program-prompt` prints this help instead. A raw-mode GUI in an unattended batch would hang forever waiting for a key nobody is going to press.
+> **Without a terminal there is no GUI.** If stdout/stdin aren't a TTY (Task Scheduler, a pipe, a background `run`), `promptheus` prints this help instead. A raw-mode GUI in an unattended batch would hang forever waiting for a key nobody is going to press.
 
 ---
 
@@ -201,7 +201,7 @@ Claude Code sessions are **per-folder/project**: they're saved in `~/.claude/pro
   cd <launch-folder>
   claude --resume <session-id>
   ```
-  `program-prompt out` gives you this command already set up (with the correct `cd`).
+  `promptheus out` gives you this command already set up (with the correct `cd`).
 
 > If you try `claude --resume <id>` from a different folder, it will error with "not found": this is why, not a credentials issue.
 
@@ -224,7 +224,7 @@ answer. That's why the adapter passes a permission mode to `claude -p`:
 | `acceptEdits` | `--permission-mode acceptEdits` | Auto-accepts **file edits** only; Bash still prompts (will stall) |
 | `default` | `--permission-mode default` | Prompts for everything (only useful if you're watching) |
 
-Override per launch: `program-prompt claude add "..." --perm acceptEdits`.
+Override per launch: `promptheus claude add "..." --perm acceptEdits`.
 
 > ⚠️ `bypass` is the default **by explicit choice**: it gives scheduled launches full autonomy in
 > the target folder (they can create, modify and delete files and run any command without asking).
@@ -248,20 +248,20 @@ Example: `/programar mañana 08:30 | review the PR and summarize | review | myap
 
 A `UserPromptSubmit` hook (registered in `~/.claude/settings.json`, running `programar.mjs`)
 intercepts it, appends a line to `programados.jsonl` and **blocks the turn with `exit 2`** → the
-model never runs → **0 tokens**. `program-prompt run`/`list` then import those lines into the queue.
+model never runs → **0 tokens**. `promptheus run`/`list` then import those lines into the queue.
 
 To review the results afterwards, use **`/resumen-prompts`** in the chat (Claude reads `out/` and
-summarizes each launch), or `program-prompt out` from the terminal.
+summarizes each launch), or `promptheus out` from the terminal.
 
 ---
 
 ## 5. Unattended execution (e.g. at 3am)
 
 `run` only triggers if it's **alive** at the right time. Options:
-- **Simple:** leave a terminal with `program-prompt claude run` open and the PC not sleeping.
+- **Simple:** leave a terminal with `promptheus claude run` open and the PC not sleeping.
 - **Robust:** a **Windows Task Scheduler** task that at the desired time runs:
   ```powershell
-  node "$env:USERPROFILE\.claude\tools\chat-queue\program-prompt.mjs" claude run --once
+  node "$env:USERPROFILE\.claude\tools\promptheus\promptheus.mjs" claude run --once
   ```
   With permission to *wake the computer*.
 
@@ -270,10 +270,10 @@ summarizes each launch), or `program-prompt out` from the terminal.
 ## 6. File Structure
 
 ```
-program-prompt.mjs         CLI: argument parsing + dispatch (no args → the GUI)
+promptheus.mjs         CLI: argument parsing + dispatch (no args → the GUI)
 programar.mjs              the /programar hook (writes programados.jsonl, 0 tokens)
 install.mjs / uninstall.mjs  wire this clone into Claude Code (commands + hook + projects.json)
-program-prompt.cmd         Windows wrapper (cmd/PowerShell)
+promptheus.cmd         Windows wrapper (cmd/PowerShell)
 lib/
   store.mjs                data layer: queue · sessions · projects · /programar inbox
   time.mjs                 parseWhen, formatting, durations
@@ -306,7 +306,7 @@ The queue, sessions and `<engine>` are already neutral. To support opencode, jus
 ```js
 run({ prompt, sessionId, dryRun, dir }) -> { ok, sessionId, output, error }
 ```
-Nothing else changes: same commands (`program-prompt opencode …`), same queue, same output saving.
+Nothing else changes: same commands (`promptheus opencode …`), same queue, same output saving.
 
 ---
 
@@ -315,4 +315,4 @@ Nothing else changes: same commands (`program-prompt opencode …`), same queue,
 - **PowerShell fails with `~`** → use `$env:USERPROFILE`, not `~` (node doesn't expand it).
 - **`claude --resume` "not found"** → you're in the wrong folder; see §3 (`cd` to the launch folder).
 - **At the scheduled time nothing runs** → `run` wasn't active at that time (§5).
-- **Queue not processing** → make sure `program-prompt claude run` is running (with or without `--once`).
+- **Queue not processing** → make sure `promptheus claude run` is running (with or without `--once`).

@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-run-'));
-process.env.PROGRAM_PROMPT_HOME = TMP;
+process.env.PROMPTHEUS_HOME = TMP;
 const { loadQueue, loadSessions, nid, outPath, saveQueue, saveSessions } = await import('../lib/store.mjs');
 const { executeJob, requeue, runQueue, settle } = await import('../lib/runner.mjs');
 

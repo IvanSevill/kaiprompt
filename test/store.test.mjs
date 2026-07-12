@@ -6,7 +6,7 @@ import path from 'node:path';
 
 // Aislar los datos ANTES de importar el store (lee la env al cargarse).
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-store-'));
-process.env.PROGRAM_PROMPT_HOME = TMP;
+process.env.PROMPTHEUS_HOME = TMP;
 const {
   importProgramados, loadQueue, loadSessions, nid, patchJob, preview,
   resolveDir, saveProjects, saveQueue, saveSessions,
