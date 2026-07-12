@@ -20,6 +20,7 @@ import { reapStale, runQueue } from './lib/runner.mjs';
 import { renderChat } from './lib/chat.mjs';
 import { editJob } from './lib/edit.mjs';
 import { addJob, clearFinished, jobDetails, removeJobs } from './lib/queue.mjs';
+import { jobPreview } from './lib/prompt.mjs';
 import { c, isTTY } from './lib/ui.mjs';
 
 // --- argument parsing --------------------------------------------------------
@@ -39,14 +40,19 @@ function parseArgs(argv) {
 
 // --- commands ----------------------------------------------------------------
 async function cmdAdd({ flags, pos, engine }) {
-  const prompt = (pos.join(' ').trim())
-    || (typeof flags.file === 'string' ? fs.readFileSync(flags.file, 'utf8') : '');
-  if (!prompt) {
-    throw new Error('missing prompt.\n  usage: kaip <engine> add "your message" '
-      + '[--target name] [--at HH:MM|+30m] [--dir project] [--session id] [--perm mode]');
+  // --from LINKS the job to a file: the text is read at launch, not now. --file is the
+  // opposite — it pastes the contents in as a snapshot, here and now.
+  const from = typeof flags.from === 'string' ? flags.from : null;
+  const prompt = from ? null : ((pos.join(' ').trim())
+    || (typeof flags.file === 'string' ? fs.readFileSync(flags.file, 'utf8') : ''));
+
+  if (!from && !prompt) {
+    throw new Error('missing prompt.\n  usage: kaip add "your message" | --from <path/to/prompt.md>'
+      + '\n         [--target name] [--at HH:MM|+30m] [--dir project] [--perm mode]');
   }
   const job = addJob({
     prompt,
+    from,
     target: typeof flags.target === 'string' ? flags.target : null,
     at: typeof flags.at === 'string' ? flags.at : null,
     dir: typeof flags.dir === 'string' ? flags.dir : null,
@@ -55,7 +61,11 @@ async function cmdAdd({ flags, pos, engine }) {
     session: typeof flags.session === 'string' ? flags.session : null,
   });
   console.log(`+ ${job.id}  ${job.when ? '@ ' + fmt(job.when) : '(sequential)'}  `
-    + `${job.target ? '[' + job.target + '] ' : ''}${preview(prompt)}`);
+    + `${job.target ? '[' + job.target + '] ' : ''}${preview(prompt ?? '')}`);
+  if (job.promptFile) {
+    console.log(`  ← ${job.promptFile}`);
+    console.log('    (se lee al lanzar: puedes seguir editándolo hasta entonces)');
+  }
 
   // Adding never launches. But a job with a time is a promise, and only the daemon can
   // keep it — so arm it here rather than let 09:00 come and go with nothing running.
@@ -86,7 +96,7 @@ function cmdList({ flags, pos }) {
     if (full) { console.log(jobDetails(j), '\n'); continue; }
     const when = j.when ? '@ ' + fmt(j.when) : 'seq';
     console.log(`${icon[j.status] || '?'} ${j.id}  ${String(j.status).padEnd(7)} `
-      + `${when.padEnd(22)} ${j.adapter}${j.target ? '/' + j.target : ''}  ${preview(j.prompt)}`);
+      + `${when.padEnd(22)} ${j.adapter}${j.target ? '/' + j.target : ''}  ${jobPreview(j)}`);
   }
 }
 
@@ -140,7 +150,7 @@ function cmdOut({ pos }) {
     ? q.find((j) => j.id === pos[0])
     : q.filter((j) => j.output).sort((a, b) => (b.finishedAt || 0) - (a.finishedAt || 0))[0];
   if (!job) return console.log('(no outputs yet; run something with "kaip run")');
-  console.log(`── ${job.id} [${job.status}]${job.target ? ' ' + job.target : ''}  ${preview(job.prompt)} ──`);
+  console.log(`── ${job.id} [${job.status}]${job.target ? ' ' + job.target : ''}  ${jobPreview(job)} ──`);
   if (job.dir) console.log(`   folder: ${job.dir}`);
   if (job.sessionId) {
     console.log(`   session: ${job.sessionId}`);
