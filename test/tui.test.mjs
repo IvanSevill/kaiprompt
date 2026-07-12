@@ -533,3 +533,36 @@ test('cancelar la confirmacion con "n" no borra nada', () => {
   assert.equal(next.confirm, null);
   assert.equal(loadQueue().length, 1, 'sigue ahi');
 });
+
+// --- "y": entrar en el chat de Claude Code -----------------------------------
+test('"y" sobre un job pide entrar en su conversación', () => {
+  saveQueue([]);
+  const j = addJob({ prompt: 'x', adapter: 'mock' });
+  const { effect } = reduce(refresh(initialState()), 'y');
+  assert.deepEqual(effect, { type: 'resume', ref: j.id });
+});
+
+test('"y" en la vista de Chats entra por el target', () => {
+  saveQueue([]);
+  saveSessions({ fixes: { sessionId: 's1', adapter: 'claude', updatedAt: 1 } });
+  let st = refresh(initialState());
+  st = reduce(st, '2').state;                       // vista Chats
+  const { effect } = reduce(st, 'y');
+  assert.deepEqual(effect, { type: 'resume', ref: 'fixes' });
+});
+
+test('"y" dentro de una confirmación sigue siendo "sí" (no entra en ningún chat)', () => {
+  // La confirmación se resuelve ANTES que las teclas normales, así que no chocan.
+  saveQueue([]);
+  addJob({ prompt: 'x', adapter: 'mock' });
+  const st = reduce(refresh(initialState()), 'd').state;   // pide confirmar el borrado
+  assert.ok(st.confirm);
+  const { effect } = reduce(st, 'y');
+  assert.equal(effect.type, 'delete', 'aquí "y" confirma, no abre un chat');
+});
+
+test('"y" sin nada seleccionado no hace nada', () => {
+  saveQueue([]);
+  const { effect } = reduce(refresh(initialState()), 'y');
+  assert.equal(effect, null);
+});

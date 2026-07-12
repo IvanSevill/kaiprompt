@@ -172,3 +172,37 @@ test('renderChat: sesión sin mensajes no revienta', () => {
     JSON.stringify({ type: 'ai-title', aiTitle: 'x' }) + '\n');
   assert.match(renderChat(vacio), /no messages yet/);
 });
+
+// --- entrar EN la conversación (tecla "y" de la GUI) -------------------------
+// Leer el transcript te dice qué pasó. Esto te deja retomar el hilo y seguir hablando,
+// en un Claude Code de verdad.
+
+test('resumeTarget: da la sesión Y la carpeta (sin la carpeta, --resume no la encuentra)', async () => {
+  const { resumeTarget, resumeCommand } = await import('../lib/chat.mjs');
+  saveSessions({ fixes: { sessionId: 'sess-1', adapter: 'claude', updatedAt: 1 } });
+  saveQueue([{
+    id: 'j1', target: 'fixes', sessionId: 'sess-1', dir: 'C:/proyectos/miapp',
+    status: 'done', adapter: 'claude', prompt: 'x', createdAt: 1,
+  }]);
+
+  const r = resumeTarget('fixes');
+  assert.equal(r.sessionId, 'sess-1');
+  assert.equal(r.dir, 'C:/proyectos/miapp', 'las sesiones de Claude Code son POR CARPETA');
+  assert.match(resumeCommand(r), /cd "C:\/proyectos\/miapp" && claude --resume sess-1/);
+});
+
+test('resumeTarget: por id de job también', async () => {
+  const { resumeTarget } = await import('../lib/chat.mjs');
+  saveQueue([{
+    id: 'j2', target: null, sessionId: 'sess-2', dir: 'C:/otra',
+    status: 'done', adapter: 'claude', prompt: 'x', createdAt: 1,
+  }]);
+  assert.equal(resumeTarget('j2').sessionId, 'sess-2');
+});
+
+test('resumeTarget: sin carpeta conocida, error CLARO (no un --resume que no encuentra nada)', async () => {
+  const { resumeTarget } = await import('../lib/chat.mjs');
+  saveSessions({ huerfana: { sessionId: 'sess-3', adapter: 'claude', updatedAt: 1 } });
+  saveQueue([]);
+  assert.throws(() => resumeTarget('huerfana'), /which folder/i);
+});
