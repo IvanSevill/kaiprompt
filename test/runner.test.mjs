@@ -201,3 +201,61 @@ test('reapStale: un job de un runner VIVO no se toca', async () => {
   assert.equal(reapStale(), 0);
   assert.equal(loadQueue()[0].status, 'running');
 });
+
+// --- alimentar un run que ya esta corriendo ---------------------------------
+// El caso real: dejas un "run" puesto, y antes de quedarte sin tokens encolas lo que
+// falta desde otra terminal (o con /programar). Tiene que recogerlo el solo.
+
+test('un run en marcha recoge los prompts añadidos DESPUES de arrancar', async () => {
+  const { addJob } = await import('../lib/queue.mjs');
+  saveQueue([]);
+  const primero = job({ prompt: 'el primero' });
+  saveQueue([primero]);
+
+  // Mientras el runner trabaja, otro proceso mete un job nuevo en la cola.
+  const meterOtro = new Promise((r) => setTimeout(() => {
+    addJob({ prompt: 'metido a mitad', adapter: 'mock' });
+    r();
+  }, 50));
+
+  await meterOtro;
+  await runQueue({ once: true });
+
+  const q = loadQueue();
+  assert.equal(q.length, 2);
+  assert.ok(q.every((j) => j.status === 'done'), 'los DOS deben ejecutarse, no solo el primero');
+  assert.ok(q.some((j) => j.prompt === 'metido a mitad'));
+});
+
+test('--watch: la cola vacia NO termina el run; se queda esperando y ejecuta lo que llegue', async () => {
+  // Este es EL caso: dejas un run puesto y le vas metiendo trabajo. Se lanza como proceso
+  // aparte porque --watch, a proposito, no acaba nunca: hay que matarlo.
+  const { spawn } = await import('node:child_process');
+  const { addJob } = await import('../lib/queue.mjs');
+  saveQueue([]);
+
+  const cli = path.join(path.dirname(new URL(import.meta.url).pathname).replace(/^\//, ''), '..', 'promptheus.mjs');
+  const run = spawn(process.execPath, [cli, 'run', '--watch', '--plain'], {
+    env: { ...process.env, PROMPTHEUS_HOME: TMP },
+    stdio: 'ignore',
+  });
+
+  try {
+    await new Promise((r) => setTimeout(r, 800));          // arranca con la cola VACIA
+    assert.equal(run.exitCode, null, 'no debe haberse muerto al no ver trabajo');
+
+    addJob({ prompt: 'llego tarde', adapter: 'mock' });     // y ahora le metemos algo
+
+    await new Promise((resolve, reject) => {
+      const t0 = Date.now();
+      const iv = setInterval(() => {
+        if (loadQueue().some((j) => j.status === 'done')) { clearInterval(iv); resolve(); }
+        else if (Date.now() - t0 > 15000) { clearInterval(iv); reject(new Error('no lo recogio')); }
+      }, 200);
+    });
+
+    assert.equal(loadQueue()[0].status, 'done', 'lo ejecuto el solo, sin reiniciar nada');
+  } finally {
+    run.kill();
+  }
+});

@@ -339,6 +339,7 @@ try {
       dryRun: !!parsed.flags['dry-run'],
       parallel: Number(parsed.flags.parallel) || 1,
       plain: !!parsed.flags.plain || !!parsed.flags['no-tui'],
+      watch: !!parsed.flags.watch,
     }); break;
     case 'rm': cmdRm(parsed); break;
     case 'clear': cmdClear(); break;

@@ -195,3 +195,61 @@ test('planRetry: se rinde tras varios intentos seguidos (si no, bucle infinito)'
   assert.equal(plan.action, 'fail');
   assert.match(plan.reason, /giving up/);
 });
+
+// --- el tope SEMANAL, no solo el de la sesion --------------------------------
+// Las dos ventanas pueden cortar un lanzamiento. Confundir un tope semanal con un
+// crash seria tratar una parada de dias como un fallo, y perder el trabajo.
+
+test('reconoce tambien el tope semanal', () => {
+  for (const s of [
+    "You've reached your weekly limit · resets Thursday at 9am",
+    'You have hit your week limit',
+    'weekly limit reached',
+  ]) assert.ok(isQuotaExhausted(s), s);
+});
+
+test('parseResetAt: reset semanal con dia de la semana', () => {
+  const now = new Date('2026-07-12T10:00:00').getTime();   // domingo 12
+  const at = new Date(parseResetAt('resets Thursday at 9am', now));
+  assert.equal(at.getDay(), 4, 'jueves');
+  assert.equal(at.getHours(), 9);
+  assert.ok(at.getTime() > now);
+});
+
+test('parseResetAt: reset semanal sin hora → ese dia a las 00:00, siempre futuro', () => {
+  const now = new Date('2026-07-12T10:00:00').getTime();
+  const at = new Date(parseResetAt('resets Friday', now));
+  assert.equal(at.getDay(), 5);
+  assert.ok(at.getTime() > now);
+});
+
+test('parseResetAt: si el dia es HOY pero la hora ya paso, es la semana que viene', () => {
+  const now = new Date('2026-07-12T15:00:00').getTime();   // domingo, 15:00
+  const at = new Date(parseResetAt('resets Sunday at 9am', now));
+  assert.equal(at.getDay(), 0);
+  assert.ok(at.getTime() - now > 6 * 86400_000, 'dentro de una semana, no dentro de un rato');
+});
+
+test('resetFromUsage: entre sesion y semanal, gana la que venza ANTES', () => {
+  // Que es lo que preguntabas: el ajuste va por la ventana mas cercana.
+  const sesion = Date.now() + 2 * 3600_000;
+  const semanal = Date.now() + 5 * 86400_000;
+  const f = usageFile({
+    rate_limits: {
+      five_hour: { used_percentage: 100, resets_at: secs(sesion) },
+      seven_day: { used_percentage: 100, resets_at: secs(semanal) },
+    },
+  });
+  assert.ok(Math.abs(resetFromUsage(f) - sesion) < 1000, 'la de 5h, que vence antes');
+});
+
+test('resetFromUsage: si la SEMANAL vence antes (sesion ya renovada), manda la semanal', () => {
+  const semanal = Date.now() + 3 * 3600_000;
+  const f = usageFile({
+    rate_limits: {
+      five_hour: { used_percentage: 0, resets_at: secs(Date.now() - 1000) },   // ya pasada
+      seven_day: { used_percentage: 100, resets_at: secs(semanal) },
+    },
+  });
+  assert.ok(Math.abs(resetFromUsage(f) - semanal) < 1000);
+});
