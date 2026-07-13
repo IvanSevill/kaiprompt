@@ -15,7 +15,8 @@ const { loadQueue, saveQueue, saveProjects, saveSessions } = await import('../li
 const { addJob } = await import('../lib/queue.mjs');
 const { strip } = await import('../lib/ui.mjs');
 const {
-  applyEffect, decodeKey, initialState, reduce, refresh, render, rows, selected, VIEWS,
+  applyEffect, asPaste, decodeKey, initialState, keyReader, pasteText,
+  reduce, refresh, render, rows, selected, VIEWS,
 } = await import('../lib/tui.mjs');
 
 const DIMS = { cols: 100, rows: 30 };
@@ -41,6 +42,71 @@ test('decodeKey: flechas, enter, esc, backspace y Ctrl+C', () => {
   assert.equal(decodeKey('\x7f'), 'backspace');
   assert.equal(decodeKey('\x03'), 'ctrl-c');
   assert.equal(decodeKey(Buffer.from('a')), 'a', 'un carácter normal se devuelve tal cual');
+});
+
+// --- pegar -------------------------------------------------------------------
+// En modo raw un pegado NO es un evento: es una ráfaga de caracteres en un solo `data`. El
+// lector trataba cada ráfaga como UNA pulsación y tiraba el resto — por eso Ctrl+V no hacía
+// nada y escribir un prompt largo a mano era la única opción.
+test('keyReader: una ráfaga de caracteres es un pegado, no una tecla', () => {
+  const read = keyReader();
+  const keys = read('x'.repeat(200));
+
+  assert.equal(keys.length, 1, 'un pegado es UNA cosa, no 200 pulsaciones sueltas');
+  assert.equal(pasteText(keys[0]), 'x'.repeat(200), 'y lleva el texto entero');
+});
+
+test('keyReader: las teclas de verdad siguen siendo teclas (no todo es un pegado)', () => {
+  const read = keyReader();
+  assert.deepEqual(read('\x1b[A'), ['up']);
+  assert.deepEqual(read('\r'), ['enter'], 'Windows Terminal manda \\r, no \\n');
+  assert.deepEqual(read('a'), ['a']);
+  assert.equal(pasteText('tab'), null, 'un nombre de tecla también tiene varias letras');
+});
+
+test('keyReader: un pegado partido en dos chunks se cose antes de entregarlo', () => {
+  const read = keyReader();
+
+  assert.deepEqual(read('\x1b[200~hola '), [], 'sin la marca de fin todavía no hay tecla');
+  const keys = read('mundo\x1b[201~');
+
+  assert.equal(pasteText(keys[0]), 'hola mundo');
+});
+
+test('pegar 200 caracteres en el asistente los mete los 200', () => {
+  saveQueue([]);
+  const texto = 'x'.repeat(200);
+
+  let { state } = press(fresh(), ['a']);
+  ({ state } = reduce(state, asPaste(texto)));
+
+  assert.equal(state.wizard.buffer.length, 200, 'no se queda con el primer carácter');
+  assert.equal(state.wizard.buffer, texto);
+});
+
+test('un pegado con saltos de línea NO confirma el formulario', () => {
+  // El fallo que convierte un Ctrl+V en "he confirmado el alta tres veces": cada \n del
+  // texto pegado se leía como un enter. Los saltos son texto, no pulsaciones.
+  saveQueue([]);
+  const texto = 'arregla el bug\n\n- primero esto\n- luego lo otro';
+
+  let { state } = press(fresh(), ['a']);
+  let effect;
+  ({ state, effect } = reduce(state, asPaste(texto)));
+
+  assert.equal(effect, null, 'no se encola nada');
+  assert.equal(state.wizard.step, 0, 'y seguimos en el primer paso del asistente');
+  assert.equal(state.wizard.buffer, texto, 'con los saltos de línea dentro del prompt');
+});
+
+test('fuera del asistente un pegado no pulsa teclas (podría llevar una "d" dentro)', () => {
+  saveQueue([]);
+  addJob({ prompt: 'no me borres' });
+
+  const { state, effect } = reduce(fresh(), asPaste('dxq'));
+
+  assert.equal(effect, null, 'ni borrar, ni salir: es texto');
+  assert.equal(state.confirm, null);
 });
 
 // --- navegación --------------------------------------------------------------

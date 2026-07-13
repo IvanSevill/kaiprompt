@@ -26,6 +26,9 @@ const QUEUE = path.join(DATA, 'queue.json');
 const ENV = { ...process.env, KAIP_HOME: TMP, KAIP_NO_DAEMON: '' };
 const cli = (...args) => spawnSync(process.execPath, [CLI, ...args], { env: ENV, encoding: 'utf8' });
 
+process.env.KAIP_HOME = TMP;            // lo que importemos aquí mira al mismo HOME temporal
+const { isDaemonCmd, parsePosixProcs, parseWinProcs, unaccounted } = await import('../lib/daemon.mjs');
+
 const queue = () => JSON.parse(fs.readFileSync(QUEUE, 'utf8'));
 const job = (id) => queue().find((j) => j.id === id);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -201,6 +204,95 @@ test('un "run" manual le QUITA el turno al daemon, y se lo devuelve al salir', (
   const back = cli('daemon', 'status');
   assert.match(back.stdout, /daemon: on/i, 'y el daemon vuelve solo');
   cli('daemon', 'stop');
+});
+
+// --- un daemon. UNO. -----------------------------------------------------------
+// Hay UN daemon global, y un "kaip run" es el MISMO papel: drenar la cola. Por eso hay un
+// cerrojo. Lo que hacía la herramienta era spawnear un daemon en cada `add`, que chocaba
+// contra el cerrojo y se moría en silencio medio segundo después — pero no antes de haber
+// escrito su pid y haber anunciado "daemon started, it will fire on time". Un proceso
+// condenado y una mentira por cada alta.
+
+/** Un cerrojo vivo, tomado por alguien que no es el daemon: exactamente un `kaip run`. */
+function fakeRun() {
+  const lock = path.join(DATA, 'runner.lock');
+  fs.mkdirSync(DATA, { recursive: true });
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now() }));
+  fs.rmSync(path.join(DATA, 'daemon.json'), { force: true });
+  return () => fs.rmSync(lock, { force: true });
+}
+
+const daemonState = () => path.join(DATA, 'daemon.json');
+
+test('con un "run" vivo, "daemon start" NO spawnea nada — y lo dice', () => {
+  seed([mockJob({ when: Date.now() + 60_000 })]);
+  const release = fakeRun();
+
+  const r = cli('daemon', 'start');
+  release();
+
+  assert.doesNotMatch(r.stdout, /daemon started \(pid \d+\)/i, 'no puede anunciar un pid que no ha arrancado');
+  assert.match(r.stdout, /already draining the queue/i, 'tiene que decir quién drena la cola');
+  assert.equal(fs.existsSync(daemonState()), false, 'y no deja ni el pid escrito');
+});
+
+test('un "add" con hora y un "run" vivo: ningún daemon nace, y el mensaje es verdad', () => {
+  seed([]);
+  const release = fakeRun();
+
+  const r = cli('add', 'con un run delante', '--at', '+2h', '--adapter', 'mock');
+  release();
+
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(fs.existsSync(daemonState()), false, 'nada de daemons condenados por cada alta');
+  assert.match(r.stdout, /procesando la cola/i, 'dice quién lo va a lanzar de verdad');
+  assert.doesNotMatch(r.stdout, /daemon started/i, 'y no presume de uno que no existe');
+  assert.match(r.stdout, /cierras esa ventana/i, 'con la letra pequeña: un run muere con su ventana');
+});
+
+test('"daemon status" no jura que no se lanzará nada mientras un "run" lo lanza', () => {
+  seed([mockJob({ when: Date.now() + 60_000 })]);
+  const release = fakeRun();
+
+  const r = cli('daemon', 'status');
+  release();
+
+  assert.match(r.stdout, /draining the queue/i);
+  assert.doesNotMatch(r.stdout, /will NOT fire/i, 'porque sí se va a lanzar');
+});
+
+// --- zombis --------------------------------------------------------------------
+// Un daemon huérfano no se ve: nace oculto y escribe en un log. La única forma de saber que
+// está ahí es contar los procesos y compararlos con el pid que decimos tener.
+test('un daemon se reconoce por su línea de comandos, y nada más se le parece', () => {
+  assert.ok(isDaemonCmd('node C:\\kaip\\kaip.mjs daemon run'));
+  assert.ok(isDaemonCmd('node "C:\\ruta con espacios\\kaip.mjs" daemon run --seq'));
+  assert.equal(isDaemonCmd('node C:\\kaip\\kaip.mjs run'), false, 'un "run" manual NO es el daemon');
+  assert.equal(isDaemonCmd('node servidor.mjs'), false);
+  assert.equal(isDaemonCmd(null), false);
+});
+
+test('los procesos que no son el pid de daemon.json son huérfanos', () => {
+  const procs = [{ pid: 111, cmd: 'x' }, { pid: 222, cmd: 'x' }, { pid: process.pid, cmd: 'x' }];
+
+  assert.deepEqual(unaccounted(procs, 111).map((p) => p.pid), [222],
+    'el daemon que sí conocemos no es un huérfano, y nosotros tampoco');
+  assert.deepEqual(unaccounted(procs, null).map((p) => p.pid), [111, 222],
+    'sin daemon anotado, los dos sobran');
+});
+
+test('la lista de procesos se lee igual venga de PowerShell o de ps', () => {
+  const win = parseWinProcs('{"ProcessId":42,"CommandLine":"node kaip.mjs daemon run"}');
+  assert.deepEqual(win, [{ pid: 42, cmd: 'node kaip.mjs daemon run' }],
+    'un solo proceso vuelve como objeto, no como lista');
+
+  assert.equal(parseWinProcs('[{"ProcessId":1,"CommandLine":"a"},{"ProcessId":2}]').length, 2);
+  assert.deepEqual(parseWinProcs('no es json'), [], 'y una salida rota no revienta el status');
+
+  assert.deepEqual(parsePosixProcs(' 42 node kaip.mjs daemon run\n  7 otra cosa\n'), [
+    { pid: 42, cmd: 'node kaip.mjs daemon run' },
+    { pid: 7, cmd: 'otra cosa' },
+  ]);
 });
 
 test('dos runners MANUALES si se respetan: el segundo se retira', () => {

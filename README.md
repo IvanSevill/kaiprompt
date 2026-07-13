@@ -254,7 +254,8 @@ at a time, while different lanes run at once.
 
 ```bash
 kaip daemon start      # detached background runner
-kaip daemon status
+kaip daemon status     # …and how many "daemon run" processes are REALLY alive
+kaip daemon sweep      # kill leftovers nobody is tracking
 kaip daemon log --last 50
 kaip daemon install    # bring it back on login (Windows)
 kaip daemon stop
@@ -263,6 +264,31 @@ kaip daemon stop
 The daemon only takes **scheduled** jobs. Sequential ones still wait for an explicit run —
 otherwise adding a job would fire it seconds later, which is precisely the surprise this tool
 avoids.
+
+### One daemon. One. Global.
+
+Four rules, and everything else follows from them:
+
+1. **There is exactly one daemon**, machine-wide. Its pid lives in `data/daemon.json` and
+   `start()` is idempotent. There is not one per prompt, nor one per parallel lane.
+2. **`--parallel N` lives INSIDE a runner.** A parallel lane is not a process — it is a slot
+   in one.
+3. **A `kaip run` and the daemon are the SAME role**: drain the queue. Which is why there is a
+   lock (`data/runner.lock`), and why only one of them can hold it.
+4. **The lock is the source of truth** for "who is draining the queue?". Not `daemon.json`, not
+   "is the daemon on?". There is no second answer to that question anywhere in the code.
+
+So with a `kaip run` up, `kaip daemon start` **starts nothing** and says so, `kaip add` spawns
+nothing, and the GUI's `D` key does nothing but tell you the queue already has someone. A
+daemon and a run at once is not a state that should exist.
+
+That used to be false. `add` spawned a daemon every single time: it raced for the lock, lost,
+and died in silence half a second later — but not before writing its pid down and printing
+*"daemon started (pid X) — it will fire on time"*. A doomed process and a lie, per `add`.
+
+`daemon status` counts the processes that are actually alive, not the ones we think are. A
+daemon nobody is tracking (a crash, an old race) is invisible — it starts hidden and writes to
+a log — so counting them is the only way to know, and `sweep` is how you get rid of them.
 
 ---
 

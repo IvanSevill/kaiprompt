@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   altEnter, altExit, bar, bigText, bigWidth, box, c, centerBlock, centerLine, clear, fit, paint,
-  strip, toolLines, toolSummary,
+  restoreTitle, setTitle, strip, titleText, toolLines, toolSummary,
   trunc, width, wrap, writeLines,
 } from '../lib/ui.mjs';
 
@@ -156,6 +156,37 @@ test('bigText: ignora caracteres no soportados sin romper', () => {
 test('bigText: la escala cambia el ancho, no la altura', () => {
   assert.equal(bigText('12', { scale: 1 }).length, 5);
   assert.ok(bigWidth('12', { scale: 2 }) > bigWidth('12', { scale: 1 }));
+});
+
+// --- el título de la ventana ------------------------------------------------
+// La terminal se llama "node" y debería llamarse como lo que está haciendo: con la ventana
+// minimizada, la barra de tareas es lo único que se ve. Pero un uso desatendido no tiene
+// barra de tareas ninguna, así que ahí no se escribe nada.
+
+test('sin TTY no se escribe ningún título (lo desatendido no se toca)', () => {
+  const out = [];
+  const write = process.stdout.write;
+  process.stdout.write = (s) => { out.push(String(s)); return true; };
+  try { setTitle('⏳ 04:12:33 → factura por voz'); restoreTitle(); }
+  finally { process.stdout.write = write; }
+
+  assert.equal(out.join(''), '', 'ni un byte: la salida plana se queda plana');
+});
+
+test('con TTY el título es el reloj, y se devuelve el nombre al salir', () => {
+  const out = asTTY(() => { setTitle('⏳ 04:12:33 → factura por voz'); restoreTitle(); });
+
+  assert.ok(out.includes('\x1b]0;⏳ 04:12:33 → factura por voz\x07'), 'OSC 0 con el texto');
+  assert.ok(out.includes('\x1b[22;0t'), 'antes, guarda el nombre que tenía');
+  assert.ok(out.includes('\x1b[23;0t'), 'y al salir se lo devuelve');
+  assert.ok(out.indexOf('\x1b]0;\x07') < out.indexOf('\x1b[23;0t'),
+    'con el título vacío por delante, por si la terminal no sabe de pilas');
+});
+
+test('el título no puede llevar colores ni cerrar la secuencia antes de tiempo', () => {
+  assert.equal(titleText('\x1b[38;2;217;119;87mkaip\x1b[39m'), 'kaip');
+  assert.equal(titleText('mal\x07titulo\x1b'), 'mal titulo');
+  assert.equal(titleText('  varios   espacios  '), 'varios espacios');
 });
 
 // --- toolLines (lo que se ve mientras el lanzamiento corre) -----------------

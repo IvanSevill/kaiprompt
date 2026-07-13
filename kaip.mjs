@@ -210,6 +210,14 @@ async function cmdDaemon({ flags, pos }) {
 
     case 'start': {
       const r = d.start({ seq });
+      // Not started is not always a failure — but it is always something we have to say
+      // straight. Announcing a daemon we did not start (or started and let die on the lock)
+      // is the lie this command used to tell.
+      if (r.reason === d.RUN_IS_DRAINING) {
+        console.log(c.ok('◆ ') + `${d.RUN_IS_DRAINING} (pid ${r.runner.pid})`);
+        console.log(c.muted('  no daemon started: one thing drains the queue, and it already is.'));
+        return console.log(c.muted('  it dies with that window, though — close it and run this again.'));
+      }
       if (!r.started) return console.log(d.statusLine());
       console.log(`daemon started (pid ${r.pid})${seq ? ' · sequential jobs too' : ''}`);
       console.log(`  log: ${r.log}`);
@@ -224,7 +232,7 @@ async function cmdDaemon({ flags, pos }) {
     case 'restart': {
       d.stop();
       const r = d.start({ seq });
-      return console.log(`daemon restarted (pid ${r.pid})`);
+      return console.log(r.started ? `daemon restarted (pid ${r.pid})` : d.statusLine());
     }
 
     case 'status': {
@@ -232,9 +240,28 @@ async function cmdDaemon({ flags, pos }) {
       const auto = d.autostartInstalled();
       console.log(d.statusLine(st));
       if (st.running) console.log(`  since ${fmt(st.startedAt)}`);
+
+      // Count the actual processes, not the file. The file says what we THINK is up; a
+      // leftover from a crash or a lost race says nothing at all, and only shows up here.
+      const procs = d.daemonProcesses();
+      const loose = d.unaccounted(procs, st.running ? st.pid : null);
+      console.log(`  "daemon run" processes alive: ${procs.length}`);
+      if (loose.length) {
+        console.log(c.warn(`  ⚠ ${loose.length} of them nobody is tracking `)
+          + c.muted(`(pid ${loose.map((p) => p.pid).join(', ')})`));
+        console.log(c.muted('    they are not the daemon in daemon.json: leftovers from a crash or a race.'));
+        console.log(c.muted('    sweep them with:  ') + c.accent('kaip daemon sweep'));
+      }
+
       console.log(`  autostart at logon: ${auto ? 'installed' : 'not installed'}`
         + `${auto ? '' : '  (kaip daemon install)'}`);
       return console.log(`  log: ${st.log}`);
+    }
+
+    case 'sweep': {
+      const killed = d.sweep();
+      if (!killed.length) return console.log('no orphan daemons; nothing to sweep.');
+      return console.log(c.ok(`swept ${killed.length} orphan daemon(s): `) + killed.join(', '));
     }
 
     case 'install': {
@@ -258,7 +285,8 @@ async function cmdDaemon({ flags, pos }) {
     }
 
     default:
-      throw new Error(`unknown: daemon ${sub}\n  use: start | stop | restart | status | install | uninstall | log`);
+      throw new Error(`unknown: daemon ${sub}`
+        + '\n  use: start | stop | restart | status | sweep | install | uninstall | log');
   }
 }
 
@@ -318,7 +346,8 @@ async function cmdApp({ pos }) {
 }
 
 async function cmdServe({ flags }) {
-  const { DEFAULT_PORT, addresses, createServer, resetToken } = await import('./lib/server.mjs');
+  const { DEFAULT_PORT, addresses, createServer, resetToken, serverConfig } = await import('./lib/server.mjs');
+  const { installCleanup, setTitle } = await import('./lib/ui.mjs');
   const port = Number(flags.port) || DEFAULT_PORT;
 
   // "I lost my phone." The token and the KEY are both thrown away and every paired device
@@ -338,6 +367,17 @@ async function cmdServe({ flags }) {
 
   createServer({ port });
   console.log(c.bold('kaip serve') + c.muted(`  ·  puerto ${port}`));
+
+  // The window title says whether the phone is actually on the other end — the one thing you
+  // want to know from a glance at the taskbar, and the one thing a terminal called "node"
+  // cannot tell you. It changes the moment a phone pairs, and it is put back when we exit.
+  installCleanup();
+  const titleTick = () => {
+    const n = (serverConfig().devices ?? []).length;
+    setTitle(n ? `kaip · connected (${n})` : 'kaip · waiting');
+  };
+  titleTick();
+  setInterval(titleTick, 1000).unref?.();
 
   const lan = addresses(port)[0];
   if (lan) console.log(c.muted('  en casa:  ') + (wifiOnly ? c.accent(lan.url) : lan.url));
@@ -527,6 +567,9 @@ Notes:
              Without --at the job is sequential (see above).
   daemon     start: a detached background runner; scheduled launches fire without a
              terminal open. stop / restart / status / log [--last N].
+             There is ONE daemon, and a "kaip run" is the same role — draining the
+             queue — so with a run up, start does nothing and says so. sweep kills
+             leftover daemons nobody is tracking (status counts them).
              install: bring it back automatically when you log in (Windows).
              It only takes scheduled jobs. --seq makes it drain sequential ones too.
   --dir      folder/project to run in. Accepts a project name (subfolder of _base),
