@@ -155,4 +155,42 @@ class ModelTest {
     fun `una conversacion vacia no revienta`() {
         assertEquals(0, Chat.parse("""{"sessionId":"s","turns":[]}""").turns.size)
     }
+
+    // --- el QR compacto ---------------------------------------------------------
+    // Cada byte del payload es un modulo del QR. El formato largo llegaba a 232 bytes: una
+    // version 11, 61x61 modulos que la camara tiene que resolver en dos centimetros de
+    // terminal. Justo en el limite — y una URL de tunel larga lo empujaba al otro lado. De
+    // ahi que un QR que ayer escaneaba hoy no.
+    //
+    // Leer los DOS formatos es lo que permite que una app vieja siga funcionando contra un
+    // PC nuevo, y al reves.
+
+    @Test
+    fun `lee el QR compacto`() {
+        val p = Pairing.parse("""{"v":1,"u":"https://algo.trycloudflare.com","t":"tok","k":"clave","l":"http://192.168.1.5:7777"}""")
+        assertEquals("https://algo.trycloudflare.com", p.url)
+        assertEquals("tok", p.token)
+        assertEquals("clave", p.key)
+        assertEquals("http://192.168.1.5:7777", p.lan)
+        assertTrue(p.tunnel)
+    }
+
+    @Test
+    fun `sigue leyendo el QR largo (un PC viejo no deja de funcionar)`() {
+        val p = Pairing.parse("""{"v":1,"url":"http://192.168.1.5:7777","token":"tok","key":"clave","host":"PC","tunnel":false}""")
+        assertEquals("http://192.168.1.5:7777", p.url)
+        assertEquals("tok", p.token)
+        assertFalse(p.tunnel)
+    }
+
+    @Test
+    fun `el tunel se deduce del esquema (ya no se manda)`() {
+        assertTrue(Pairing.parse("""{"v":1,"u":"https://x.trycloudflare.com","t":"a","k":"b"}""").tunnel)
+        assertFalse(Pairing.parse("""{"v":1,"u":"http://192.168.1.5:7777","t":"a","k":"b"}""").tunnel)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `un QR sin clave se rechaza (media pareja no sirve de nada)`() {
+        Pairing.parse("""{"v":1,"u":"https://x.com","t":"tok"}""")
+    }
 }
