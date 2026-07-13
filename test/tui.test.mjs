@@ -209,7 +209,8 @@ test('d: pregunta antes de borrar; "n" no borra, "y" sí', () => {
 
   let s = press(fresh(), ['d']).state;
   assert.ok(s.confirm, 'pide confirmación');
-  assert.match(strip(view(s)), /delete .*\[y\/n\]/s);
+  // "SOLO este", deletreado: la otra tecla de borrar está al lado y se lleva media cola.
+  assert.match(strip(view(s)), /borrar SOLO este job.*\[y\/n\]/s);
 
   const no = press(s, ['n']);
   assert.equal(no.effect, null);
@@ -281,9 +282,32 @@ test('render: pestañas, jobs, barra de atajos y marca de selección', () => {
   assert.match(out, new RegExp(j.id));
   assert.match(out, /revisa el PR/);
   assert.match(out, /▸/, 'la fila seleccionada va marcada');
-  assert.match(out, /a add · e edit · d del/, 'la barra de atajos');
+  assert.match(out, /a add · e edit/, 'la barra de atajos');
+  assert.match(out, /d — borrar SOLO este/);
   // "out" y "chat" no decían en qué se diferenciaban. La barra dice lo que OBTIENES.
   assert.match(out, /o answer · c conversation · y JOIN chat/, 'los tres niveles, nombrados por lo que dan');
+});
+
+test('los DOS borrados salen juntos y deletreados: se confunden con una facilidad pasmosa', () => {
+  // Uno se lleva la fila bajo el cursor; el otro, la mitad terminada de la cola. Están a
+  // una tecla el uno del otro.
+  saveQueue([]);
+  addJob({ prompt: 'pendiente' });
+  addJob({ prompt: 'terminado' });
+  saveQueue(loadQueue().map((j, i) => (i === 1 ? { ...j, status: 'done' } : j)));
+
+  const out = view(fresh());
+  assert.match(out, /d — borrar SOLO este/);
+  assert.match(out, /x — borrar los 1 TERMINADOS/);
+});
+
+test('sin nada terminado, el borrado masivo NO se ofrece (no hay nada que barrer)', () => {
+  saveQueue([]);
+  addJob({ prompt: 'solo pendiente' });
+
+  const out = view(fresh());
+  assert.match(out, /d — borrar SOLO este/);
+  assert.doesNotMatch(out, /TERMINADOS/);
 });
 
 // --- programar no es lanzar ---------------------------------------------------
@@ -350,9 +374,12 @@ test('render: las filas quedan en columnas (no se comen los espacios)', () => {
 
 test('render: la ayuda lista todas las teclas', () => {
   const out = view(press(fresh(), ['?']).state);
-  for (const k of ['↑ ↓', 'enter', 'a', 'e', 'd', 'r', 'o', 'c', 'q']) {
+  for (const k of ['enter', 'a', 'e', 'd', 'r', 'o', 'c', 'q']) {
     assert.ok(out.includes(k), `falta la tecla ${k}`);
   }
+  // Y los dos borrados, deletreados: son la pareja que más fácil se confunde.
+  assert.match(out, /d\s+UNO/);
+  assert.match(out, /x\s+TODOS/);
 });
 
 test('render: cola vacía invita a añadir, no se ve rota', () => {
