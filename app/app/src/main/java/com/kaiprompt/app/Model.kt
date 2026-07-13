@@ -74,7 +74,23 @@ data class Job(
     }
 }
 
-data class DaemonState(val running: Boolean, val next: Long?)
+/**
+ * Is anything actually going to fire?
+ *
+ * `running` is NOT "the daemon process exists" — it is "someone is processing the queue".
+ * That someone can be the daemon, or a `kaip run` sitting in a terminal. The app used to
+ * conflate the two and show a red "nothing will fire" while a run was about to fire it.
+ *
+ * `durable` is the distinction worth surfacing: a run dies with its window; the daemon does
+ * not. Both keep the promise today; only one keeps it tonight.
+ */
+data class DaemonState(
+    val running: Boolean,
+    val next: Long?,
+    val kind: String? = null,       // "daemon" | "run" | null
+    val durable: Boolean = true,
+    val pid: Long? = null,
+)
 data class Quota(val freePct: Int?, val resetsAt: Long?, val renewed: Boolean)
 
 data class State(
@@ -90,8 +106,17 @@ data class State(
      * asked: is anything actually going to fire? Scheduled work with the daemon off never
      * runs, and finding that out in the morning is too late.
      */
-    val scheduledButDead: Boolean
-        get() = !daemon.running && jobs.any { it.pending && it.whenAt != null }
+    val hasScheduled: Boolean get() = jobs.any { it.pending && it.whenAt != null }
+
+    /** Work scheduled and NOBODY to fire it. The one silent way this tool can betray you. */
+    val scheduledButDead: Boolean get() = !daemon.running && hasScheduled
+
+    /**
+     * It WILL fire — but by a `kaip run` in a terminal, not the daemon. So it fires today and
+     * stops firing the moment that window closes. Worth saying; not worth an alarm.
+     */
+    val firesButFragile: Boolean
+        get() = daemon.running && !daemon.durable && hasScheduled
 
     companion object {
         fun parse(body: String): State {
@@ -110,6 +135,9 @@ data class State(
                 daemon = DaemonState(
                     running = d?.optBoolean("running") ?: false,
                     next = d?.optLongOrNull("next"),
+                    kind = d?.optStringOrNull("kind"),
+                    durable = d?.optBoolean("durable", true) ?: true,
+                    pid = d?.optLongOrNull("pid"),
                 ),
                 quota = q?.let {
                     Quota(

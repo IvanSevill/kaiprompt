@@ -67,16 +67,31 @@ async function cmdAdd({ flags, pos, engine }) {
     console.log('    (se lee al lanzar: puedes seguir editándolo hasta entonces)');
   }
 
-  // Adding never launches. But a job with a time is a promise, and only the daemon can
-  // keep it — so arm it here rather than let 09:00 come and go with nothing running.
-  if (job.when) {
-    const d = await import('./lib/daemon.mjs');
-    const st = d.ensure();
-    console.log('  ' + (st.started ? `daemon started (pid ${st.pid}) — it will fire on time`
-      : d.statusLine()));
-  } else {
-    console.log('  sequential: it will go on your next "run" (nothing is launched now)');
+  // Adding never launches. But a job with a time is a PROMISE, and something has to be
+  // there to keep it — so make sure something is, and then say what actually is.
+  if (!job.when) {
+    console.log(c.muted('  secuencial: sale en tu próximo "run" (aquí no se lanza nada)'));
+    return;
   }
+
+  const { runnerLine, runnerStatus } = await import('./lib/runner-status.mjs');
+
+  // Only arm the daemon if nothing is processing the queue. If a `run` is up, it will fire
+  // this job perfectly well, and a daemon spawned now would just hit the lock and die —
+  // after `add` had already announced it as "started, it will fire on time". Reporting a
+  // process we then let die is the exact silent lie this tool exists to prevent.
+  let st = runnerStatus();
+  if (!st.willFire) {
+    const d = await import('./lib/daemon.mjs');
+    d.ensure();
+    await new Promise((r) => setTimeout(r, 400));      // let it take the lock before we look
+    st = runnerStatus();
+  }
+
+  // And now say what is TRUE, checked after the fact — not what we hoped would happen.
+  const line = runnerLine(st);
+  console.log('  ' + (line.ok ? c.ok('◆ ') + c.muted(line.text) : c.err('⚠ ') + c.muted(line.text)));
+  if (line.hint) console.log(c.muted('    ') + c.accent(line.hint));
 }
 
 function cmdList({ flags, pos }) {
