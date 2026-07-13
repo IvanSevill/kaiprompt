@@ -21,6 +21,7 @@ import { renderChat } from './lib/chat.mjs';
 import { editJob } from './lib/edit.mjs';
 import { addJob, clearFinished, jobDetails, removeJobs } from './lib/queue.mjs';
 import { jobPreview } from './lib/prompt.mjs';
+import { COMMANDS, ENGINES } from './lib/commands.mjs';
 import { c, isTTY } from './lib/ui.mjs';
 
 // --- argument parsing --------------------------------------------------------
@@ -265,7 +266,7 @@ async function cmdDaemon({ flags, pos }) {
 // machine being off, and it survives the tunnel getting a new URL on every restart.
 const APK_RELEASE = 'https://github.com/IvanSevill/kaiprompt/releases/latest/download/kaiprompt.apk';
 
-/** Where the pairing info gets written, so `kaip pair` can show it without re-tunnelling. */
+/** Where the pairing info gets written, so the QR can be shown without re-tunnelling. */
 async function saveLastUrl(url) {
   const { saveServerConfig, serverConfig } = await import('./lib/server.mjs');
   const conf = serverConfig();
@@ -280,6 +281,13 @@ async function cmdApp({ pos }) {
   const { apkPath } = await import('./lib/server.mjs');
   const appDir = path.join(ROOT, 'app');
 
+  // The wrapper by ABSOLUTE path, quoted. Naming it "gradlew.bat" and trusting cwd looked
+  // fine and failed on every Windows box — cmd would not resolve it from the working
+  // directory, so `kaip app build` and `kaip app test` were two more commands that told you
+  // to run them and then didn't run.
+  const gradlew = `"${path.join(appDir, process.platform === 'win32' ? 'gradlew.bat' : 'gradlew')}"`;
+  const gradle = (task) => spawnSync(gradlew, [task], { cwd: appDir, stdio: 'inherit', shell: true });
+
   if (pos[0] === 'build' || !pos.length) {
     if (!fs.existsSync(path.join(appDir, 'local.properties'))) {
       // Gradle cannot find the Android SDK without this, and its own error message about it
@@ -291,30 +299,37 @@ async function cmdApp({ pos }) {
     }
 
     console.log(c.muted('compilando el APK… (la primera vez tarda unos minutos)'));
-    const gradlew = process.platform === 'win32' ? 'gradlew.bat' : './gradlew';
-    const r = spawnSync(gradlew, [':app:assembleRelease'], {
-      cwd: appDir, stdio: 'inherit', shell: true,
-    });
+    const r = gradle(':app:assembleRelease');
     if (r.status !== 0) return console.log(c.err('\nla compilación falló.'));
 
     const apk = apkPath();
     console.log('\n' + c.ok('✓ APK listo') + c.muted(`  ${apk}`));
-    console.log(c.muted('  instálalo escaneando el QR de ') + c.accent('kaip pair'));
+    console.log(c.muted('  para enlazarlo con este PC: ') + c.accent('kaip serve') + c.muted(' (saca el QR de emparejamiento)'));
     return;
   }
 
   if (pos[0] === 'test') {
-    const gradlew = process.platform === 'win32' ? 'gradlew.bat' : './gradlew';
-    spawnSync(gradlew, [':app:testDebugUnitTest'], { cwd: appDir, stdio: 'inherit', shell: true });
-    return;
+    const r = gradle(':app:testDebugUnitTest');
+    if (r.status !== 0) return console.log(c.err('\nlos tests de la app fallaron.'));
+    return console.log(c.ok('\n✓ tests de la app en verde'));
   }
 
   console.log('uso: kaip app [build|test]');
 }
 
 async function cmdServe({ flags }) {
-  const { DEFAULT_PORT, addresses, createServer } = await import('./lib/server.mjs');
+  const { DEFAULT_PORT, addresses, createServer, resetToken } = await import('./lib/server.mjs');
   const port = Number(flags.port) || DEFAULT_PORT;
+
+  // "I lost my phone." The token and the KEY are both thrown away and every paired device
+  // is dropped, so the lost phone is locked out from the next request on. The ability was
+  // here all along (resetToken); the command that reached it disappeared in a rename, which
+  // left the tool with an unpair button you could not press.
+  if (flags.reset) {
+    resetToken();
+    console.log(c.ok('✓ emparejamientos anulados') + c.muted(' — token y clave nuevos.'));
+    console.log(c.muted('  los móviles que había quedan fuera desde ya; vuelve a escanear el QR.\n'));
+  }
 
   // --wifi: nothing leaves the house. No tunnel, no Cloudflare, no third party at all —
   // the phone talks to this machine over the local network and that is the end of it. The
@@ -328,7 +343,7 @@ async function cmdServe({ flags }) {
   if (lan) console.log(c.muted('  en casa:  ') + (wifiOnly ? c.accent(lan.url) : lan.url));
 
   if (wifiOnly) {
-    // Forget any tunnel URL from a previous run, or `pair` would hand the phone an address
+    // Forget any tunnel URL from a previous run, or the QR would hand the phone an address
     // that died when that tunnel closed — and it would fail far from here, silently.
     await saveLastUrl(null);
     console.log(c.muted('\n  solo wifi: sin túnel, sin Cloudflare, sin terceros.'));
@@ -369,18 +384,28 @@ async function cmdServe({ flags }) {
  * displayed while you go and make coffee.
  */
 async function showPairing(port) {
-  const { pairingPayload, serverConfig } = await import('./lib/server.mjs');
+  const { pairingCompact, serverConfig } = await import('./lib/server.mjs');
   const { render } = await import('./lib/qr.mjs');
   const { hardClear } = await import('./lib/ui.mjs');
 
   const before = (serverConfig().devices ?? []).map((d) => d.url);
-  const p = pairingPayload(port, serverConfig().publicUrl || null);
+
+  // The COMPACT payload: a terminal draws each module as half a character cell, so the code
+  // ends up a couple of centimetres across and the camera has to resolve every module out of
+  // that. Sixty bytes off the payload is two QR versions off the grid, and that is the
+  // difference between "scans" and "worked yesterday, doesn't today".
+  const p = pairingCompact(port, serverConfig().publicUrl || null);
 
   console.log('\n' + c.bold('  escanea esto DESDE la app') + c.muted('  — para enlazarla con este PC\n'));
   console.log(render(JSON.stringify(p)).replace(/^/gm, '  '));
 
+  // And the escape hatch, because a terminal QR is always going to be the hard way to read
+  // one: the same code in a browser, ten times the size, scans every time.
+  console.log(c.muted('\n  ¿no lo pilla la cámara? ábrelo GRANDE en el navegador:'));
+  console.log('  ' + c.accent(`http://localhost:${port}/pair`));
+
   // The key is why the tunnel is safe, and why it must go by QR and not down the wire.
-  console.log(c.muted('\n  la clave de cifrado viaja DENTRO de ese QR, no por el túnel:'));
+  console.log(c.muted('\n  la clave de cifrado viaja DENTRO de ese código, no por el túnel:'));
   console.log(c.muted('  la escaneas de tu propia pantalla, así que Cloudflare nunca la ve.'));
   console.log(c.muted('\n  ¿aún no tienes la app? → ') + c.accent('kaip mobile'));
 
@@ -407,9 +432,9 @@ async function showPairing(port) {
 /**
  * The QR that gets the app onto the phone.
  *
- * Its own command, because it answers a different question from `pair` and you only need it
- * once. Mixing the two put a code you will never scan again on the screen every single time
- * you paired.
+ * Its own command, because it answers a different question from the pairing QR (`serve`) and
+ * you only need it once. Mixing the two put a code you will never scan again on the screen
+ * every single time you paired.
  *
  * It points at the GitHub release, not at this machine: that URL is permanent and works with
  * the PC switched off, whereas a quick tunnel gets a new address on every restart — a QR
@@ -422,7 +447,7 @@ async function cmdMobile() {
   console.log(render(APK_RELEASE));
   console.log(c.muted(`\n   ${APK_RELEASE}\n`));
   console.log(c.muted('   Android te pedirá permiso para instalar de origen desconocido: acéptalo.'));
-  console.log(c.muted('   luego, para enlazarla con este PC: ') + c.accent('kaip serve') + c.muted(' y ') + c.accent('kaip pair'));
+  console.log(c.muted('   luego, para enlazarla con este PC: ') + c.accent('kaip serve') + c.muted(' — el QR de emparejamiento sale ahí mismo.'));
 }
 
 function cmdSessions({ pos } = { pos: [] }) {
@@ -475,6 +500,8 @@ The phone:
   serve                       the API + a Cloudflare tunnel, and the pairing QR.
                               Works from any network; no VPN, no ports opened.
      --wifi                   no tunnel, no Cloudflare, no third party. Your network only.
+     --reset                  "I lost my phone": new token and new key, every paired
+                              device dropped. They are locked out from the next request.
   mobile                      the QR to download the app
   app <build|test>            build the APK yourself (needs the Android SDK)
 
@@ -534,7 +561,7 @@ Examples:
 // Optional first token = ENGINE (claude | opencode) → default --adapter for `add`.
 let av = process.argv.slice(2);
 let engine = null;
-if (av[0] === 'claude' || av[0] === 'opencode') { engine = av[0]; av = av.slice(1); }
+if (ENGINES.includes(av[0])) { engine = av[0]; av = av.slice(1); }
 const [cmd, ...rest] = av;
 const parsed = parseArgs(rest);
 parsed.engine = engine;
@@ -574,6 +601,10 @@ try {
       break;
     case 'gui': { const { startTUI } = await import('./lib/tui.mjs'); await startTUI(); break; }
     case 'help': case '--help': case '-h': console.log(HELP); break;
-    default: console.error(`unknown command: ${cmd}\n`); console.log(HELP); process.exit(1);
+    default:
+      console.error(`unknown command: ${cmd}`);
+      console.error(c.muted(`there is no such command. There is: ${COMMANDS.join(' · ')}\n`));
+      console.log(HELP);
+      process.exit(1);
   }
 } catch (e) { console.error('Error:', e.message); process.exit(1); }

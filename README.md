@@ -134,6 +134,11 @@ Want no third party at all? **`kaip serve --wifi`** drops the tunnel entirely: t
 talks to this machine over your own network and nothing leaves the house. The trade is that
 it only works while you are on that network.
 
+Lost the phone? **`kaip serve --reset`** mints a new token *and a new key* and drops every
+paired device: the lost one is locked out from its very next request. The key goes too, not
+just the token — leaving it alive would let that phone still read anything it had already
+fetched, which is not what anyone pressing this button expects.
+
 Cloudflare terminates the TLS and could otherwise read everything that passes through. It
 cannot: **the payload is sealed end-to-end** with AES-256-GCM, and the key never travels the
 tunnel it protects — it is minted on the PC and reaches the phone *inside the pairing QR*,

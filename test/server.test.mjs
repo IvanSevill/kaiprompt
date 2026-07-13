@@ -165,7 +165,7 @@ test('el token se conserva entre llamadas (re-emparejar no debe echar al móvil 
   assert.equal(serverConfig().token, serverConfig().token);
 });
 
-test('pair --reset rota el token: los móviles emparejados dejan de entrar', async () => {
+test('serve --reset rota el token: los móviles emparejados dejan de entrar', async () => {
   const viejo = serverConfig().token;
   const nuevo = resetToken();
   assert.notEqual(nuevo, viejo);
@@ -257,10 +257,43 @@ test('el 401 NO va sellado: quien trae la clave mal debe poder leer POR QUE se l
   assert.match(await r.text(), /unauthorized/);
 });
 
-test('pair --reset rota TAMBIEN la clave: un movil perdido no puede seguir descifrando', async () => {
+test('serve --reset rota TAMBIEN la clave: un movil perdido no puede seguir descifrando', async () => {
   const { resetToken: rota } = await import('../lib/server.mjs');
   const claveVieja = serverConfig().key;
   rota();
   assert.notEqual(serverConfig().key, claveVieja, 'la clave se va con el token');
   token = serverConfig().token;
+});
+
+// --- el APK: dónde lo deja Gradle de verdad ----------------------------------
+// apkPath miraba en app/build/… pero Gradle escribe en app/APP/build/… (el módulo se llama
+// "app" y vive dentro de la carpeta "app"). Nunca encontraba nada: "kaip app build" decía
+// "✓ APK listo" y a continuación imprimía null, y /apk contestaba "no apk built yet" con el
+// APK ahí mismo, en disco. El móvil no podía descargarse la app desde el PC.
+test('apkPath: encuentra el APK donde Gradle lo deja de verdad', async () => {
+  const { apkPath } = await import('../lib/server.mjs');
+  const raiz = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-apk-'));
+
+  assert.equal(apkPath(raiz), null, 'sin compilar, null (y así lo puede decir)');
+
+  const dir = path.join(raiz, 'app', 'app', 'build', 'outputs', 'apk', 'release');
+  fs.mkdirSync(dir, { recursive: true });
+  const apk = path.join(dir, 'app-release.apk');
+  fs.writeFileSync(apk, 'no soy un apk, pero existo');
+
+  assert.equal(apkPath(raiz), apk, 'la ruta que produce ":app:assembleRelease"');
+});
+
+test('apkPath: un APK puesto a mano gana al de la compilación', async () => {
+  const { apkPath } = await import('../lib/server.mjs');
+  const raiz = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-apk-'));
+
+  const build = path.join(raiz, 'app', 'app', 'build', 'outputs', 'apk', 'debug');
+  fs.mkdirSync(build, { recursive: true });
+  fs.writeFileSync(path.join(build, 'app-debug.apk'), 'x');
+
+  const aMano = path.join(raiz, 'app', 'kaiprompt.apk');
+  fs.writeFileSync(aMano, 'x');
+
+  assert.equal(apkPath(raiz), aMano, 'una release descargada manda sobre un debug viejo');
 });

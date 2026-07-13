@@ -20,17 +20,39 @@ data class Pairing(
     val tunnel: Boolean,
 ) {
     companion object {
-        /** The pairing QR. Anything malformed is rejected loudly — a half-pairing is useless. */
+        /**
+         * The pairing QR. Two shapes are accepted, and that is deliberate:
+         *
+         *   long   {"url","token","key","host","tunnel"}   what the first releases emitted
+         *   short  {"u","t","k","l"}                       what they emit now
+         *
+         * The short one exists because every byte of this payload is a QR module, and the
+         * long one came to 232 bytes — a version-11 code, 61x61 modules the camera has to
+         * resolve out of a few centimetres of terminal. Right at the edge of scannable, and
+         * a long tunnel URL pushed it over.
+         *
+         * Reading both means an app in someone's pocket keeps working against an older PC,
+         * and an older app keeps working against this one.
+         */
         fun parse(text: String): Pairing {
             val j = JSONObject(text)
             require(j.optInt("v") == 1) { "este QR no es de Kaiprompt" }
+
+            val url = (j.optStringOrNull("u") ?: j.optStringOrNull("url"))
+                ?: throw IllegalArgumentException("al QR le falta la dirección")
+            val token = (j.optStringOrNull("t") ?: j.optStringOrNull("token"))
+                ?: throw IllegalArgumentException("al QR le falta el token")
+            val key = (j.optStringOrNull("k") ?: j.optStringOrNull("key"))
+                ?: throw IllegalArgumentException("al QR le falta la clave")
+
             return Pairing(
-                url = j.getString("url").trimEnd('/'),
-                lan = j.optString("lan").ifBlank { null }?.trimEnd('/'),
-                token = j.getString("token"),
-                key = j.getString("key"),
+                url = url.trimEnd('/'),
+                lan = (j.optStringOrNull("l") ?: j.optStringOrNull("lan"))?.trimEnd('/'),
+                token = token,
+                key = key,
                 host = j.optString("host", "?"),
-                tunnel = j.optBoolean("tunnel", false),
+                // Not sent any more: a tunnel is exactly an https address. Derive it.
+                tunnel = j.optBoolean("tunnel", url.startsWith("https://")),
             )
         }
     }
