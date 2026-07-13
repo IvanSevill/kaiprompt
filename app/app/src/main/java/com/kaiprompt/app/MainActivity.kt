@@ -47,6 +47,7 @@ class MainActivity : ComponentActivity() {
     private var openJob by mutableStateOf<Job?>(null)
     private var chat by mutableStateOf<Chat?>(null)
     private var chatLoading by mutableStateOf(false)
+    private var update by mutableStateOf<Update.Available?>(null)
 
     private val scanner = registerForActivityResult(ScanContract()) { result ->
         val text = result.contents ?: return@registerForActivityResult
@@ -99,6 +100,13 @@ class MainActivity : ComponentActivity() {
             }
         }
         if (pairing != null) refresh()
+
+        // One request to GitHub, off the main thread, and never fatal: failing to reach it
+        // must NOT be shown as "you are out of date". A false alarm is worse than no alarm.
+        lifecycleScope.launch(Dispatchers.IO) {
+            val found = Update.check(this@MainActivity)
+            withContext(Dispatchers.Main) { update = found }
+        }
     }
 
     override fun onResume() {
@@ -253,14 +261,48 @@ class MainActivity : ComponentActivity() {
             // makes the whole tool a lie: work scheduled for 3am that nothing will fire.
             AnimatedVisibility(s?.scheduledButDead == true) {
                 Alarm(
-                    "El daemon está apagado",
+                    "Nada está procesando la cola",
                     "Tienes trabajo agendado que NO se va a lanzar. Arráncalo en el PC:",
                     "kaip daemon start",
+                    K.Err,
+                )
+            }
+
+            // And the opposite mistake, which is the one it was actually making: shouting
+            // that nothing would fire while a `kaip run` was sitting there about to fire it.
+            // It IS running. Say so — and say the one caveat, that it dies with its window.
+            AnimatedVisibility(s?.firesButFragile == true) {
+                Alarm(
+                    "Un «kaip run» está procesando la cola",
+                    "Lo agendado SÍ se va a lanzar. Pero ese run muere si cierras su ventana; " +
+                        "para que sobreviva:",
+                    "kaip daemon start",
+                    K.Warn,
                 )
             }
 
             AnimatedVisibility(error != null) {
                 Alarm("No llego al PC", error ?: "", "¿Está encendido y con «kaip serve» corriendo?")
+            }
+
+            // Nothing updates a sideloaded APK, so an old one can sit here for weeks quietly
+            // missing whatever got fixed. A notice, not an auto-update: replacing the app
+            // someone is looking at, over their data, is not ours to decide.
+            update?.let { u ->
+                Column(
+                    Modifier.fillMaxWidth().padding(14.dp, 10.dp)
+                        .clip(RoundedCornerShape(11.dp))
+                        .background(K.Accent.copy(alpha = 0.12f))
+                        .clickable { Update.download(this@MainActivity) }
+                        .padding(15.dp),
+                ) {
+                    Text(
+                        "✦  Hay una versión nueva: ${u.version}",
+                        color = K.Accent, fontSize = 13.sp, fontWeight = FontWeight.Bold,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text("Toca para descargarla.", color = K.Muted, fontSize = 12.sp)
+                }
             }
 
             s?.quota?.let { QuotaStrip(it) }
@@ -621,14 +663,14 @@ class MainActivity : ComponentActivity() {
 
     // ============================== bits ==========================================
     @Composable
-    private fun Alarm(title: String, body: String, cmd: String?) {
+    private fun Alarm(title: String, body: String, cmd: String?, colour: Color = K.Err) {
         Column(
             Modifier.fillMaxWidth().padding(14.dp, 10.dp)
                 .clip(RoundedCornerShape(11.dp))
-                .background(K.Err.copy(alpha = 0.12f))
+                .background(colour.copy(alpha = 0.12f))
                 .padding(15.dp),
         ) {
-            Text("⚠  $title", color = K.Err, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            Text("${if (colour == K.Err) "⚠" else "◆"}  $title", color = colour, fontSize = 13.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(5.dp))
             Text(body, color = K.Text.copy(alpha = 0.85f), fontSize = 12.sp, lineHeight = 17.sp)
             cmd?.let {

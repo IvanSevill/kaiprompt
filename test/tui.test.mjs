@@ -313,11 +313,14 @@ test('sin nada terminado, el borrado masivo NO se ofrece (no hay nada que barrer
 // --- programar no es lanzar ---------------------------------------------------
 // El malentendido que originó todo esto: abrir la GUI y que el prompt saliera disparado.
 // La GUI no lanza NADA por su cuenta; solo escribe en la cola. Esto lo deja clavado.
-test('la cabecera dice si el daemon está apagado (o los programados no saldrían)', () => {
+test('la cabecera dice si NADIE procesa la cola (o los programados no saldrían)', () => {
+  // Y la pregunta es esa, no "¿está el daemon encendido?". Un "kaip run" abierto procesa la
+  // cola exactamente igual — y la cabecera se pasaba el rato jurando en rojo que no se iba a
+  // lanzar nada mientras se lanzaba. La herramienta mintiendo sobre sí misma.
   saveQueue([]);
   const out = view(fresh());
-  assert.match(out, /daemon off/, 'apagado hay que decirlo, no esconderlo');
-  assert.match(out, /will NOT fire/, 'y explicar la consecuencia');
+  assert.match(out, /nada procesa la cola/i, 'que nadie la procese hay que decirlo');
+  assert.match(out, /NO se lanzará/i, 'y explicar la consecuencia');
 });
 
 test('"D" pide encender/apagar el daemon (y no lanza la cola)', () => {
