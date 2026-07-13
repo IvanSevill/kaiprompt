@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Android has forbidden cleartext HTTP since API 28, and it is right to.
+
+    But this app's fallback address is the PC on your own wifi — http://192.168.x.x:7777 —
+    and `kaip serve --wifi` drops the tunnel entirely, so plain HTTP over the local network
+    IS the feature. Without this, the app simply could not reach a PC on the LAN: "--wifi"
+    was a mode that could not possibly work, and the failure came back as an Android policy
+    error that says nothing about what you did wrong.
+
+    It has to be allowed in general rather than for one address: the config is compiled into
+    the APK, and the IP of your PC is not known until you scan the QR. Android's
+    <domain> takes hostnames and literal IPs — not CIDR ranges — so there is no way to say
+    "private networks only" here.
+
+    What limits the surface is not this file: it is that the app only ever talks to ONE
+    address, the one inside the pairing QR, which you scanned off your own screen. And the
+    tunnel is https and stays https — everything that crosses the internet is encrypted
+    twice over (TLS, and the AES-256-GCM seal underneath it that Cloudflare cannot open).
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import http from 'node:http';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-server-'));
 process.env.KAIP_HOME = TMP;
@@ -28,6 +29,20 @@ let token;
 const get = (p, opts = {}) => fetch(`http://127.0.0.1:${PORT}${p}`, {
   headers: opts.noAuth ? {} : { authorization: `Bearer ${opts.token ?? token}` },
   ...opts,
+});
+
+/** Una peticion cruda, para poder mandar cabeceras que fetch() prohibe (Host). */
+const rawGet = (p, headers = {}) => new Promise((resolve, reject) => {
+  const req = http.request(
+    { host: '127.0.0.1', port: PORT, path: p, method: 'GET', headers },
+    (res) => {
+      let body = '';
+      res.on('data', (d) => { body += d; });
+      res.on('end', () => resolve({ status: res.statusCode, body }));
+    },
+  );
+  req.on('error', reject);
+  req.end();
 });
 
 before(async () => {
@@ -296,4 +311,46 @@ test('apkPath: un APK puesto a mano gana al de la compilación', async () => {
   fs.writeFileSync(aMano, 'x');
 
   assert.equal(apkPath(raiz), aMano, 'una release descargada manda sobre un debug viejo');
+});
+
+// --- /pair: la página que regala las llaves -----------------------------------
+// Sirve el token Y la clave de cifrado SIN autenticación: solo vale porque únicamente se
+// llega a ella desde esta máquina. Mirar la IP del socket no basta — con DNS rebinding, una
+// web (evil.com apuntando a 127.0.0.1) hace que sea el NAVEGADOR DE LA VÍCTIMA quien abra la
+// conexión: el socket es loopback y pasa el filtro, pero el origen sigue siendo evil.com, así
+// que su JavaScript puede leer la respuesta. Se llevaría la caja fuerte entera con solo
+// visitar una página. La cabecera Host es lo que lo cierra: el navegador manda el nombre que
+// tecleó el usuario, no la IP a la que resolvió.
+test('/pair desde localhost: sirve la página de emparejamiento', async () => {
+  const r = await fetch(`http://127.0.0.1:${PORT}/pair`);
+  assert.equal(r.status, 200);
+  assert.match(r.headers.get('content-type'), /text\/html/);
+});
+
+test('/pair con un Host ajeno (DNS rebinding): 404, aunque el socket sea loopback', async () => {
+  // fetch() no deja falsificar Host (es cabecera prohibida), y el ataque real lo hace el
+  // navegador solito. Con node:http mandamos la petición TAL CUAL llegaría: socket loopback
+  // —lo abre la víctima— y Host: evil.com, que es el nombre que ella tecleó.
+  const { status, body } = await rawGet('/pair', { host: 'evil.com' });
+
+  assert.equal(status, 404, 'esto es exactamente el ataque: no puede devolver la página');
+  assert.doesNotMatch(body, /token|key/i, 'y desde luego no las llaves');
+});
+
+test('/pair no se deja enmarcar ni hablar por scripts de fuera', async () => {
+  const r = await fetch(`http://127.0.0.1:${PORT}/pair`);
+  assert.equal(r.headers.get('x-frame-options'), 'DENY');
+  assert.match(r.headers.get('content-security-policy'), /default-src 'none'/);
+});
+
+test('fromLoopback: pide las DOS cosas — socket local y Host local', async () => {
+  const { fromLoopback } = await import('../lib/server.mjs');
+  const req = (address, host) => ({ socket: { remoteAddress: address }, headers: { host } });
+
+  assert.equal(fromLoopback(req('127.0.0.1', 'localhost:7777')), true);
+  assert.equal(fromLoopback(req('::1', '[::1]:7777')), true);
+
+  assert.equal(fromLoopback(req('127.0.0.1', 'evil.com')), false, 'DNS rebinding');
+  assert.equal(fromLoopback(req('192.168.1.50', 'localhost:7777')), false, 'otra máquina de la red');
+  assert.equal(fromLoopback(req('127.0.0.1', undefined)), false, 'sin Host no se fía');
 });

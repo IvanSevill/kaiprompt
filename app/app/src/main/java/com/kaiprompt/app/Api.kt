@@ -79,11 +79,25 @@ class Api(private val pairing: Pairing) {
                 last = e
             }
         }
-        throw Down(
-            "no llego a ${pairing.host}.\n" +
-                "¿está el PC encendido y con \"kaip serve\" corriendo?\n" +
-                (last?.message ?: "")
-        )
+
+        // Name the ADDRESS, not the hostname. `host` is decoration and is not even in the
+        // compact QR any more, so this message used to read "no llego a ?." — which tells
+        // you nothing, and tells you it twice. The address is the thing you can act on: it
+        // says whether the app was reaching for the tunnel or for the PC on your wifi.
+        val tried = bases.joinToString("\n") { "  · $it" }
+        val why = last?.message.orEmpty()
+
+        // A quick tunnel gets a NEW address every time `kaip serve` restarts, so the most
+        // likely reason a working app suddenly stops working is simply that: it is knocking
+        // on a door that no longer exists.
+        val hint = if (pairing.tunnel) {
+            "El túnel cambia de dirección cada vez que reinicias «kaip serve». " +
+                "Vuelve a escanear el QR."
+        } else {
+            "Tienes que estar en la misma wifi que el PC."
+        }
+
+        throw Down("No llego al PC.\n\nProbé:\n$tried\n\n$hint\n\n$why".trim())
     }
 
     private fun open(url: String, auth: Boolean = true): HttpURLConnection =
