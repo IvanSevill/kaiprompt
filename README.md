@@ -221,6 +221,84 @@ computed from whichever comes back first.
 
 ---
 
+## …and neither does it kill *your* conversations
+
+That rescue only ever covered launches **kaip** made. The chat you were having by hand had
+none of it.
+
+You are working. Five minutes of work left. The quota runs out. Now you have to wait four and
+a half hours, **remember**, find the right conversation, and type "carry on" — for five minutes
+of work you had already finished thinking about.
+
+So kaip reads your transcripts, and when you open the GUI it says so:
+
+```
+╭─ a medias ──────────────────────────────────────────────╮
+│ Parece que una conversación se quedó a medias.          │
+│                                                         │
+│ ▸ FacturaSevi · hace 12 min                             │
+│     «…falta enchufar el network config»                 │
+│                                                         │
+│ ¿La termino en cuanto vuelva el cupo?                   │
+╰─────────────────────────────────────────────────────────╯
+  [enter] sí   ·   [esc] no (no vuelvo a preguntar)
+```
+
+Say yes and it is queued as a **continuation** — same session, resumed, with the prompt never
+re-sent — and it goes **first**, ahead of everything, the moment there is quota. It is the
+cheapest job in the queue: the context is already paid for and the work is already half done.
+
+Say no and **it never asks about that one again**. An alert that keeps coming back is an alert
+you learn to dismiss without reading, and then it is worth nothing on the day it matters.
+
+**GUI only.** With no terminal there is nobody to answer a question, so nothing is asked and
+nothing changes.
+
+### Which signal, and why that one
+
+Found by reading the 180 transcripts under `~/.claude/projects`, not by guessing — and the
+obvious signals are all wrong. Sorted by how each conversation *ends*:
+
+| how it ends | how many | |
+|---|---|---|
+| assistant text | 60 | finished normally |
+| **a `tool_result`** | **45** | the tempting one — and useless |
+| an API error that is not quota | 14 | 429s, `/login`, disabled account |
+| a user turn nobody answered | 14 | ambiguous |
+| **a quota API error** | **6** | ← the signal |
+
+Ending on a tool_result *looks* like being cut off mid-work, and it is the commonest odd
+ending there is. That is exactly the problem: every escape key, every closed terminal, every
+Ctrl-C lands there too. Offer all 45 and you are offering everything.
+
+The signal is narrower: the last real turn is an `assistant` entry flagged
+`isApiErrorMessage`, whose text is a quota message. **The flag** says Claude Code *wrote* it
+rather than said it — grepping for "session limit" matches any chat that merely *discusses*
+quota, and this repo is full of those. **The text** (the same matcher the launcher already
+trusts) says it was the quota and not an auth failure. **The position** says nobody has picked
+the thread back up since. Remove any one of the three and it misfires.
+
+One wrinkle: the quota error is almost never the last *line* — bookkeeping keeps trailing
+after it. Position has to be counted in real turns, or you find nothing.
+
+And it heals itself: resume the conversation and the transcript grows new turns, so the error
+stops being last and the session stops being a candidate.
+
+### Going first, without lying about the time
+
+Jumping the queue cannot be done by giving a job an earlier `when` — that is the one thing
+`requeue` refuses to do, because the scheduled times **are** the order, and moving one moves
+the meaning of every job behind it. So priority is its own field:
+
+```bash
+kaip add "termina el refactor" --first     # before everything, as soon as there is quota
+```
+
+Nobody else's time moves. `--first` and `--at` contradict each other, so kaip refuses the
+pair rather than guessing which you meant.
+
+---
+
 ## Feeding a run that is already going
 
 `kaip run` stays up even when the queue empties.
@@ -342,6 +420,7 @@ lib/
   run-tui.mjs       the full-screen loop: the clock and the live view
   run-parallel.mjs  the lane loop
   quota.mjs         out-of-quota detection, and when it comes back
+  cutshort.mjs      YOUR conversations the quota killed — the signal, and the offer
   daemon.mjs        the detached background runner
   chat.mjs          reading session transcripts
   server.mjs        the HTTP API the phone talks to
@@ -372,7 +451,7 @@ for it would have broken the only promise this tool makes about itself.
 ## Tests
 
 ```bash
-node --test test/*.test.mjs      # 342 tests, no dependencies
+node --test test/*.test.mjs      # 425 tests, no dependencies
 kaip app test                    # the app's, on the JVM — no emulator
 ```
 

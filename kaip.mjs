@@ -49,8 +49,16 @@ async function cmdAdd({ flags, pos, engine }) {
 
   if (!from && !prompt) {
     throw new Error('missing prompt.\n  usage: kaip add "your message" | --from <path/to/prompt.md>'
-      + '\n         [--target name] [--at HH:MM|+30m] [--dir project] [--perm mode]');
+      + '\n         [--target name] [--at HH:MM|+30m] [--dir project] [--perm mode] [--first]');
   }
+
+  // "First" and "at 03:00" are two different answers to the same question. Honouring one
+  // would mean quietly ignoring the other, so refuse instead of guessing which was meant.
+  if (flags.first && typeof flags.at === 'string') {
+    throw new Error('--first and --at contradict each other: one says "before everything else",'
+      + '\n  the other says "at this time". Pick one.');
+  }
+
   const job = addJob({
     prompt,
     from,
@@ -60,8 +68,9 @@ async function cmdAdd({ flags, pos, engine }) {
     perm: typeof flags.perm === 'string' ? flags.perm : null,       // null → bypass
     adapter: typeof flags.adapter === 'string' ? flags.adapter : (engine || 'claude'),
     session: typeof flags.session === 'string' ? flags.session : null,
+    priority: Boolean(flags.first),
   });
-  console.log(`+ ${job.id}  ${job.when ? '@ ' + fmt(job.when) : '(sequential)'}  `
+  console.log(`+ ${job.id}  ${job.when ? '@ ' + fmt(job.when) : job.priority ? '(la primera)' : '(sequential)'}  `
     + `${job.target ? '[' + job.target + '] ' : ''}${preview(prompt ?? '')}`);
   if (job.promptFile) {
     console.log(`  ← ${job.promptFile}`);
@@ -70,7 +79,9 @@ async function cmdAdd({ flags, pos, engine }) {
 
   // Adding never launches. But a job with a time is a PROMISE, and something has to be
   // there to keep it — so make sure something is, and then say what actually is.
-  if (!job.when) {
+  // A --first job makes the same promise ("as soon as there is quota"), so it gets the
+  // same guarantee: it too needs someone draining the queue, or it will just sit there.
+  if (!job.when && !job.priority) {
     console.log(c.muted('  secuencial: sale en tu próximo "run" (aquí no se lanza nada)'));
     return;
   }
@@ -110,7 +121,10 @@ function cmdList({ flags, pos }) {
   const icon = { pending: '·', running: '▶', done: '✓', error: '✗', missed: '⊘' };
   for (const j of q) {
     if (full) { console.log(jobDetails(j), '\n'); continue; }
-    const when = j.when ? '@ ' + fmt(j.when) : 'seq';
+    // A job that jumps the queue has to LOOK like it does. It sits wherever it was added but
+    // runs before everything above it, and a row that says "seq" while the runner quietly
+    // takes it first is the tool lying about its own order.
+    const when = j.when ? '@ ' + fmt(j.when) : j.priority ? '↑ la primera' : 'seq';
     console.log(`${icon[j.status] || '?'} ${j.id}  ${String(j.status).padEnd(7)} `
       + `${when.padEnd(22)} ${j.adapter}${j.target ? '/' + j.target : ''}  ${jobPreview(j)}`);
   }
@@ -513,9 +527,11 @@ Usage:
 
 Queue:
   add "<prompt>"              queue a launch  [--at <when>] [--target <n>] [--dir <project>]
-                              [--perm <mode>] [--session <id>]
+                              [--perm <mode>] [--session <id>] [--first]
   add --from <path>           the prompt lives in a FILE, read at launch — keep editing it
                               until the second it goes out  (--file pastes it in NOW instead)
+  add ... --first             jump the queue: runs before everything, as soon as there is
+                              quota. Nobody else's time moves. Cannot be used with --at.
   list [--full|-f]            the queue, with status
   show <id>                   the job AND the whole conversation it had
   edit <id>                   change a pending job (--prompt --from --at --target --dir --perm)
