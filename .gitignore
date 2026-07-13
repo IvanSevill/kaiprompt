@@ -13,3 +13,6 @@ app/local.properties
 app/.gradle/
 app/build/
 app/app/build/
+
+# prompts personales: llevan nombres de proyectos y rutas locales
+prompts/
