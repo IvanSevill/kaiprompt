@@ -61,7 +61,7 @@ class MainActivity : ComponentActivity() {
                 CatchUpWorker.schedule(this)
                 refresh()
             }
-            .onFailure { error = "Ese QR no es de Kaiprompt. Usa el que sale con «kaip pair»." }
+            .onFailure { error = "Ese QR no es de Kaiprompt. Usa el que sale con «kaip serve»." }
     }
 
     private val askNotifications =
@@ -182,11 +182,12 @@ class MainActivity : ComponentActivity() {
             Column(
                 Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(K.Card).padding(20.dp),
             ) {
+                // Two steps, not three: `kaip serve` prints the pairing QR itself. There used
+                // to be a separate command for it, and this screen went on telling people to
+                // type it long after it stopped existing.
                 Step(1, "En el PC, arranca el servidor", "kaip serve")
                 Spacer(Modifier.height(16.dp))
-                Step(2, "Pide el código de emparejamiento", "kaip pair")
-                Spacer(Modifier.height(16.dp))
-                Step(3, "Escanéalo aquí abajo", null)
+                Step(2, "Escanea aquí el QR que sale ahí mismo", null)
             }
 
             Spacer(Modifier.height(30.dp))
@@ -196,7 +197,7 @@ class MainActivity : ComponentActivity() {
                         ScanOptions()
                             .setBeepEnabled(false)
                             .setOrientationLocked(false)
-                            .setPrompt("Apunta al QR de «kaip pair»")
+                            .setPrompt("Apunta al QR de «kaip serve»")
                     )
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = K.Accent, contentColor = K.Bg),
