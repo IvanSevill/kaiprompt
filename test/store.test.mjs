@@ -78,9 +78,23 @@ test('resolveDir: nombre de proyecto = subcarpeta de _base (sin distinguir mayú
   assert.equal(resolveDir('miapp', 'X'), base.replace(/\\/g, '\\') + '/MiApp');
 });
 
-test('resolveDir: ruta literal si no casa con nada', () => {
+test('resolveDir: una ruta que EXISTE se acepta tal cual', () => {
   saveProjects({ _base: path.join(TMP, 'Programas') });
-  assert.equal(resolveDir('C:/otra/ruta', 'X'), 'C:/otra/ruta');
+  const real = path.join(TMP, 'una-carpeta-de-verdad');
+  fs.mkdirSync(real, { recursive: true });
+  assert.equal(resolveDir(real, 'X'), real);
+});
+
+test('resolveDir: un nombre que no casa con NADA se rechaza (antes se colaba como ruta relativa)', () => {
+  // El bug: "--dir kaiprompt", con kaiprompt fuera de _base, se quedaba como la ruta
+  // RELATIVA "kaiprompt". El job entonces corre en la carpeta en la que el runner
+  // arrancara — y eso no se descubre hasta que ya ha hecho el trabajo donde no debia.
+  // Mejor negarse ahora, mientras hay alguien mirando.
+  saveProjects({ _base: path.join(TMP, 'Programas'), miapp: 'C:/algun/sitio' });
+
+  assert.throws(() => resolveDir('no-existe-esta-carpeta', 'X'), /no such folder/);
+  assert.throws(() => resolveDir('no-existe-esta-carpeta', 'X'), /miapp/, 'y dice qué alias hay');
+  assert.throws(() => resolveDir('no-existe-esta-carpeta', 'X'), /kaip projects/, 'y cómo registrarla');
 });
 
 // --- importProgramados ------------------------------------------------------

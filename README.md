@@ -302,7 +302,14 @@ lib/
   store.mjs         queue · sessions · projects
   queue.mjs         add/remove/clear, and the suggestions
   prompt.mjs        the prompt: inline, or linked to a file
-  runner.mjs        the run loop, the clock, the live view, parallel
+  runner.mjs        takes the lock, cleans up, and picks one of the three loops
+  lock.mjs          one runner at a time
+  schedule.mjs      what runs now, the lanes, and closing out what never ran
+  launch.mjs        one job end to end: execute → settle → requeue or finish
+  frames.mjs        everything that gets painted
+  run-plain.mjs     the unattended loop (daemon, Task Scheduler, pipes)
+  run-tui.mjs       the full-screen loop: the clock and the live view
+  run-parallel.mjs  the lane loop
   quota.mjs         out-of-quota detection, and when it comes back
   daemon.mjs        the detached background runner
   chat.mjs          reading session transcripts
@@ -334,7 +341,7 @@ for it would have broken the only promise this tool makes about itself.
 ## Tests
 
 ```bash
-node --test test/*.test.mjs      # 336 tests, no dependencies
+node --test test/*.test.mjs      # 342 tests, no dependencies
 kaip app test                    # the app's, on the JVM — no emulator
 ```
 

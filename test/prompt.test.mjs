@@ -154,3 +154,45 @@ test('edit --from apuntando a algo que no existe se rechaza (la cola no se corro
   assert.throws(() => editJob(j.id, { from: path.join(TMP, 'fantasma.md') }), /no such prompt file/);
   assert.equal(loadQueue()[0].promptFile, path.resolve(f), 'el job se queda como estaba');
 });
+
+// --- reanudar NO es repetir --------------------------------------------------
+// Si el cupo corta un lanzamiento a mitad, la sesion sigue ahi: ya leyo el proyecto, hizo
+// un plan y quiza escribio media funcionalidad. Volver a pegarle el prompt entero le hace
+// EMPEZAR DE CERO: paga todo ese contexto por segunda vez y puede deshacer lo hecho.
+
+test('un job cortado por cupo, CON sesion, se reanuda con "Continua" y no con el prompt', async () => {
+  const { CONTINUATION, isContinuation } = await import('../lib/prompt.mjs');
+  const { requeue, settle } = await import('../lib/launch.mjs');
+
+  saveQueue([]);
+  const j = addJob({ prompt: 'un prompt largisimo con todo el contexto', adapter: 'mock' });
+  j.sessionId = 'sess-viva';                          // el lanzamiento llego a arrancar
+
+  const s = settle(j, {
+    ok: false,
+    output: "You've hit your session limit · resets 1:30pm",
+    error: 'exited 1',
+  });
+  requeue(j, s);
+
+  assert.equal(j.continuation, true);
+  assert.equal(isContinuation(j), true);
+  assert.match(CONTINUATION, /Contin[uú]a/i);
+  assert.match(CONTINUATION, /NO empieces de cero/i);
+  assert.doesNotMatch(CONTINUATION, /prompt largisimo/);
+});
+
+test('sin sesion, el lanzamiento nunca arranco: se le manda el prompt ORIGINAL', async () => {
+  // Aqui no hay nada que continuar. Mandarle "Continua" a una conversacion que no existe
+  // seria mandarle a Claude un mensaje sin ningun contexto.
+  const { isContinuation } = await import('../lib/prompt.mjs');
+  const { requeue, settle } = await import('../lib/launch.mjs');
+
+  saveQueue([]);
+  const j = addJob({ prompt: 'el original', adapter: 'mock' });   // sessionId null
+
+  requeue(j, settle(j, { ok: false, output: "You've hit your session limit", error: 'x' }));
+
+  assert.equal(j.continuation, false);
+  assert.equal(isContinuation(j), false);
+});
