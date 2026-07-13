@@ -505,7 +505,7 @@ test('"x" pide confirmacion antes de borrar los terminados (no borra a la primer
 
   assert.equal(effect, null, 'todavia no borra nada');
   assert.ok(next.confirm, 'pregunta primero');
-  assert.match(next.confirm.text, /1 finished/);
+  assert.match(next.confirm.text, /TODOS/);
   assert.equal(loadQueue().length, 2, 'la cola sigue intacta');
 
   // Y al decir que si, se van los terminados y se quedan los pendientes.
