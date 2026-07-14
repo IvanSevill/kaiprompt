@@ -15,7 +15,7 @@ import http from 'node:http';
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-server-'));
 process.env.KAIP_HOME = TMP;
 
-const { patchJob, saveQueue, saveSessions } = await import('../lib/store.mjs');
+const { outPath, patchJob, saveQueue, saveSessions } = await import('../lib/store.mjs');
 const { addJob } = await import('../lib/queue.mjs');
 const { executeJob } = await import('../lib/runner.mjs');
 const {
@@ -160,6 +160,18 @@ test('/api/job/:id/chat with no transcript: a 404 with a reason, not a 500', asy
   patchJob(j);                                           // the mock writes no transcript
   const r = await get(`/api/job/${j.id}/chat`);
   assert.equal(r.status, 404);
+});
+
+test('/api/job/:id/chat falls back to the prompt and output for OpenCode', async () => {
+  saveQueue([]);
+  const j = addJob({ prompt: 'ask OpenCode', adapter: 'opencode', provider: 'openai', model: 'gpt-5.6-terra' });
+  fs.writeFileSync(outPath(j.id), 'OpenCode answer');
+  patchJob({ ...j, status: 'done', output: `out/${j.id}.txt`, finishedAt: Date.now() });
+
+  const r = await get(`/api/job/${j.id}/chat`);
+  assert.equal(r.status, 200);
+  const chat = await r.json();
+  assert.deepEqual(chat.turns.map((t) => t.blocks[0].text), ['ask OpenCode', 'OpenCode answer']);
 });
 
 // --- pairing --------------------------------------------------------------------

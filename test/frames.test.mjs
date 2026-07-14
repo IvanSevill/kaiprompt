@@ -20,7 +20,7 @@ process.env.KAIP_HOME = TMP;
 
 const { saveQueue } = await import('../lib/store.mjs');
 const { addJob } = await import('../lib/queue.mjs');
-const { clockFrame, runningFrame } = await import('../lib/frames.mjs');
+const { clockFrame, quotaLines, runningFrame } = await import('../lib/frames.mjs');
 const { strip } = await import('../lib/ui.mjs');
 
 // With no TTY, size() falls back to 80x24; force something roomy so the box does not cut.
@@ -152,4 +152,26 @@ test('the clock (a scheduled job) uses the same card: it shows the file too', ()
 
   const out = text(clockFrame(job, Date.now() + 7200_000, [job], Date.now(), { expanded: true }));
   assert.match(out, /the 3am job/, 'the prompt of the job about to go out has to be visible');
+});
+
+test('the clock keeps the large digits when the wait includes days', () => {
+  saveQueue([]);
+  const job = addJob({ prompt: 'later', at: '+2d', adapter: 'mock' });
+
+  const out = text(clockFrame(job, Date.now() + 2 * 86400_000, [job], Date.now()));
+  assert.match(out, /██/, 'days, hours, minutes and seconds stay in the large clock');
+});
+
+test('the runner card identifies the engine, provider and model', () => {
+  saveQueue([]);
+  const job = addJob({ prompt: 'run it', adapter: 'opencode', provider: 'openai', model: 'gpt-5.6-terra' });
+
+  const out = card(job);
+  assert.match(out, /engine opencode\/openai\/gpt-5\.6-terra/);
+});
+
+test('an OpenCode job does not display Claude usage as its quota', () => {
+  const lines = text(quotaLines(100, { adapter: 'opencode' }));
+  assert.match(lines, /opencode is checked when this job launches/);
+  assert.doesNotMatch(lines, /session|week/);
 });

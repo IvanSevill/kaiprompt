@@ -8,100 +8,102 @@ import * as opencode from '../adapters/opencode.mjs';
 
 const dry = (over = {}) => claude.run({ prompt: 'p', dryRun: true, ...over });
 
-test('claude: por defecto BYPASS (autonomía total en lanzamientos desatendidos)', async () => {
+test('claude: BYPASS by default (full autonomy for unattended launches)', async () => {
   const { output } = await dry();
   assert.match(output, /--dangerously-skip-permissions/);
   assert.doesNotMatch(output, /--permission-mode/);
 });
 
-test('claude: --perm acceptEdits baja el modo de permisos', async () => {
+test('claude: --perm acceptEdits lowers the permission mode', async () => {
   const { output } = await dry({ permMode: 'acceptEdits' });
   assert.match(output, /--permission-mode acceptEdits/);
   assert.doesNotMatch(output, /--dangerously-skip-permissions/);
 });
 
-test('claude: con sessionId reanuda la conversación', async () => {
+test('claude: resumes the conversation with sessionId', async () => {
   const { output } = await dry({ sessionId: 'abc-123' });
   assert.match(output, /--resume abc-123/);
   assert.match(output, /resumes abc-123…/);
 });
 
-test('claude: sin sessionId abre sesión nueva', async () => {
+test('claude: opens a new session without sessionId', async () => {
   const { output } = await dry();
   assert.match(output, /new session/);
   assert.doesNotMatch(output, /--resume/);
 });
 
-test('claude: onEvent activa el streaming (para la vista en vivo)', async () => {
+test('claude: onEvent enables streaming (for the live view)', async () => {
   const { output } = await dry({ onEvent: () => {} });
   assert.match(output, /--output-format stream-json/);
-  assert.match(output, /--verbose/, 'stream-json exige --verbose');
+  assert.match(output, /--verbose/, 'stream-json requires --verbose');
 });
 
-test('claude: sin onEvent usa JSON de una tacada (scripts, dry-run)', async () => {
+test('claude: without onEvent uses one-shot JSON (scripts, dry-run)', async () => {
   const { output } = await dry();
   assert.match(output, /--output-format json/);
   assert.doesNotMatch(output, /stream-json/);
 });
 
-test('claude: el dry-run NO ejecuta nada y devuelve ok', async () => {
+test('claude: dry-run executes NOTHING and returns ok', async () => {
   const res = await dry();
   assert.equal(res.ok, true);
   assert.match(res.output, /^\[dry-run\]/);
 });
 
-// --- el modelo llega hasta el CLI -------------------------------------------
-// `--model` se parseaba en kaip.mjs, se validaba, se pasaba a addJob… y ahí se caía por un
-// agujero: el job no lo guardaba, así que el lanzamiento salía con el modelo por defecto.
-// La bandera se aceptaba sin rechistar y no hacía nada, que es la peor forma de no hacer
-// nada. La cadena entera (add → job → launch → adaptador) va probada, extremo a extremo.
+// --- the model reaches the CLI -----------------------------------------------
+// `--model` was parsed in kaip.mjs, validated, passed to addJob... and then fell through a
+// hole: the job did not save it, so the launch used the default model. The flag was accepted
+// without complaint and did nothing, the worst way to do nothing. The complete chain
+// (add -> job -> launch -> adapter) is tested end to end.
 
-test('claude: --model llega a la línea de comandos', async () => {
+test('claude: --model reaches the command line', async () => {
   const { output } = await dry({ model: 'sonnet' });
   assert.match(output, /--model sonnet/);
 });
 
-test('claude: sin modelo NO se pasa --model (respeta el default de Claude Code)', async () => {
+test('claude: without a model, --model is NOT passed (respects the Claude Code default)', async () => {
   const { output } = await dry();
   assert.doesNotMatch(output, /--model/);
 });
 
-test('codex: dry-run, sin sesión → exec nuevo', async () => {
+test('codex: dry-run, no session -> new exec', async () => {
   const res = await codex.run({ prompt: 'p', dryRun: true });
   assert.equal(res.ok, true);
   assert.match(res.output, /new session/);
   assert.doesNotMatch(res.output, /resume/);
 });
 
-test('codex: con sesión reanuda el hilo', async () => {
+test('codex: resumes the thread with a session', async () => {
   const res = await codex.run({ prompt: 'p', dryRun: true, sessionId: 'th_123' });
   assert.match(res.output, /exec resume/);
   assert.match(res.output, /th_123/);
 });
 
-test('codex: --model también llega', async () => {
+test('codex: --model also reaches the command line', async () => {
   const res = await codex.run({ prompt: 'p', dryRun: true, model: 'gpt-5' });
   assert.match(res.output, /--model gpt-5/);
 });
 
-test('mock: emite un flujo de eventos realista y termina con result', async () => {
-  const tipos = [];
-  const res = await mock.run({ prompt: 'x', onEvent: (e) => tipos.push(e.type) });
+test('mock: emits a realistic event stream and ends with result', async () => {
+  const types = [];
+  const res = await mock.run({ prompt: 'x', onEvent: (e) => types.push(e.type) });
 
   assert.equal(res.ok, true);
-  assert.equal(tipos.at(0), 'system', 'arranca con el init');
-  assert.equal(tipos.at(-1), 'result', 'y cierra con el resultado');
-  assert.ok(tipos.filter((t) => t === 'assistant').length >= 3);
+  assert.equal(types.at(0), 'system', 'starts with init');
+  assert.equal(types.at(-1), 'result', 'ends with the result');
+  assert.ok(types.filter((t) => t === 'assistant').length >= 3);
   assert.ok(res.sessionId.startsWith('mock-'));
 });
 
-test('mock: respeta una sesión ya existente', async () => {
-  const res = await mock.run({ prompt: 'x', sessionId: 'previa' });
-  assert.equal(res.sessionId, 'previa');
+test('mock: respects an existing session', async () => {
+  const res = await mock.run({ prompt: 'x', sessionId: 'previous' });
+  assert.equal(res.sessionId, 'previous');
 });
 
-test('opencode: aún no implementado, pero falla limpio (no revienta la cola)', async () => {
-  const res = await opencode.run({ prompt: 'x' });
-  assert.equal(res.ok, false);
-  assert.match(res.error, /not implemented|no implementado/i);
+test('opencode: dry-run validates its provider/model and builds the unattended command', async () => {
+  const res = await opencode.run({ prompt: 'x', provider: 'google', model: 'gemini-2.5-flash', dryRun: true });
+  assert.equal(res.ok, true);
+  assert.match(res.output, /--format json/);
+  assert.match(res.output, /--auto/);
+  assert.match(res.output, /-m google\/gemini-2.5-flash/);
 });

@@ -32,6 +32,19 @@ function press(state, keys) {
 
 const fresh = () => refresh(initialState());
 
+test('refresh: picks up jobs added by another Kaiprompt process without losing wizard input', () => {
+  saveQueue([]);
+  let state = fresh();
+  state = reduce(state, 'a').state;
+  state = reduce(state, asPaste('draft prompt')).state;
+
+  addJob({ prompt: 'arrived elsewhere', adapter: 'mock' });
+  state = refresh(state);
+
+  assert.equal(state.data.queue.length, 1);
+  assert.equal(state.wizard.buffer, 'draft prompt');
+});
+
 // --- keys --------------------------------------------------------------------
 test('decodeKey: arrows, enter, esc, backspace and Ctrl+C', () => {
   assert.equal(decodeKey('\x1b[A'), 'up');
@@ -190,7 +203,7 @@ test('in the chats view, enter opens that target conversation', () => {
 });
 
 // --- the add wizard -----------------------------------------------------------
-test('a: the wizard walks prompt → when → target → folder → permissions', () => {
+test('a: the wizard walks prompt → prompt file → when → target → folder → engine → provider → model → permissions', () => {
   saveQueue([]);
   let s = press(fresh(), ['a']).state;
   assert.ok(s.wizard, 'the wizard opens');
@@ -202,13 +215,20 @@ test('a: the wizard walks prompt → when → target → folder → permissions'
   assert.match(view(s), /Prompt/);
 
   s = press(s, ['enter']).state;
-  assert.equal(s.wizard.step, 1, 'moves on to "when"');
+  assert.equal(s.wizard.step, 1, 'moves on to optional prompt file');
+  s = press(s, ['enter']).state;
+  assert.equal(s.wizard.step, 2, 'moves on to "when"');
   s = press(s, [...'+2h', 'enter']).state;
-  assert.equal(s.wizard.step, 2);
-  s = press(s, [...'fixes', 'enter']).state;
   assert.equal(s.wizard.step, 3);
+  s = press(s, [...'fixes', 'enter']).state;
+  assert.equal(s.wizard.step, 4);
   s = press(s, ['enter']).state;                       // empty folder → the current one
-  assert.equal(s.wizard.step, 4, 'last step: permissions');
+  assert.equal(s.wizard.step, 5, 'engine step');
+  assert.equal(s.wizard.values.engine, 'claude');
+  s = press(s, ['enter']).state;                       // engine
+  s = press(s, ['enter']).state;                       // provider is empty for Claude
+  s = press(s, ['enter']).state;                       // model is optional for Claude
+  assert.equal(s.wizard.step, 8, 'last step: permissions');
 
   // permissions are chosen with ← →, not typed
   assert.equal(s.wizard.values.perm, 'bypass');
@@ -241,8 +261,8 @@ test('wizard: an empty prompt does not move on', () => {
 });
 
 test('wizard: an impossible time is caught here, not at 3am on launch', () => {
-  const { state } = press(fresh(), ['a', ...'x', 'enter', ...'whenever', 'enter']);
-  assert.equal(state.wizard.step, 1, 'it stays on "when" so you can retype it');
+  const { state } = press(fresh(), ['a', ...'x', 'enter', 'enter', ...'whenever', 'enter']);
+  assert.equal(state.wizard.step, 2, 'it stays on "when" so you can retype it');
   assert.match(strip(state.message), /can't parse time/);
 });
 
@@ -333,6 +353,26 @@ test('applyEffect delete: deletes that job', () => {
   assert.equal(loadQueue().length, 0);
 });
 
+test('space selects pending jobs and m applies one engine selection to all of them', () => {
+  saveQueue([]);
+  const a = addJob({ prompt: 'one' }); const b = addJob({ prompt: 'two' });
+  let st = fresh();
+  st = reduce(st, 'space').state;
+  st = reduce(st, 'down').state;
+  st = reduce(st, 'space').state;
+  assert.deepEqual(st.selectedIds, [a.id, b.id]);
+  st = reduce(st, 'm').state;
+  assert.equal(st.wizard.mode, 'bulk-engine');
+  const effect = press(st, ['right', 'right', 'enter', ...'google', 'enter', ...'gemini-2.5-flash', 'enter']).effect;
+  assert.equal(effect.type, 'bulk-engine');
+  applyEffect(effect);
+  for (const job of loadQueue()) {
+    assert.equal(job.adapter, 'opencode');
+    assert.equal(job.provider, 'google');
+    assert.equal(job.model, 'gemini-2.5-flash');
+  }
+});
+
 test('applyEffect: an error shows up in the bar, it does not kill the GUI', () => {
   saveQueue([]);
   const line = applyEffect({ type: 'edit', id: 'does-not-exist', values: { prompt: 'x', perm: 'bypass' } });
@@ -353,7 +393,7 @@ test('render: tabs, jobs, the shortcut bar and the selection marker', () => {
   assert.match(out, /a add · e edit/, 'the shortcut bar');
   assert.match(out, /d — delete ONLY this one/);
   // "out" and "chat" said nothing about how they differ. The bar says what you GET.
-  assert.match(out, /o answer · c conversation · y JOIN chat/, 'the three depths, named by what they give you');
+  assert.match(out, /space select · m change engine/, 'bulk engine selection is discoverable');
 });
 
 test('BOTH deletes appear together and spelled out: they are astonishingly easy to confuse', () => {
@@ -403,7 +443,7 @@ test('"r" is still the only thing that runs the queue by hand', () => {
 
 test('the wizard queues, it does not send: no key in the add flow fires a launch', () => {
   saveQueue([]);
-  const keys = [...'a', ...'hello', 'enter', ...'+2h', 'enter', 'enter', 'enter', 'enter'];
+  const keys = [...'a', ...'hello', 'enter', 'enter', ...'+2h', 'enter', 'enter', 'enter', 'enter', 'enter', 'enter', 'enter'];
   let state = fresh(); let effect = null;
   for (const k of keys) {
     ({ state, effect } = reduce(state, k));
@@ -481,7 +521,7 @@ test('render: with more jobs than rows, the selection stays on screen', () => {
 test('render: the wizard is painted with its steps and the help hint', () => {
   const s = press(fresh(), ['a', ...'hello']).state;
   const out = view(s);
-  assert.match(out, /new launch · step 1\/5/);
+  assert.match(out, /new launch · step 1\/9/);
   assert.match(out, /Prompt:/);
   assert.match(out, /hello/);
   assert.match(out, /enter: next · esc: cancel/);
@@ -546,14 +586,15 @@ test('the wizard suggests the existing conversations, and ↑↓ picks one', () 
   saveQueue([]);
   saveSessions({ fixes: { sessionId: 'sess-abcdef12', adapter: 'claude', updatedAt: Date.now() } });
 
-  // add → prompt → when → we land on the "target" step
+  // add → prompt → optional file → when → we land on the "target" step
   let st = refresh(initialState());
   st = reduce(st, 'a').state;
   for (const ch of 'something') st = reduce(st, ch).state;
   st = reduce(st, 'enter').state;                              // prompt done
+  st = reduce(st, 'enter').state;                              // optional file skipped
   st = reduce(st, 'enter').state;                              // empty when → sequential
 
-  assert.equal(st.wizard.step, 2, 'we are on the target step');
+  assert.equal(st.wizard.step, 3, 'we are on the target step');
 
   const screen = render(st).map(strip).join('\n');
   assert.ok(screen.includes('fixes'), 'the existing session is offered on screen');
@@ -570,6 +611,7 @@ test('typing over a suggestion drops it (it is your value, not its)', () => {
   let st = refresh(initialState());
   st = reduce(st, 'a').state;
   for (const ch of 'something') st = reduce(st, ch).state;
+  st = reduce(st, 'enter').state;
   st = reduce(st, 'enter').state;
   st = reduce(st, 'enter').state;
   st = reduce(st, 'down').state;                               // takes "fixes"

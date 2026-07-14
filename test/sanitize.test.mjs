@@ -4,29 +4,28 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// Este repo es PÚBLICO. Una ruta de home absoluta (del tipo "C:\Users\<...>" o "/home/<...>")
-// filtra el nombre del usuario y, además, no funcionaría en la máquina de nadie más: la
-// herramienta se instala donde se clone. El instalador ya escribe las rutas reales en tiempo
-// de instalación, así que en el código fuente NO debe quedar ninguna.
+// This repo is PUBLIC. An absolute home path (such as "C:\Users\<...>" or "/home/<...>")
+// leaks the user's name and would not work on anyone else's machine: the tool installs wherever
+// it is cloned. The installer writes actual paths at install time, so none must remain in source.
 //
-// Este test es el cerrojo: si alguien vuelve a incrustar una ruta personal, salta aquí.
+// This test is the lock: if someone embeds a personal path again, it fails here.
 
 const REPO = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-// Lo que no va al repo tampoco se escanea. Las carpetas de compilación de Gradle están
-// LLENAS de rutas absolutas de la máquina que compiló — es normal y por eso están en el
-// .gitignore. Escanearlas solo produce falsas alarmas que enseñan a ignorar este test.
+// Things outside the repo are not scanned. Gradle build folders contain absolute paths from the
+// machine that built them; that is normal, which is why they are in .gitignore. Scanning them
+// only produces false alarms that teach people to ignore this test.
 const SKIP_DIRS = new Set([
   '.git', 'node_modules', 'data', 'out', '.tasks',
   'build', '.gradle',
 ]);
-// Datos del usuario: viven en disco pero están en .gitignore, no se publican.
+// User data: it lives on disk but is in .gitignore and is not published.
 const SKIP_FILES = new Set(['projects.json', 'local.properties']);
 const SCAN_EXT = new Set(['.mjs', '.js', '.json', '.md', '.cmd', '.sh', '.yml', '.txt', '']);
 
-// Marcadores de sitio: no son datos personales, son plantillas.
+// Placeholders are templates, not personal data.
 const PLACEHOLDERS = ['<your-user>', '<you>', '$USER', '%USERNAME%', '$env:USERPROFILE', '$HOME'];
 
-/** Una carpeta de usuario con nombre: Users\<...>, Users/<...>, home/<...> (con o sin "C:"). */
+/** A named user folder: Users\<...>, Users/<...>, home/<...> (with or without "C:"). */
 const HOME_PATH = /(?:[A-Za-z]:)?[\\/]?(?:Users|home)[\\/]([A-Za-z0-9_.-]+)/g;
 
 function walk(dir) {
@@ -40,7 +39,7 @@ function walk(dir) {
   return out;
 }
 
-test('sanitizado: ningún fichero del repo lleva una ruta de home personal', () => {
+test('sanitized: no repository file contains a personal home path', () => {
   const hits = [];
 
   for (const file of walk(REPO)) {
@@ -52,31 +51,31 @@ test('sanitizado: ningún fichero del repo lleva una ruta de home personal', () 
     }
   }
 
-  assert.deepEqual(hits, [], `rutas personales encontradas:\n  ${hits.join('\n  ')}`);
+  assert.deepEqual(hits, [], `personal paths found:\n  ${hits.join('\n  ')}`);
 });
 
-test('sanitizado: el barrido mira de verdad los ficheros (si no, no probaría nada)', () => {
-  // Un test que no lee nada pasaría siempre: aquí verificamos que el walk encuentra el código.
+test('sanitized: the scan actually examines files (otherwise it would test nothing)', () => {
+  // A test that reads nothing would always pass: verify that walk finds code here.
   const files = walk(REPO).map((f) => path.relative(REPO, f).replace(/\\/g, '/'));
   assert.ok(files.includes('kaip.mjs'));
   assert.ok(files.includes('lib/install.mjs'));
   assert.ok(files.includes('README.md'));
-  assert.ok(files.length > 15, `esperaba barrer el repo entero, solo vi ${files.length} ficheros`);
+  assert.ok(files.length > 15, `expected to scan the full repo, found only ${files.length} files`);
 });
 
-test('sanitizado: el detector reconoce una ruta personal si se cuela', () => {
-  // El usuario se compone en tiempo de ejecución: escrito literal aquí, este mismo
-  // fichero sería una ruta personal y el barrido de arriba se cazaría a sí mismo.
-  const u = 'alguien';
-  const malas = [
+test('sanitized: the detector recognizes a personal path if one slips in', () => {
+  // The username is composed at runtime: written literally here, this file would itself
+  // contain a personal path and the scan above would catch itself.
+  const u = 'someone';
+  const bad = [
     `node "C:\\Users\\${u}\\.claude\\tools\\kaip\\kaip.mjs"`,
     `/home/${u}/.claude/tools/kaiprompt`,
     `/Users/${u}/.claude`,
   ];
-  for (const mala of malas) {
-    assert.equal([...mala.matchAll(HOME_PATH)].length, 1, `debe cazar: ${mala}`);
+  for (const value of bad) {
+    assert.equal([...value.matchAll(HOME_PATH)].length, 1, `must catch: ${value}`);
   }
 
-  const buena = 'node "$env:USERPROFILE\\.claude\\tools\\kaip\\kaip.mjs"';
-  assert.equal([...buena.matchAll(HOME_PATH)].length, 0, 'y dejar pasar el marcador de sitio');
+  const good = 'node "$env:USERPROFILE\\.claude\\tools\\kaip\\kaip.mjs"';
+  assert.equal([...good.matchAll(HOME_PATH)].length, 0, 'and allow the placeholder');
 });

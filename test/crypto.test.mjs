@@ -1,39 +1,39 @@
-// El cifrado extremo a extremo: lo que hace que el túnel de Cloudflare sea seguro.
+// End-to-end encryption: what makes the Cloudflare tunnel safe.
 //
-// El túnel pasa por Cloudflare, que termina el TLS y PODRÍA leer lo que va dentro: tus
-// prompts, tu código y todo lo que Claude conteste. Con esto, mueven bytes que no pueden
-// abrir. La clave nace en el PC y llega al móvil por el QR — la escaneas de tu propia
-// pantalla, así que nunca viaja por el cable que protege.
+// The tunnel goes through Cloudflare, which terminates TLS and COULD read its contents: your
+// prompts, code, and everything Claude returns. With this, it moves bytes it cannot open. The
+// key originates on the PC and reaches the phone through the QR code, scanned from your own
+// screen, so it never travels over the connection it protects.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { newKey, open, seal, wantsSealed } from '../lib/crypto.mjs';
 
-test('ida y vuelta: lo que sale es exactamente lo que entró', () => {
+test('round trip: what goes out is exactly what came in', () => {
   const key = newKey();
-  const dato = { jobs: [{ id: 'j1', prompt: 'no es asunto de Cloudflare' }], n: 42, ok: true };
-  assert.deepEqual(open(seal(dato, key), key), dato);
+  const data = { jobs: [{ id: 'j1', prompt: 'none of Cloudflare\'s business' }], n: 42, ok: true };
+  assert.deepEqual(open(seal(data, key), key), data);
 });
 
-test('el sobre NO lleva el texto en claro (es lo único que de verdad importa aquí)', () => {
+test('the envelope does NOT contain plaintext (the only thing that really matters here)', () => {
   const key = newKey();
-  const sobre = seal({ secreto: 'la clave del banco es 1234' }, key);
-  const crudo = JSON.stringify(sobre);
+  const envelope = seal({ secret: 'the bank key is 1234' }, key);
+  const raw = JSON.stringify(envelope);
 
-  assert.ok(!crudo.includes('1234'), 'no puede aparecer el contenido');
-  assert.ok(!crudo.includes('banco'), 'ni una palabra del original');
-  assert.ok(!crudo.includes('secreto'), 'ni siquiera los nombres de los campos');
+  assert.ok(!raw.includes('1234'), 'the content must not appear');
+  assert.ok(!raw.includes('bank'), 'not even a word from the original');
+  assert.ok(!raw.includes('secret'), 'not even field names');
 });
 
-test('con la clave equivocada NO se descifra (no devuelve basura: falla)', () => {
-  const sobre = seal({ a: 1 }, newKey());
-  assert.throws(() => open(sobre, newKey()));
+test('it does NOT decrypt with the wrong key (it fails rather than returning garbage)', () => {
+  const envelope = seal({ a: 1 }, newKey());
+  assert.throws(() => open(envelope, newKey()));
 });
 
-test('si alguien manipula el sobre por el camino, se rechaza', () => {
-  // AES-GCM autentica además de cifrar: un payload tocado se rompe en vez de descifrarse
-  // en silencio a otra cosa. Si Cloudflare cambiara un byte, nos enteramos.
+test('an envelope tampered with in transit is rejected', () => {
+  // AES-GCM authenticates as well as encrypts: a modified payload fails rather than silently
+  // decrypting to something else. If Cloudflare changed one byte, we would know.
   const key = newKey();
   const sobre = seal({ jobs: ['bueno'] }, key);
 
@@ -44,14 +44,14 @@ test('si alguien manipula el sobre por el camino, se rechaza', () => {
   assert.throws(() => open(tocado, key), /auth|tag|decrypt/i);
 });
 
-test('manipular la etiqueta de autenticidad tampoco cuela', () => {
+test('tampering with the authentication tag does not work either', () => {
   const key = newKey();
   const sobre = seal({ a: 1 }, key);
   assert.throws(() => open({ ...sobre, tag: Buffer.alloc(16).toString('base64') }, key));
 });
 
-test('cada sobre es distinto aunque el contenido sea el mismo (nonce nuevo cada vez)', () => {
-  // Si no, un observador vería que dos respuestas son iguales sin abrirlas.
+test('each envelope differs even when content is identical (a new nonce every time)', () => {
+  // Otherwise, an observer could see that two responses are identical without opening them.
   const key = newKey();
   const a = seal({ mismo: 'dato' }, key);
   const b = seal({ mismo: 'dato' }, key);
@@ -59,19 +59,19 @@ test('cada sobre es distinto aunque el contenido sea el mismo (nonce nuevo cada 
   assert.notEqual(a.iv, b.iv);
 });
 
-test('un sobre que no es un sobre no revienta el servidor', () => {
+test('something that is not an envelope does not crash the server', () => {
   assert.throws(() => open(null, newKey()), /not a sealed payload/);
-  assert.throws(() => open({ hola: 1 }, newKey()), /not a sealed payload/);
+  assert.throws(() => open({ hello: 1 }, newKey()), /not a sealed payload/);
 });
 
-test('las claves son distintas cada vez', () => {
-  const claves = new Set(Array.from({ length: 100 }, () => newKey()));
-  assert.equal(claves.size, 100);
+test('keys differ every time', () => {
+  const keys = new Set(Array.from({ length: 100 }, () => newKey()));
+  assert.equal(keys.size, 100);
 });
 
-test('wantsSealed: la app pide sobre por cabecera o por query', () => {
+test('wantsSealed: the app requests an envelope through a header or query', () => {
   const req = (headers, url = '/api/state') => ({ headers, url });
   assert.equal(wantsSealed(req({ 'x-kaip-enc': '1' })), true);
   assert.equal(wantsSealed(req({}, '/api/state?enc=1')), true);
-  assert.equal(wantsSealed(req({})), false, 'curl y los tests siguen viendo JSON plano');
+  assert.equal(wantsSealed(req({})), false, 'curl and tests still receive plain JSON');
 });

@@ -60,10 +60,10 @@ test('parseWhen: rubbish → a clear error', () => {
 });
 
 test('hhmmss: formats, and never goes negative', () => {
-  assert.equal(hhmmss(0), '00:00:00');
-  assert.equal(hhmmss(3661_000), '01:01:01');
-  assert.equal(hhmmss(-5000), '00:00:00');       // in the past → clamped to zero
-  assert.equal(hhmmss(90_000_000), '25:00:00');  // >24h: the hours do not wrap
+  assert.equal(hhmmss(0), '00:00:00:00');
+  assert.equal(hhmmss(3661_000), '00:01:01:01');
+  assert.equal(hhmmss(-5000), '00:00:00:00');       // in the past → clamped to zero
+  assert.equal(hhmmss(90_000_000), '01:01:00:00');  // days are explicit, never a misleading 25-hour clock
 });
 
 test('humanDur: compact, by magnitude', () => {
