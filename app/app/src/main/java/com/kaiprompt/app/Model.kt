@@ -208,7 +208,13 @@ data class DaemonState(
     val pid: Long? = null,
     val since: Long? = null,        // when whoever holds the queue took it — the uptime
 )
-data class Quota(val freePct: Int?, val resetsAt: Long?, val renewed: Boolean)
+data class Quota(
+    val freePct: Int?,
+    val resetsAt: Long?,
+    val renewed: Boolean,
+    val freePctWeek: Int?,
+    val resetsAtWeek: Long?,
+)
 
 data class State(
     val host: String?,
@@ -263,10 +269,13 @@ data class State(
                     since = d?.optLongOrNull("since"),
                 ),
                 quota = q?.let {
+                    val weekly = it.optJSONObject("weekly")
                     Quota(
                         freePct = if (it.isNull("freePct")) null else it.optInt("freePct"),
                         resetsAt = it.optLongOrNull("resetsAt"),
                         renewed = it.optBoolean("renewed", false),
+                        freePctWeek = weekly?.let { w -> if (w.isNull("freePct")) null else w.optInt("freePct") },
+                        resetsAtWeek = weekly?.optLongOrNull("resetsAt"),
                     )
                 },
                 now = Now.parse(j.optJSONObject("activity")),
@@ -277,7 +286,9 @@ data class State(
 }
 
 /** One turn of a conversation, flattened into what a phone screen can actually show. */
-data class Turn(val role: String, val at: String?, val blocks: List<Block>)
+data class Diff(val file: String, val added: Int, val removed: Int, val diff: String)
+
+data class Turn(val role: String, val at: String?, val blocks: List<Block>, val diffs: List<Diff>)
 
 sealed class Block {
     data class Text(val text: String) : Block()
@@ -318,7 +329,14 @@ data class Chat(
                         else -> null
                     }
                 }
-                if (blocks.isEmpty()) null else Turn(t.optString("role"), t.optStringOrNull("at"), blocks)
+                val diffs = t.optJSONArray("diffs") ?: JSONArray()
+                val parsedDiffs = (0 until diffs.length()).mapNotNull { k ->
+                    val d = diffs.optJSONObject(k) ?: return@mapNotNull null
+                    d.optStringOrNull("file")?.let { file ->
+                        Diff(file, d.optInt("added"), d.optInt("removed"), d.optString("diff", ""))
+                    }
+                }
+                if (blocks.isEmpty()) null else Turn(t.optString("role"), t.optStringOrNull("at"), blocks, parsedDiffs)
             }
 
             return Chat(

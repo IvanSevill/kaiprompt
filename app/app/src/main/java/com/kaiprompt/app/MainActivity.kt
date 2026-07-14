@@ -432,17 +432,33 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun QuotaStrip(q: Quota) {
         val free = if (q.renewed) 100 else (q.freePct ?: return)
+        Column(Modifier.fillMaxWidth().padding(20.dp, 12.dp, 20.dp, 6.dp)) {
+            QuotaBar(
+                label = "cupo de sesión",
+                free = free,
+                resetsAt = q.resetsAt,
+                renewed = q.renewed,
+            )
+            q.freePctWeek?.let {
+                Spacer(Modifier.height(10.dp))
+                QuotaBar(label = "cupo semanal", free = it, resetsAt = q.resetsAtWeek)
+            }
+        }
+    }
+
+    @Composable
+    private fun QuotaBar(label: String, free: Int, resetsAt: Long?, renewed: Boolean = false) {
         val colour = when {
             free > 40 -> K.Ok
             free > 15 -> K.Warn
             else -> K.Err
         }
-        Column(Modifier.fillMaxWidth().padding(20.dp, 12.dp, 20.dp, 6.dp)) {
+        Column(Modifier.fillMaxWidth()) {
             Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
-                Text("cupo de sesión", color = K.Muted, fontSize = 11.sp)
+                Text(label, color = K.Muted, fontSize = 11.sp)
                 Text(
-                    if (q.renewed) "renovado" else "$free% libre" +
-                        (q.resetsAt?.let { "  ·  vuelve ${relative(it)}" } ?: ""),
+                    if (renewed) "renovado" else "$free% libre" +
+                        (resetsAt?.let { "  ·  vuelve ${relative(it)}" } ?: ""),
                     color = colour, fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
                 )
             }
@@ -461,6 +477,11 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun JobCard(job: Job, onClick: () -> Unit) {
         val colour = K.statusColour(job.status)
+        val prompt = job.prompt ?: job.preview.ifBlank { job.id }
+        // Newlines alone miss a long paragraph that wraps to several phone lines.
+        val promptLines = maxOf(prompt.lines().size, (prompt.length + 55) / 56)
+        val canExpand = promptLines > 3
+        var expanded by remember(job.id) { mutableStateOf(false) }
 
         Row(
             Modifier.fillMaxWidth().padding(vertical = 5.dp)
@@ -489,9 +510,37 @@ class MainActivity : ComponentActivity() {
 
                 Spacer(Modifier.height(9.dp))
                 Text(
-                    job.preview.ifBlank { job.prompt ?: job.id },
+                    prompt,
                     color = K.Text, fontSize = 14.sp, maxLines = 3, lineHeight = 19.sp,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                 )
+
+                if (canExpand) {
+                    TextButton(onClick = { expanded = !expanded }, contentPadding = PaddingValues(0.dp)) {
+                        Text(
+                            if (expanded) "▼  colapsar prompt"
+                            else if (job.running) "▶  Ver prompt (+${promptLines - 3} líneas)"
+                            else "▶  ver prompt completo (+${promptLines - 3} líneas)",
+                            color = K.Accent, fontSize = 12.sp,
+                        )
+                    }
+                    if (expanded) {
+                        Text(
+                            prompt,
+                            color = K.Text, fontSize = 13.sp, lineHeight = 18.sp,
+                            fontFamily = FontFamily.Monospace,
+                            modifier = Modifier.fillMaxWidth().padding(top = 2.dp)
+                                .clip(RoundedCornerShape(8.dp)).background(K.CardHi).padding(10.dp),
+                        )
+                    }
+                }
+
+                if (job.running && job.prompt != null && !canExpand) {
+                    TextButton(onClick = { expanded = !expanded }, contentPadding = PaddingValues(0.dp)) {
+                        Text("▶  Ver prompt", color = K.Accent, fontSize = 12.sp)
+                    }
+                    if (expanded) Text(job.prompt, color = K.Text, fontSize = 13.sp, lineHeight = 18.sp)
+                }
 
                 val foot = listOfNotNull(
                     job.whenAt?.let { if (job.pending) "sale ${relative(it)}" else clock(it) },
@@ -560,7 +609,7 @@ class MainActivity : ComponentActivity() {
                         Modifier.fillMaxWidth()
                             .clip(RoundedCornerShape(11.dp))
                             .background(K.Accent.copy(alpha = 0.12f))
-                            .clickable { Update.download(this@MainActivity) }
+                            .clickable { Update.download(this@MainActivity, u.downloadUrl) }
                             .padding(15.dp),
                     ) {
                         Text(
@@ -918,6 +967,42 @@ class MainActivity : ComponentActivity() {
                     )
 
                     is Block.Tool -> ToolLine(b)
+                }
+                if (turn.diffs.isNotEmpty()) DiffToggle(turn.diffs)
+            }
+        }
+    }
+
+    @Composable
+    private fun DiffToggle(diffs: List<Diff>) {
+        var expanded by remember(diffs) { mutableStateOf(false) }
+        val added = diffs.sumOf { it.added }
+        val removed = diffs.sumOf { it.removed }
+        TextButton(onClick = { expanded = !expanded }, contentPadding = PaddingValues(0.dp)) {
+            Text(
+                if (expanded) "▼  +$added -$removed" else "▶  +$added -$removed  ${diffs.size} archivo(s)",
+                color = K.Info, fontSize = 12.sp, fontFamily = FontFamily.Monospace,
+            )
+        }
+        if (expanded) {
+            Column(
+                Modifier.fillMaxWidth().heightIn(max = 260.dp).verticalScroll(rememberScrollState())
+                    .clip(RoundedCornerShape(8.dp)).background(K.Card).padding(10.dp),
+            ) {
+                diffs.forEach { diff ->
+                    Text(diff.file, color = K.Muted, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                    diff.diff.lines().forEach { line ->
+                        Text(
+                            line,
+                            color = when {
+                                line.startsWith("+") -> K.Ok
+                                line.startsWith("-") -> K.Err
+                                else -> K.Text
+                            },
+                            fontSize = 11.sp, lineHeight = 15.sp, fontFamily = FontFamily.Monospace,
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
                 }
             }
         }

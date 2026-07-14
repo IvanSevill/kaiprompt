@@ -27,10 +27,7 @@ object Update {
     private const val LATEST =
         "https://api.github.com/repos/IvanSevill/kaiprompt/releases/latest"
 
-    private const val DOWNLOAD =
-        "https://github.com/IvanSevill/kaiprompt/releases/latest/download/kaiprompt.apk"
-
-    data class Available(val version: String, val notes: String?)
+    data class Available(val version: String, val notes: String?, val downloadUrl: String)
 
     /**
      * The newer release, if there is one. Null when up to date — and null when the check
@@ -57,7 +54,14 @@ object Update {
             ?.trim()
             .orEmpty()
 
-        if (isNewer(tag, mine)) Available(tag, json.optStringOrNull("body")) else null
+        val assets = json.optJSONArray("assets") ?: return null
+        val asset = (0 until assets.length()).mapNotNull { assets.optJSONObject(it) }
+            .firstOrNull { it.optString("name") == "app-release.apk" }
+            ?: (0 until assets.length()).mapNotNull { assets.optJSONObject(it) }.firstOrNull()
+            ?: return null
+        val downloadUrl = asset.optStringOrNull("browser_download_url") ?: return null
+
+        if (isNewer(tag, mine)) Available(tag, json.optStringOrNull("body"), downloadUrl) else null
     }.getOrNull()
 
     /**
@@ -79,9 +83,9 @@ object Update {
     }
 
     /** Hand it to the browser. Android takes it from there, permissions and all. */
-    fun download(context: Context) {
+    fun download(context: Context, url: String) {
         context.startActivity(
-            Intent(Intent.ACTION_VIEW, Uri.parse(DOWNLOAD))
+            Intent(Intent.ACTION_VIEW, Uri.parse(url))
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         )
     }

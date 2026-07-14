@@ -48,7 +48,8 @@ class ModelTest {
       ],
       "counts":{"pending":1,"running":0,"done":1,"error":0,"missed":0},
       "daemon":{"running":false,"pid":null,"next":null},
-      "quota":{"freePct":73,"resetsAt":1700003600000,"renewed":false}
+       "quota":{"freePct":73,"resetsAt":1700003600000,"renewed":false,
+                "weekly":{"freePct":61,"resetsAt":1700503600000}}
     }
     """
 
@@ -60,6 +61,8 @@ class ModelTest {
         assertEquals(1, s.pending)
         assertEquals("corre los tests", s.jobs[0].prompt)
         assertEquals(73, s.quota?.freePct)
+        assertEquals(61, s.quota?.freePctWeek)
+        assertEquals(1700503600000L, s.quota?.resetsAtWeek)
     }
 
     @Test
@@ -103,6 +106,13 @@ class ModelTest {
     }
 
     @Test
+    fun `un PC viejo sin cuota semanal sigue mostrando la cuota de sesion`() {
+        val s = State.parse("""{"host":"X","jobs":[],"quota":{"freePct":73,"resetsAt":1,"renewed":false}}""")
+        assertEquals(73, s.quota?.freePct)
+        assertNull(s.quota?.freePctWeek)
+    }
+
+    @Test
     fun `un job enlazado cuyo archivo desaparecio se ve como error, no como prompt vacio`() {
         val roto = """
         {"host":"X","jobs":[{"id":"j1","status":"pending","prompt":null,
@@ -120,10 +130,10 @@ class ModelTest {
             """
             {"sessionId":"s-1","target":"fixes","dir":"C:/p","turns":[
               {"role":"user","at":"2026-01-01T10:00:00Z","blocks":[{"type":"text","text":"arregla esto"}]},
-              {"role":"assistant","at":"2026-01-01T10:00:05Z","blocks":[
-                {"type":"text","text":"voy"},
-                {"type":"tool","name":"Edit","input":{"file_path":"lib/ui.mjs"}}
-              ]}
+               {"role":"assistant","at":"2026-01-01T10:00:05Z","blocks":[
+                 {"type":"text","text":"voy"},
+                 {"type":"tool","name":"Edit","input":{"file_path":"lib/ui.mjs"}}
+               ],"diffs":[{"file":"lib/ui.mjs","added":2,"removed":1,"diff":"-old\n+new"}]}
             ]}
             """
         )
@@ -133,6 +143,8 @@ class ModelTest {
         val tool = chat.turns[1].blocks[1] as Block.Tool
         assertEquals("Edit", tool.name)
         assertEquals("lib/ui.mjs", tool.arg)
+        assertEquals(1, chat.turns[1].diffs.size)
+        assertEquals(2, chat.turns[1].diffs[0].added)
     }
 
     @Test
