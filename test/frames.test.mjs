@@ -20,7 +20,7 @@ process.env.KAIP_HOME = TMP;
 
 const { saveQueue } = await import('../lib/store.mjs');
 const { addJob } = await import('../lib/queue.mjs');
-const { clockFrame, quotaLines, runningFrame } = await import('../lib/frames.mjs');
+const { clockFrame, quotaLines, quotaWaitFrame, runningFrame } = await import('../lib/frames.mjs');
 const { strip } = await import('../lib/ui.mjs');
 
 // With no TTY, size() falls back to 80x24; force something roomy so the box does not cut.
@@ -174,4 +174,10 @@ test('an OpenCode job does not display Claude usage as its quota', () => {
   const lines = text(quotaLines(100, { adapter: 'opencode' }));
   assert.match(lines, /opencode is checked when this job launches/);
   assert.doesNotMatch(lines, /session|week/);
+});
+
+test('the quota wait frame identifies a weekly limit', () => {
+  const job = { prompt: 'resume this', adapter: 'mock' };
+  const out = text(quotaWaitFrame(job, Date.now() + 3600_000, [job], Date.now(), {}, 'weekly'));
+  assert.match(out, /cupo semanal agotado/);
 });

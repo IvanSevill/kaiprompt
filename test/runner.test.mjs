@@ -21,6 +21,7 @@ const job = (over = {}) => ({
 // `error` and nobody ever picked it up again.
 
 const LIMIT = "You've hit your session limit · resets 1:30pm (Europe/Madrid)";
+const WEEKLY_LIMIT = "You've hit your weekly limit · resets Jul 18, 11pm (Europe/Madrid)";
 
 test('settle: a launch that went fine is simply done', () => {
   assert.deepEqual(settle(job(), { ok: true }), { action: 'done' });
@@ -30,6 +31,12 @@ test('settle: cut off by the quota → back in the queue, NOT marked as an error
   const s = settle(job(), { ok: false, output: LIMIT, error: 'claude exited with code 1' });
   assert.equal(s.action, 'requeue');
   assert.ok(s.waitUntil > Date.now(), 'with a resume time in the future');
+});
+
+test('settle: preserves the weekly quota kind so the waiting UI identifies it', () => {
+  const s = settle(job(), { ok: false, output: WEEKLY_LIMIT, error: 'claude exited with code 1' });
+  assert.equal(s.action, 'requeue');
+  assert.equal(s.kind, 'weekly');
 });
 
 test('settle: a REAL failure is still an error (it is not retried forever)', () => {
@@ -57,6 +64,7 @@ test('requeue: back to pending, and it does NOT touch "when" — that is what ke
   assert.equal(back.status, 'pending', 'back in the queue');
   assert.equal(back.when, 1000, 'its time does NOT change');
   assert.equal(back.quotaRetries, 1);
+  assert.equal(back.quotaKind, 'session');
   assert.ok(back.pausedUntil > Date.now());
   assert.equal(back.finishedAt, null, 'it does not count as finished');
 
@@ -64,6 +72,19 @@ test('requeue: back to pending, and it does NOT touch "when" — that is what ke
   const pending = q.filter((j) => j.status === 'pending').sort((a, b) => a.when - b.when);
   assert.equal(pending[0].id, first.id);
   assert.equal(pending[1].id, second.id);
+});
+
+test('requeue: keeps the weekly pause and its quota kind', () => {
+  const j = job();
+  saveQueue([j]);
+
+  const s = settle(j, { ok: false, output: WEEKLY_LIMIT, error: 'x' });
+  requeue(j, s);
+
+  const back = loadQueue().find((queued) => queued.id === j.id);
+  assert.equal(back.status, 'pending');
+  assert.equal(back.quotaKind, 'weekly');
+  assert.ok(back.pausedUntil > Date.now());
 });
 
 test('executeJob: marks it done, writes the output and saves the target session', async () => {
