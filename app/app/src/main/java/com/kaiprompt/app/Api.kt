@@ -31,6 +31,9 @@ class Api(private val pairing: Pairing, private val context: Context) {
 
     fun state(): State = State.parse(get("/api/state"))
 
+    /** Optional historical telemetry. Older PCs do not have this endpoint yet. */
+    fun usage(): Usage = Usage.parse(get("/api/usage"))
+
     fun job(id: String): String = get("/api/job/$id")
 
     fun chat(ref: String): Chat = Chat.parse(get("/api/job/$ref/chat"))

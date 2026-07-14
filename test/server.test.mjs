@@ -15,7 +15,7 @@ import http from 'node:http';
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-server-'));
 process.env.KAIP_HOME = TMP;
 
-const { outPath, patchJob, saveQueue, saveSessions } = await import('../lib/store.mjs');
+const { historyPath, outPath, patchJob, saveQueue, saveSessions } = await import('../lib/store.mjs');
 const { addJob } = await import('../lib/queue.mjs');
 const { executeJob } = await import('../lib/runner.mjs');
 const {
@@ -123,6 +123,22 @@ test('/api/state: if a linked job\'s file is gone, it says so — it does not go
   assert.match(s.jobs[0].promptError, /gone/i);
 });
 
+test('/api/usage: exposes shared historical aggregation without delaying state', async () => {
+  saveQueue([]);
+  const claude = addJob({ prompt: 'count this', adapter: 'claude', target: 'alpha', session: 'claude-session' });
+  const codex = addJob({ prompt: 'unknown usage', adapter: 'codex', target: 'beta', session: 'codex-session' });
+  const openai = addJob({ prompt: 'costed', adapter: 'opencode', provider: 'openai', model: 'gpt', session: 'openai-session' });
+  fs.writeFileSync(historyPath(claude.id), JSON.stringify({ type: 'attempt-end', engine: 'claude', sessionId: 'claude-session', usage: { input_tokens: 10, output_tokens: 4 } }) + '\n');
+  fs.writeFileSync(historyPath(codex.id), JSON.stringify({ type: 'attempt-end', engine: 'codex', sessionId: 'codex-session' }) + '\n');
+  fs.writeFileSync(historyPath(openai.id), JSON.stringify({ type: 'attempt-end', engine: 'opencode', provider: 'openai', sessionId: 'openai-session', usage: { input: 8, output: 2, total: 10 }, cost: 0.01 }) + '\n');
+
+  const usage = await (await get('/api/usage')).json();
+  assert.deepEqual(usage.scopes.map((scope) => scope.key), ['claude', 'codex', 'opencode:openai']);
+  assert.equal(usage.scopes[0].sessions[0].usage.total.value, 14);
+  assert.equal(usage.scopes[1].sessions[0].usage.total, null, 'missing Codex usage remains unavailable');
+  assert.equal(usage.scopes[2].totals.cost.value, 0.01);
+});
+
 // --- the output and the conversation -------------------------------------------
 test('/api/job/:id: the job with its final answer', async () => {
   saveQueue([]);
@@ -171,6 +187,9 @@ test('/api/job/:id/chat falls back to the prompt and output for OpenCode', async
   const r = await get(`/api/job/${j.id}/chat`);
   assert.equal(r.status, 200);
   const chat = await r.json();
+  assert.equal(chat.adapter, 'opencode');
+  assert.equal(chat.provider, 'openai');
+  assert.equal(chat.model, 'gpt-5.6-terra');
   assert.deepEqual(chat.turns.map((t) => t.blocks[0].text), ['ask OpenCode', 'OpenCode answer']);
 });
 

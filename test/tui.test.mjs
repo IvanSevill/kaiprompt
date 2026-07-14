@@ -12,7 +12,7 @@ process.env.KAIP_HOME = TMP;
 // cannot leave background processes alive. That it really does arm it is proved in
 // daemon.test.mjs.
 process.env.KAIP_NO_DAEMON = '1';
-const { historyPath, loadQueue, saveQueue, saveProjects, saveSessions } = await import('../lib/store.mjs');
+const { historyPath, loadQueue, saveLaunchDefaults, saveQueue, saveProjects, saveSessions } = await import('../lib/store.mjs');
 const { addJob } = await import('../lib/queue.mjs');
 const { strip } = await import('../lib/ui.mjs');
 const {
@@ -242,7 +242,7 @@ test('in the chats view, enter opens that target conversation', () => {
 });
 
 // --- the add wizard -----------------------------------------------------------
-test('a: the wizard walks prompt → prompt file → when → target → folder → engine → provider → model → permissions', () => {
+test('a: the wizard edits fields with ↑↓ and validates the complete form with enter', () => {
   saveQueue([]);
   let s = press(fresh(), ['a']).state;
   assert.ok(s.wizard, 'the wizard opens');
@@ -253,21 +253,17 @@ test('a: the wizard walks prompt → prompt file → when → target → folder 
   assert.equal(s.wizard.buffer, '/test');
   assert.match(view(s), /Prompt/);
 
-  s = press(s, ['enter']).state;
-  assert.equal(s.wizard.step, 1, 'moves on to optional prompt file');
-  s = press(s, ['enter']).state;
-  assert.equal(s.wizard.step, 2, 'moves on to "when"');
-  s = press(s, [...'+2h', 'enter']).state;
+  s = press(s, ['down']).state;
+  assert.equal(s.wizard.step, 1, 'moves directly to "when"');
+  s = press(s, [...'+2h', 'down']).state;
+  assert.equal(s.wizard.step, 2);
+  s = press(s, [...'fixes', 'down']).state;
   assert.equal(s.wizard.step, 3);
-  s = press(s, [...'fixes', 'enter']).state;
-  assert.equal(s.wizard.step, 4);
-  s = press(s, ['enter']).state;                       // empty folder → the current one
-  assert.equal(s.wizard.step, 5, 'engine step');
+  s = press(s, ['down']).state;                        // empty folder → the current one
+  assert.equal(s.wizard.step, 4, 'engine step');
   assert.equal(s.wizard.values.engine, 'claude');
-  s = press(s, ['enter']).state;                       // engine
-  s = press(s, ['enter']).state;                       // provider is empty for Claude
-  s = press(s, ['enter']).state;                       // model is optional for Claude
-  assert.equal(s.wizard.step, 8, 'last step: permissions');
+  s = press(s, ['down', 'down', 'down']).state;        // provider and model are optional for Claude
+  assert.equal(s.wizard.step, 7, 'last step: permissions');
 
   // permissions are chosen with ← →, not typed
   assert.equal(s.wizard.values.perm, 'bypass');
@@ -280,6 +276,27 @@ test('a: the wizard walks prompt → prompt file → when → target → folder 
   assert.equal(effect.values.when, '+2h');
   assert.equal(effect.values.target, 'fixes');
   assert.equal(effect.values.perm, 'acceptEdits');
+});
+
+test('left and right switch the prompt field between text and file path', () => {
+  let s = reduce(fresh(), 'a').state;
+  s = reduce(s, 'right').state;
+  assert.equal(s.wizard.promptMode, 'file');
+  assert.match(view(s), /Prompt file/);
+  s = reduce(s, 'left').state;
+  assert.equal(s.wizard.promptMode, 'text');
+});
+
+test('engine selection uses ←→ and OpenAI offers Terra first', () => {
+  saveLaunchDefaults();
+  let s = press(fresh(), ['a', 'down', 'down', 'down', 'down']).state;
+  assert.equal(s.wizard.values.engine, 'claude');
+  s = press(s, ['right']).state;
+  assert.equal(s.wizard.values.engine, 'codex');
+  s = press(s, ['right', 'down', ...'openai', 'down', 'right']).state;
+  assert.equal(s.wizard.values.engine, 'opencode');
+  assert.equal(s.wizard.values.provider, 'openai');
+  assert.equal(s.wizard.buffer, 'gpt-5.6-terra');
 });
 
 test('wizard: backspace deletes and esc cancels without touching the queue', () => {
@@ -300,8 +317,8 @@ test('wizard: an empty prompt does not move on', () => {
 });
 
 test('wizard: an impossible time is caught here, not at 3am on launch', () => {
-  const { state } = press(fresh(), ['a', ...'x', 'enter', 'enter', ...'whenever', 'enter']);
-  assert.equal(state.wizard.step, 2, 'it stays on "when" so you can retype it');
+  const { state } = press(fresh(), ['a', ...'x', 'down', ...'whenever', 'enter']);
+  assert.equal(state.wizard.step, 1, 'it stays on "when" so you can retype it');
   assert.match(strip(state.message), /can't parse time/);
 });
 
@@ -369,6 +386,28 @@ test('applyEffect add: "bypass" is stored as null (the default it always was)', 
   saveQueue([]);
   applyEffect({ type: 'add', values: { prompt: 'x', when: '', target: '', dir: '', perm: 'bypass' } });
   assert.equal(loadQueue()[0].permMode, null);
+});
+
+test('new jobs remember only the last engine selection and permissions', () => {
+  saveQueue([]);
+  applyEffect({
+    type: 'add',
+    values: {
+      prompt: 'do not remember', when: '+2h', target: 'do-not-remember', dir: '',
+      engine: 'opencode', provider: 'openai', model: 'gpt-5.6-terra', perm: 'acceptEdits',
+    },
+  });
+
+  const s = reduce(fresh(), 'a').state;
+  assert.deepEqual({
+    engine: s.wizard.values.engine, provider: s.wizard.values.provider,
+    model: s.wizard.values.model, perm: s.wizard.values.perm,
+  }, { engine: 'opencode', provider: 'openai', model: 'gpt-5.6-terra', perm: 'acceptEdits' });
+  assert.equal(s.wizard.values.prompt, '');
+  assert.equal(s.wizard.values.when, '');
+  assert.equal(s.wizard.values.target, '');
+  assert.equal(s.wizard.values.dir, '');
+  saveLaunchDefaults();
 });
 
 test('applyEffect edit: changes the job, and emptying a field clears it', () => {
@@ -482,7 +521,7 @@ test('"r" is still the only thing that runs the queue by hand', () => {
 
 test('the wizard queues, it does not send: no key in the add flow fires a launch', () => {
   saveQueue([]);
-  const keys = [...'a', ...'hello', 'enter', 'enter', ...'+2h', 'enter', 'enter', 'enter', 'enter', 'enter', 'enter', 'enter'];
+  const keys = [...'a', ...'hello', 'down', ...'+2h', 'enter'];
   let state = fresh(); let effect = null;
   for (const k of keys) {
     ({ state, effect } = reduce(state, k));
@@ -560,10 +599,10 @@ test('render: with more jobs than rows, the selection stays on screen', () => {
 test('render: the wizard is painted with its steps and the help hint', () => {
   const s = press(fresh(), ['a', ...'hello']).state;
   const out = view(s);
-  assert.match(out, /new launch · step 1\/9/);
+  assert.match(out, /new launch · step 1\/8/);
   assert.match(out, /Prompt:/);
   assert.match(out, /hello/);
-  assert.match(out, /enter: next · esc: cancel/);
+  assert.match(out, /↑\/↓: field · ←\/→: choose/);
 });
 
 test('refresh: if the queue shrinks, the selection is not left dangling', () => {
@@ -595,20 +634,23 @@ test('usage view switches Claude, Codex, and OpenCode providers through shared r
 
   let state = reduce(fresh(), 'u').state;
   assert.equal(state.view, 'usage');
-  assert.match(view(state), /scope: Claude/);
-  assert.match(view(state), /claude-session.*input 10.*output 4.*total 14/s);
+  assert.match(view(state), /Usage · Claude/);
+  assert.match(view(state), /alpha.*14 tok · 10 in · 4 out/s);
 
-  state = reduce(state, 'right').state;
-  assert.match(view(state), /scope: Codex/);
-  assert.match(view(state), /codex-session.*input unavailable.*total unavailable/s);
+  state = reduce(state, 'down').state;
+  assert.match(view(state), /Usage · Codex/);
+  assert.match(view(state), /beta.*usage unavailable/s);
 
-  state = reduce(state, 'right').state;
+  state = reduce(state, 'down').state;
   const narrow = render(state, { cols: 52, rows: 18 }).map(strip);
-  assert.match(narrow.join('\n'), /scope: OpenCode \/ openai/);
-  assert.match(narrow.join('\n'), /openai-session/);
-  assert.match(narrow.join('\n'), /cost \$0.01/);
-  assert.match(narrow.join('\n'), /totals/);
+  assert.match(narrow.join('\n'), /Usage · OpenCode \/ openai/);
+  assert.match(narrow.join('\n'), /gamma/);
+  assert.match(narrow.join('\n'), /\$0.0100/);
+  assert.match(narrow.join('\n'), /10 tokens total/);
   assert.ok(narrow.every((line) => line.length <= 52), 'narrow usage rows stay within the terminal');
+
+  state = reduce(state, 'right').state;
+  assert.equal(state.view, 'help', 'left and right remain available for section navigation');
 });
 
 // --- the unattended path cannot be broken --------------------------------------
@@ -650,24 +692,23 @@ test('R inside the wizard does NOT restart: there it is a letter you are typing'
 // Reusing a target resumes a session that ALREADY has the context loaded: it is the biggest
 // token saving in the tool. Which is why the wizard offers them.
 
-test('the wizard suggests the existing conversations, and ↑↓ picks one', () => {
+test('the wizard suggests existing conversations, and ←→ picks one', () => {
   saveQueue([]);
   saveSessions({ fixes: { sessionId: 'sess-abcdef12', adapter: 'claude', updatedAt: Date.now() } });
 
-  // add → prompt → optional file → when → we land on the "target" step
+  // add → prompt, then ↓ twice to land on the target field
   let st = refresh(initialState());
   st = reduce(st, 'a').state;
   for (const ch of 'something') st = reduce(st, ch).state;
-  st = reduce(st, 'enter').state;                              // prompt done
-  st = reduce(st, 'enter').state;                              // optional file skipped
-  st = reduce(st, 'enter').state;                              // empty when → sequential
+  st = reduce(st, 'down').state;
+  st = reduce(st, 'down').state;
 
-  assert.equal(st.wizard.step, 3, 'we are on the target step');
+  assert.equal(st.wizard.step, 2, 'we are on the target step');
 
   const screen = render(st).map(strip).join('\n');
   assert.ok(screen.includes('fixes'), 'the existing session is offered on screen');
 
-  st = reduce(st, 'down').state;                               // pick it with the arrow
+  st = reduce(st, 'right').state;                              // pick it with the arrow
   assert.equal(st.wizard.buffer, 'fixes');
   assert.equal(st.wizard.pick, 0);
 });
@@ -679,10 +720,9 @@ test('typing over a suggestion drops it (it is your value, not its)', () => {
   let st = refresh(initialState());
   st = reduce(st, 'a').state;
   for (const ch of 'something') st = reduce(st, ch).state;
-  st = reduce(st, 'enter').state;
-  st = reduce(st, 'enter').state;
-  st = reduce(st, 'enter').state;
-  st = reduce(st, 'down').state;                               // takes "fixes"
+  st = reduce(st, 'down').state;
+  st = reduce(st, 'down').state;
+  st = reduce(st, 'right').state;                              // takes "fixes"
   assert.equal(st.wizard.pick, 0);
 
   st = reduce(st, 'X').state;                                  // and types over it
@@ -695,9 +735,9 @@ test('with no saved sessions, the arrows do not break the wizard', () => {
   let st = refresh(initialState());
   st = reduce(st, 'a').state;
   for (const ch of 'something') st = reduce(st, ch).state;
-  st = reduce(st, 'enter').state;
-  st = reduce(st, 'enter').state;
-  const { state: next } = reduce(st, 'down');
+  st = reduce(st, 'down').state;
+  st = reduce(st, 'down').state;
+  const { state: next } = reduce(st, 'right');
   assert.ok(next.wizard, 'the wizard is still standing');
 });
 

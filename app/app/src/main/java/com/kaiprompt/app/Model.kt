@@ -216,6 +216,67 @@ data class Quota(
     val resetsAtWeek: Long?,
 )
 
+/** Historical usage is deliberately distinct from quota: no made-up limits or percentages. */
+data class UsageValue(val value: Long, val partial: Boolean)
+data class UsageCost(val value: Double, val partial: Boolean)
+data class UsageTotals(
+    val input: UsageValue?,
+    val output: UsageValue?,
+    val total: UsageValue?,
+    val cost: UsageCost?,
+)
+data class UsageSession(
+    val session: String?,
+    val target: String?,
+    val jobId: String?,
+    val totals: UsageTotals,
+)
+data class UsageScope(
+    val key: String,
+    val engine: String,
+    val provider: String?,
+    val sessions: List<UsageSession>,
+    val totals: UsageTotals,
+)
+data class Usage(val scopes: List<UsageScope>) {
+    companion object {
+        private fun value(j: JSONObject, key: String): UsageValue? {
+            val item = j.optJSONObject(key) ?: return null
+            if (item.isNull("value")) return null
+            return UsageValue(item.optLong("value"), item.optBoolean("partial"))
+        }
+        private fun cost(j: JSONObject): UsageCost? {
+            val item = j.optJSONObject("cost") ?: return null
+            if (item.isNull("value")) return null
+            return UsageCost(item.optDouble("value"), item.optBoolean("partial"))
+        }
+        private fun totals(j: JSONObject?) = j?.let {
+            UsageTotals(value(it, "input"), value(it, "output"), value(it, "total"), cost(it))
+        } ?: UsageTotals(null, null, null, null)
+
+        fun parse(body: String): Usage {
+            val scopes = JSONObject(body).optJSONArray("scopes") ?: JSONArray()
+            return Usage((0 until scopes.length()).mapNotNull { index ->
+                val scope = scopes.optJSONObject(index) ?: return@mapNotNull null
+                val sessions = scope.optJSONArray("sessions") ?: JSONArray()
+                UsageScope(
+                    key = scope.optString("key", ""),
+                    engine = scope.optString("engine", ""),
+                    provider = scope.optStringOrNull("provider"),
+                    sessions = (0 until sessions.length()).mapNotNull { sessionIndex ->
+                        val row = sessions.optJSONObject(sessionIndex) ?: return@mapNotNull null
+                        UsageSession(
+                            session = row.optStringOrNull("session"), target = row.optStringOrNull("target"),
+                            jobId = row.optStringOrNull("jobId"), totals = totals(row.optJSONObject("usage")),
+                        )
+                    },
+                    totals = totals(scope.optJSONObject("totals")),
+                )
+            }.filter { it.key.isNotBlank() })
+        }
+    }
+}
+
 data class State(
     val host: String?,
     val jobs: List<Job>,
@@ -299,9 +360,21 @@ sealed class Block {
 data class Chat(
     val sessionId: String,
     val target: String?,
+    val adapter: String?,
+    val provider: String?,
+    val model: String?,
     val dir: String?,
     val turns: List<Turn>,
 ) {
+    val assistantLabel: String?
+        get() = when (adapter?.lowercase()) {
+            "claude" -> "CLAUDE"
+            "codex" -> "CODEX"
+            "opencode" -> listOfNotNull("OPENCODE", provider?.uppercase()).joinToString(" · ")
+            null, "" -> null
+            else -> adapter.uppercase()
+        }
+
     companion object {
         // The tools worth naming, and the one argument of each worth showing. Same choice
         // the PC makes in its own live view, so a launch reads the same in both places.
@@ -342,6 +415,9 @@ data class Chat(
             return Chat(
                 sessionId = j.optString("sessionId"),
                 target = j.optStringOrNull("target"),
+                adapter = j.optStringOrNull("adapter"),
+                provider = j.optStringOrNull("provider"),
+                model = j.optStringOrNull("model"),
                 dir = j.optStringOrNull("dir"),
                 turns = turns,
             )

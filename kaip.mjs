@@ -586,7 +586,6 @@ async function showPairing(port, devices = 1) {
     clearInterval(timer);
     await livePanel(port, paired);
   }, 1000);
-  timer.unref?.();
 }
 
 /**
@@ -640,7 +639,7 @@ async function livePanel(port, paired) {
   };
 
   draw();
-  setInterval(draw, 2000).unref?.();
+  setInterval(draw, 2000);
 }
 
 

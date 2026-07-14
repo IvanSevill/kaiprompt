@@ -107,3 +107,15 @@ test('opencode: dry-run validates its provider/model and builds the unattended c
   assert.match(res.output, /--auto/);
   assert.match(res.output, /-m google\/gemini-2.5-flash/);
 });
+
+test('opencode: tool parts reach the live renderer with file and diff fields', () => {
+  const event = opencode.toolEvent({
+    part: { type: 'tool', tool: 'edit', state: { input: { filePath: 'lib/a.mjs', oldText: 'before', newText: 'after' } } },
+  }, 'ses-1');
+  assert.deepEqual(event, {
+    type: 'assistant', session_id: 'ses-1',
+    message: { content: [{ type: 'tool_use', name: 'Edit', input: {
+      filePath: 'lib/a.mjs', oldText: 'before', newText: 'after', file_path: 'lib/a.mjs', old_string: 'before', new_string: 'after',
+    } }] },
+  });
+});

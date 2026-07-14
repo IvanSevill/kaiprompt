@@ -8,8 +8,8 @@ import path from 'node:path';
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-store-'));
 process.env.KAIP_HOME = TMP;
 const {
-  loadQueue, loadSessions, nid, patchJob, preview,
-  resolveDir, saveProjects, saveQueue, saveSessions,
+  loadLaunchDefaults, loadQueue, loadSessions, nid, patchJob, preview,
+  resolveDir, saveLaunchDefaults, saveProjects, saveQueue, saveSessions,
 } = await import('../lib/store.mjs');
 
 const job = (over = {}) => ({
@@ -37,6 +37,13 @@ test('patchJob actualiza solo ese job', () => {
 test('sesiones: round-trip', () => {
   saveSessions({ fixes: { sessionId: 'abc', adapter: 'claude', updatedAt: 1 } });
   assert.equal(loadSessions().fixes.sessionId, 'abc');
+});
+
+test('launch defaults persist only the engine selection and permissions', () => {
+  saveLaunchDefaults({ engine: 'opencode', provider: 'openai', model: 'gpt-5.6-terra', perm: 'acceptEdits', prompt: 'do not save me' });
+  assert.deepEqual(loadLaunchDefaults(), {
+    engine: 'opencode', provider: 'openai', model: 'gpt-5.6-terra', perm: 'acceptEdits',
+  });
 });
 
 test('nid: ids únicos aunque se generen miles en el mismo milisegundo', () => {

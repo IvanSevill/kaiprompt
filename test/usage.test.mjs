@@ -59,6 +59,12 @@ test('usage aggregation filters by engine, provider, target, and session', () =>
   assert.equal(aggregateUsage({ session: 'opencode-session' }).sessions[0].target, 'beta');
 });
 
+test('usage survives clearing finished jobs because history is its own archive', () => {
+  const report = aggregateUsage({}, []);
+  assert.equal(report.sessions.length, 3);
+  assert.equal(report.sessions.find((row) => row.engine === 'opencode').usage.total.value, 50);
+});
+
 function usageCli(...args) {
   return childProcess.execFileSync(process.execPath, ['kaip.mjs', 'usage', ...args], {
     cwd: ROOT, env: { ...process.env, KAIP_HOME: HOME }, encoding: 'utf8',

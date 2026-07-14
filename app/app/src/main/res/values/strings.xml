@@ -39,7 +39,7 @@
     <string name="update_download">Toca para descargarla.</string>
     <string name="whats_new_title">Novedades de Kaiprompt</string>
     <string name="version">Versión %1$s</string>
-    <string name="whats_new_body">• Las actualizaciones disponibles se ven ahora en la pantalla principal.\n\n• El asistente de ejecución permite elegir motor, proveedor y modelo.\n\n• Se han mejorado los avisos de cupo y el seguimiento de trabajos.</string>
+    <string name="whats_new_body">• Las conversaciones muestran ahora su motor real: Claude, Codex u OpenCode.\n\n• Puedes elegir español, inglés o el idioma del sistema desde Ajustes.\n\n• Nueva vista de uso histórico por motor y proveedor.\n\n• El QR desaparece al emparejar, pero «kaip serve» permanece abierto.</string>
     <string name="understood">Entendido</string>
     <string name="status_done">terminado</string>
     <string name="status_running">corriendo</string>
@@ -61,6 +61,20 @@
     <string name="language_system">Predeterminado del sistema</string>
     <string name="language_spanish">Español</string>
     <string name="language_english">English</string>
+    <string name="notifications">Notificaciones</string>
+    <string name="notification_status">estado</string>
+    <string name="notification_enabled">activadas</string>
+    <string name="notification_disabled">bloqueadas por Android</string>
+    <string name="notification_test">Enviar notificación de prueba</string>
+    <string name="notification_test_body">Las notificaciones de Kaiprompt funcionan.</string>
+    <string name="notification_open_settings">Abrir ajustes de notificaciones</string>
+    <string name="usage">Uso</string>
+    <string name="usage_empty">Aún no hay uso registrado.</string>
+    <string name="usage_unavailable">Datos no disponibles.</string>
+    <string name="usage_input">entrada %1$d</string>
+    <string name="usage_output">salida %1$d</string>
+    <string name="usage_total">total %1$d</string>
+    <string name="usage_cost">$%1$.4f</string>
     <string name="queue_drainer">Quién está drenando la cola</string>
     <string name="now">ahora mismo</string>
     <string name="nobody">Nadie</string>
@@ -103,6 +117,7 @@
     <string name="turn_count">%1$d turnos</string>
     <string name="empty_chat">Esta conversación está vacía.</string>
     <string name="role_you">TÚ</string>
+    <string name="role_assistant">ASISTENTE</string>
     <string name="diff_files">▶  +%1$d -%2$d  %3$d archivo(s)</string>
     <string name="api_unauthorized">el PC no reconoce este móvil. Vuelve a emparejar.</string>
     <string name="api_tunnel_hint">El túnel cambia de dirección cada vez que reinicias «kaip serve». Vuelve a escanear el QR.</string>

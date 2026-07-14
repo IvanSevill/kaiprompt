@@ -128,7 +128,7 @@ class ModelTest {
     fun `la conversacion se aplana a lo que cabe en una pantalla`() {
         val chat = Chat.parse(
             """
-            {"sessionId":"s-1","target":"fixes","dir":"C:/p","turns":[
+            {"sessionId":"s-1","target":"fixes","adapter":"opencode","provider":"openai","model":"gpt-5.6-terra","dir":"C:/p","turns":[
               {"role":"user","at":"2026-01-01T10:00:00Z","blocks":[{"type":"text","text":"arregla esto"}]},
                {"role":"assistant","at":"2026-01-01T10:00:05Z","blocks":[
                  {"type":"text","text":"voy"},
@@ -139,6 +139,7 @@ class ModelTest {
         )
         assertEquals(2, chat.turns.size)
         assertEquals("fixes", chat.target)
+        assertEquals("OPENCODE · OPENAI", chat.assistantLabel)
 
         val tool = chat.turns[1].blocks[1] as Block.Tool
         assertEquals("Edit", tool.name)
@@ -165,7 +166,9 @@ class ModelTest {
 
     @Test
     fun `una conversacion vacia no revienta`() {
-        assertEquals(0, Chat.parse("""{"sessionId":"s","turns":[]}""").turns.size)
+        val chat = Chat.parse("""{"sessionId":"s","turns":[]}""")
+        assertEquals(0, chat.turns.size)
+        assertNull(chat.assistantLabel)
     }
 
     // --- el QR compacto ---------------------------------------------------------

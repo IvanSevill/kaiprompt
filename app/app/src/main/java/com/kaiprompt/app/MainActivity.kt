@@ -1,8 +1,11 @@
 package com.kaiprompt.app
 
 import android.Manifest
+import android.app.NotificationManager
+import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -32,6 +35,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
+import androidx.core.app.NotificationManagerCompat
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.Dispatchers
@@ -55,6 +59,8 @@ class MainActivity : ComponentActivity() {
     private var confirmClear by mutableStateOf(false)
     private var showWhatsNew by mutableStateOf(false)
     private var language by mutableStateOf(AppLanguage.SYSTEM)
+    private var usage by mutableStateOf<Usage?>(null)
+    private var notificationsEnabled by mutableStateOf(true)
 
     private val scanner = registerForActivityResult(ScanContract()) { result ->
         val text = result.contents ?: return@registerForActivityResult
@@ -72,7 +78,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private val askNotifications =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+            notificationsEnabled = notificationsAreEnabled()
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -81,6 +89,7 @@ class MainActivity : ComponentActivity() {
         language = store.language
         showWhatsNew = store.seenVersion != installedVersion()
         Notifier.ensureChannels(this)
+        notificationsEnabled = notificationsAreEnabled()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -125,7 +134,19 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        notificationsEnabled = notificationsAreEnabled()
         if (pairing != null) refresh()
+    }
+
+    private fun notificationsAreEnabled(): Boolean {
+        if (!NotificationManagerCompat.from(this).areNotificationsEnabled()) return false
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return true
+        val channel = getSystemService(NotificationManager::class.java).getNotificationChannel(Notifier.CHANNEL_DONE)
+        return channel == null || channel.importance != NotificationManager.IMPORTANCE_NONE
+    }
+
+    private fun openNotificationSettings() {
+        startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
     }
 
     // --- talking to the PC ------------------------------------------------------
@@ -189,6 +210,16 @@ class MainActivity : ComponentActivity() {
                         else -> localizedString(R.string.error_open_chat, cause.message ?: localizedString(R.string.error_unknown))
                     }
                 }
+        }
+    }
+
+    private fun refreshUsage() {
+        val p = pairing ?: return
+        lifecycleScope.launch {
+            val found = withContext(Dispatchers.IO) {
+                runCatching { Api(p, language.localizedContext(this@MainActivity)).usage() }
+            }
+            usage = found.getOrNull()
         }
     }
 
@@ -666,6 +697,7 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun SettingsScreen(onBack: () -> Unit) {
         val s = state
+        LaunchedEffect(Unit) { refreshUsage() }
 
         Column(Modifier.fillMaxSize()) {
             Row(Modifier.fillMaxWidth().padding(8.dp, 14.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -680,6 +712,33 @@ class MainActivity : ComponentActivity() {
 
                 Group(stringResource(R.string.language))
                 LanguageSelector()
+                Spacer(Modifier.height(26.dp))
+
+                Group(stringResource(R.string.notifications))
+                Fact(
+                    stringResource(R.string.notification_status),
+                    stringResource(if (notificationsEnabled) R.string.notification_enabled else R.string.notification_disabled),
+                    if (notificationsEnabled) K.Ok else K.Err,
+                )
+                Spacer(Modifier.height(10.dp))
+                OutlinedButton(
+                    onClick = {
+                        if (notificationsEnabled) {
+                            Notifier(this@MainActivity).jobFinished(
+                                "manual-${System.currentTimeMillis()}", true,
+                                localizedString(R.string.notification_test_body), null,
+                            )
+                        } else openNotificationSettings()
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(11.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = if (notificationsEnabled) K.Text else K.Err),
+                ) {
+                    Text(stringResource(if (notificationsEnabled) R.string.notification_test else R.string.notification_open_settings))
+                }
+                Spacer(Modifier.height(26.dp))
+
+                UsagePanel(usage)
                 Spacer(Modifier.height(26.dp))
 
                 // --- who is draining the queue -------------------------------------------
@@ -813,6 +872,51 @@ class MainActivity : ComponentActivity() {
             r.onSuccess { refresh() }
                 .onFailure { error = it.message ?: localizedString(R.string.error_clear) }
         }
+    }
+
+    @Composable
+    private fun UsagePanel(data: Usage?) {
+        Group(stringResource(R.string.usage))
+        if (data == null) {
+            Text(stringResource(R.string.usage_unavailable), color = K.Muted, fontSize = 12.sp)
+            return
+        }
+        if (data.scopes.isEmpty()) {
+            Text(stringResource(R.string.usage_empty), color = K.Muted, fontSize = 12.sp)
+            return
+        }
+        var selected by remember { mutableIntStateOf(0) }
+        val selectedIndex = selected.coerceIn(0, data.scopes.lastIndex)
+        val scope = data.scopes[selectedIndex]
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            data.scopes.forEachIndexed { index, item ->
+                FilterChip(
+                    selected = index == selectedIndex,
+                    onClick = { selected = index },
+                    label = { Text(item.provider ?: item.engine, fontSize = 11.sp) },
+                )
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        UsageTotals(scope.totals)
+        scope.sessions.forEach { session ->
+            Spacer(Modifier.height(8.dp))
+            Text(session.target ?: session.session ?: session.jobId ?: "—", color = K.Text, fontSize = 12.sp)
+            UsageTotals(session.totals, compact = true)
+        }
+    }
+
+    @Composable
+    private fun UsageTotals(totals: UsageTotals, compact: Boolean = false) {
+        val input = totals.input?.let { stringResource(R.string.usage_input, it.value) }
+        val output = totals.output?.let { stringResource(R.string.usage_output, it.value) }
+        val total = totals.total?.let { stringResource(R.string.usage_total, it.value) }
+        val cost = totals.cost?.let { stringResource(R.string.usage_cost, it.value) }
+        val values = listOfNotNull(input, output, total, cost)
+        Text(
+            if (values.isEmpty()) stringResource(R.string.usage_unavailable) else values.joinToString("  ·  "),
+            color = if (compact) K.Muted else K.Accent, fontSize = if (compact) 11.sp else 12.sp,
+        )
     }
 
     @Composable
@@ -985,6 +1089,7 @@ class MainActivity : ComponentActivity() {
      */
     @Composable
     private fun ChatScreen(c: Chat, onBack: () -> Unit) {
+        val assistantLabel = c.assistantLabel ?: stringResource(R.string.role_assistant)
         Column(Modifier.fillMaxSize()) {
             Row(
                 Modifier.fillMaxWidth().padding(8.dp, 12.dp, 20.dp, 8.dp),
@@ -1019,13 +1124,13 @@ class MainActivity : ComponentActivity() {
                 Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(0.dp, 14.dp, 16.dp, 44.dp),
             ) {
-                items(c.turns) { turn -> Turn(turn) }
+                items(c.turns) { turn -> Turn(turn, assistantLabel) }
             }
         }
     }
 
     @Composable
-    private fun Turn(turn: Turn) {
+    private fun Turn(turn: Turn, assistantLabel: String) {
         val you = turn.role == "user"
         val edge = if (you) K.Accent else K.Ok
 
@@ -1036,7 +1141,7 @@ class MainActivity : ComponentActivity() {
 
             Column(Modifier.weight(1f)) {
                 Text(
-                    if (you) stringResource(R.string.role_you) else "CLAUDE",
+                    if (you) stringResource(R.string.role_you) else assistantLabel,
                     color = edge, fontSize = 10.sp,
                     fontWeight = FontWeight.Bold, letterSpacing = 1.2.sp,
                 )
