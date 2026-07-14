@@ -12,8 +12,8 @@ android {
         applicationId = "com.kaiprompt.app"
         minSdk = 26                       // AES-GCM + foreground services behave from here up
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.3.0"
+        versionCode = 5
+        versionName = "1.3.1"
     }
 
     buildTypes {

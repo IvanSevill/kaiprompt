@@ -170,7 +170,14 @@ class MainActivity : ComponentActivity() {
             val r = withContext(Dispatchers.IO) { runCatching { Api(p).chat(job.id) } }
             chatLoading = false
             r.onSuccess { chat = it }
-                .onFailure { error = "Esa conversación todavía no existe: el lanzamiento no ha corrido." }
+                .onFailure { cause ->
+                    error = when {
+                        cause is Api.Down && cause.message?.startsWith("el PC respondió 404") == true ->
+                            "El PC está conectado, pero esta conversación no está disponible todavía."
+                        cause is Api.Down -> cause.message ?: "No llego al PC."
+                        else -> "No pude abrir la conversación: ${cause.message ?: "error desconocido"}"
+                    }
+                }
         }
     }
 
