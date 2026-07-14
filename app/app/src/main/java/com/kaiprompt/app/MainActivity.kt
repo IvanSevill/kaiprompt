@@ -507,12 +507,12 @@ class MainActivity : ComponentActivity() {
             Text("La cola está vacía", color = K.Text, fontSize = 16.sp)
             Spacer(Modifier.height(8.dp))
             Text(
-                "Encola algo desde el PC o desde un chat de Claude:",
+                "Encola algo desde el PC:",
                 color = K.Muted, fontSize = 13.sp,
             )
             Spacer(Modifier.height(10.dp))
             Text(
-                "/programar +2h | corre los tests",
+                "kaip add \"corre los tests\" --at +2h",
                 color = K.Accent, fontSize = 12.sp, fontFamily = FontFamily.Monospace,
                 modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(K.Card).padding(10.dp, 6.dp),
             )

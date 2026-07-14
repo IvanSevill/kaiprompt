@@ -82,7 +82,7 @@ const INVOCATION = /(?:^\s*|[`'"«(])kaip ([a-z][a-z-]*)((?: [a-z][a-z-]*)?)/gm;
 function references() {
   const files = [
     ...walk(REPO),
-    path.join(CLAUDE, 'commands', 'programar.md'),
+    path.join(CLAUDE, 'commands', 'prompt.md'),
     path.join(CLAUDE, 'commands', 'kaip-summary.md'),
     ...walk(path.join(CLAUDE, 'skills', 'kaiprompt')),
     ...walk(path.join(CLAUDE, 'skills', 'kaip-summary')),

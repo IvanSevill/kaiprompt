@@ -1,8 +1,8 @@
 // El daemon: lo que hace que "a las 9" signifique a las 9 aunque no haya nada abierto.
 //
 // Dos cosas hay que demostrar aquí, y son las dos que fallaban:
-//   1. un lanzamiento programado se dispara SOLO, sin GUI y sin pulsar run;
-//   2. programar NO ejecuta: un job sin hora se queda quieto por mucho daemon que haya.
+//   1. un lanzamiento agendado se dispara SOLO, sin GUI y sin pulsar run;
+//   2. agendar NO ejecuta: un job sin hora se queda quieto por mucho daemon que haya.
 //
 // Se prueba de verdad: se levanta el proceso, se usa el adaptador mock (no gasta
 // créditos) y se espera a ver el resultado en disco.
@@ -98,7 +98,7 @@ test('un job PROGRAMADO se dispara solo: sin GUI, sin run, sin nadie delante', a
   assert.ok(fs.existsSync(path.join(TMP, done.output)));
 });
 
-test('un job SIN hora no lo toca el daemon: programar no es lanzar', async () => {
+test('un job SIN hora no lo toca el daemon: agendar no es lanzar', async () => {
   const j = mockJob({ prompt: 'secuencial, no debe salir solo' });
   seed([j]);
 
@@ -129,22 +129,6 @@ test('--seq: si lo pides expresamente, el daemon también vacía los secuenciale
   assert.ok(fired, 'con --seq sí entra');
 });
 
-test('el daemon recoge lo que /programar dejó en el buzón mientras dormía', async () => {
-  seed([]);
-  cli('daemon', 'start');
-
-  const entry = {
-    id: 'pbuzon1', at: new Date().toISOString(), when: Date.now() + 1500,
-    target: null, prompt: 'vengo del chat', adapter: 'mock', dir: null, createdAt: Date.now(),
-  };
-  fs.writeFileSync(path.join(TMP, 'programados.jsonl'), JSON.stringify(entry) + '\n');
-
-  const fired = await until(() => job('pbuzon1')?.status === 'done');
-  cli('daemon', 'stop');
-
-  assert.ok(fired, 'el hook escribe el buzón y el daemon lo importa sin reiniciarlo');
-});
-
 test('un job colgado en "running" por un runner muerto se cierra como error', () => {
   seed([mockJob({ status: 'running', runnerPid: 999_999, startedAt: Date.now() - 60_000 })]);
 
@@ -158,7 +142,7 @@ test('un job colgado en "running" por un runner muerto se cierra como error', ()
 // El bug que originó todo: una hora mal entendida (ISO en UTC leído como local) caía en
 // el pasado, y "pasado" significa "vencido" → se lanzaba en el acto. Dos puertas cerradas:
 // el parser ya no acepta una hora absoluta pasada, y el runner no resucita lo muy vencido.
-test('una hora absoluta en el pasado se rechaza al programarla (no se lanza en el acto)', () => {
+test('una hora absoluta en el pasado se rechaza al agendarla (no se lanza en el acto)', () => {
   const ayer = new Date(Date.now() - 86_400_000).toISOString().slice(0, 19);
   const r = cli('add', 'no debería salir', '--at', ayer, '--adapter', 'mock');
 
@@ -179,7 +163,7 @@ test('un lanzamiento demasiado vencido se marca "missed" en vez de dispararse', 
   assert.equal(job(bueno.id).status, 'done', 'pero un retraso normal sí se recupera');
 });
 
-test('un "missed" se recupera reprogramándolo (vuelve a pending)', () => {
+test('un "missed" se recupera reagendándolo (vuelve a pending)', () => {
   const j = mockJob({ when: Date.now() - 48 * 3600 * 1000 });
   seed([j]);
   cli('run', '--once');
@@ -187,13 +171,13 @@ test('un "missed" se recupera reprogramándolo (vuelve a pending)', () => {
 
   const r = cli('edit', j.id, '--at', '+2h');
   assert.equal(r.status, 0, r.stderr);
-  assert.equal(job(j.id).status, 'pending', 'reprogramar lo devuelve a la cola');
+  assert.equal(job(j.id).status, 'pending', 'reagendarlo lo devuelve a la cola');
 });
 
 test('un "run" manual le QUITA el turno al daemon, y se lo devuelve al salir', () => {
-  // Delante del terminal manda la persona. Antes, el daemon (que se arma solo al
-  // programar algo) tenia el cerrojo y al escribir "run" te soltaba un
-  // "another runner is already active" sin que hubiera nada visible corriendo.
+  // Delante del terminal manda la persona. Antes, el daemon tenia el cerrojo y al escribir
+  // "run" te soltaba un "another runner is already active" sin que hubiera nada visible
+  // corriendo.
   seed([mockJob({ when: Date.now() + 60_000 })]);         // pendiente pero no vencido
   cli('daemon', 'start');
 

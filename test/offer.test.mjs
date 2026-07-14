@@ -20,7 +20,7 @@ const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const DIMS = { cols: 100, rows: 30 };
 const view = (s) => strip(render(s, DIMS).join('\n'));
 
-const DIR = path.join(TMP, 'FacturaSevi');
+const DIR = path.join(TMP, 'miapp');
 fs.mkdirSync(DIR, { recursive: true });
 
 const hit = (over = {}) => ({
@@ -39,7 +39,7 @@ const withOffer = (hits) => refresh(initialState({ offer: { hits, sel: 0 } }));
 test('el aviso sale arriba, con proyecto, cuándo y qué se pedía', () => {
   const out = view(withOffer([hit()]));
   assert.match(out, /Parece que una conversación se quedó a medias/);
-  assert.match(out, /FacturaSevi/);
+  assert.match(out, /miapp/);
   assert.match(out, /hace 12 min/);
   assert.match(out, /falta enchufar el network config/);
   assert.match(out, /¿La termino en cuanto vuelva el cupo\?/);

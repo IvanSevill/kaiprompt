@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import {
-  importProgramados, loadProjects, loadQueue, loadSessions, nowMs,
+  loadProjects, loadQueue, loadSessions, nowMs,
   outPath, preview, saveProjects, saveSessions,
 } from './lib/store.mjs';
 import { fmt } from './lib/time.mjs';
@@ -115,8 +115,6 @@ async function cmdAdd({ flags, pos, engine }) {
 }
 
 function cmdList({ flags, pos }) {
-  const imp = importProgramados();
-  if (imp) console.log(`(imported ${imp} from programados.jsonl)`);
   // A job whose runner died still says "running" until someone closes it out, and this
   // is the screen you actually read — a status that lies here is the worst place for it.
   const dead = reapStale();
@@ -140,7 +138,6 @@ function cmdList({ flags, pos }) {
 
 function cmdShow({ flags, pos }) {
   if (!pos.length) throw new Error('usage: kaip show <id>');
-  importProgramados();                    // the id may be a scheduled job not imported yet
   const job = loadQueue().find((j) => j.id === pos[0]);
   if (!job) return console.log(`no job found with id "${pos[0]}"`);
 
@@ -161,7 +158,6 @@ function cmdShow({ flags, pos }) {
 }
 
 function cmdChat({ flags, pos }) {
-  importProgramados();                    // a job scheduled from the chat may not be in the queue yet
   const last = typeof flags.last === 'string' ? Number(flags.last) : 20;
   if (!Number.isFinite(last) || last < 1) throw new Error('--last needs a positive number of turns');
   console.log(renderChat(pos[0], { last, full: !!flags.full, raw: !!flags.raw }));
@@ -707,9 +703,9 @@ try {
     case 'list': case 'ls': cmdList(parsed); break;
     case 'show': cmdShow(parsed); break;
     // `run` STAYS UP by default, including on an empty queue. You leave it going and feed
-    // it — from another terminal, or with /programar — and it picks the work up on its own.
-    // A runner that quit the moment it ran dry was useless for exactly the case it exists
-    // for. Scripts that want drain-and-exit ask for it with --once.
+    // it from another terminal, and it picks the work up on its own. A runner that quit the
+    // moment it ran dry was useless for exactly the case it exists for. Scripts that want
+    // drain-and-exit ask for it with --once.
     case 'run': await runQueue({
       once: !!parsed.flags.once,
       dryRun: !!parsed.flags['dry-run'],

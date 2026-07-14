@@ -5,6 +5,9 @@
 //   node install.mjs --base <path>   takes it from the flag
 //   node install.mjs --yes           no questions (detects the folder, or leaves it empty)
 //
+// It writes two slash commands and a note into ~/.claude, and never overwrites a file that
+// is already there. settings.json is not touched at all.
+//
 // Undo with: node uninstall.mjs
 
 import path from 'node:path';
@@ -50,5 +53,4 @@ console.log(c.muted('  PowerShell (add it to your $PROFILE):'));
 console.log(`    ${powershell}\n`);
 console.log(c.muted('  bash / git-bash (add it to your ~/.bashrc):'));
 console.log(`    ${bash}\n`);
-console.log(c.muted('Restart Claude Code so the /programar hook is picked up.'));
 console.log(c.muted('Then try:  kaip        (the guided GUI)\n'));

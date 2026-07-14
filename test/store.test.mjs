@@ -8,7 +8,7 @@ import path from 'node:path';
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-store-'));
 process.env.KAIP_HOME = TMP;
 const {
-  importProgramados, loadQueue, loadSessions, nid, patchJob, preview,
+  loadQueue, loadSessions, nid, patchJob, preview,
   resolveDir, saveProjects, saveQueue, saveSessions,
 } = await import('../lib/store.mjs');
 
@@ -95,30 +95,4 @@ test('resolveDir: un nombre que no casa con NADA se rechaza (antes se colaba com
   assert.throws(() => resolveDir('no-existe-esta-carpeta', 'X'), /no such folder/);
   assert.throws(() => resolveDir('no-existe-esta-carpeta', 'X'), /miapp/, 'y dice qué alias hay');
   assert.throws(() => resolveDir('no-existe-esta-carpeta', 'X'), /kaip projects/, 'y cómo registrarla');
-});
-
-// --- importProgramados ------------------------------------------------------
-test('importProgramados: importa lo agendado y NO duplica en la 2ª pasada', () => {
-  saveQueue([]);
-  fs.writeFileSync(path.join(TMP, 'data', 'programados.state.json'), '{"imported":[]}');
-  const entry = {
-    id: 'p-test-1', prompt: 'corre los tests', target: 'tests', adapter: 'claude',
-    when: Date.now() + 3600000, dir: 'C:/proj', permMode: 'acceptEdits', createdAt: Date.now(),
-  };
-  fs.writeFileSync(path.join(TMP, 'programados.jsonl'), JSON.stringify(entry) + '\n');
-
-  assert.equal(importProgramados(), 1);
-  const [j] = loadQueue();
-  assert.equal(j.id, 'p-test-1');
-  assert.equal(j.dir, 'C:/proj', 'la carpeta se conserva');
-  assert.equal(j.permMode, 'acceptEdits', 'el modo de permisos se conserva');
-  assert.equal(j.status, 'pending');
-
-  assert.equal(importProgramados(), 0, 'segunda pasada: nada nuevo');
-  assert.equal(loadQueue().length, 1, 'no se duplica');
-});
-
-test('importProgramados: sin archivo → 0, sin romper', () => {
-  fs.rmSync(path.join(TMP, 'programados.jsonl'), { force: true });
-  assert.equal(importProgramados(), 0);
 });

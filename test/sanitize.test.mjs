@@ -20,7 +20,7 @@ const SKIP_DIRS = new Set([
   'build', '.gradle',
 ]);
 // Datos del usuario: viven en disco pero están en .gitignore, no se publican.
-const SKIP_FILES = new Set(['projects.json', 'programados.jsonl', 'local.properties']);
+const SKIP_FILES = new Set(['projects.json', 'local.properties']);
 const SCAN_EXT = new Set(['.mjs', '.js', '.json', '.md', '.cmd', '.sh', '.yml', '.txt', '']);
 
 // Marcadores de sitio: no son datos personales, son plantillas.

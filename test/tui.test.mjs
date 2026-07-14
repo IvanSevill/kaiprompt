@@ -376,10 +376,10 @@ test('sin nada terminado, el borrado masivo NO se ofrece (no hay nada que barrer
   assert.doesNotMatch(out, /TERMINADOS/);
 });
 
-// --- programar no es lanzar ---------------------------------------------------
+// --- agendar no es lanzar -----------------------------------------------------
 // El malentendido que originó todo esto: abrir la GUI y que el prompt saliera disparado.
 // La GUI no lanza NADA por su cuenta; solo escribe en la cola. Esto lo deja clavado.
-test('la cabecera dice si NADIE procesa la cola (o los programados no saldrían)', () => {
+test('la cabecera dice si NADIE procesa la cola (o lo agendado no saldría)', () => {
   // Y la pregunta es esa, no "¿está el daemon encendido?". Un "kaip run" abierto procesa la
   // cola exactamente igual — y la cabecera se pasaba el rato jurando en rojo que no se iba a
   // lanzar nada mientras se lanzaba. La herramienta mintiendo sobre sí misma.

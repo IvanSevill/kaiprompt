@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// uninstall.mjs — undo what install.mjs did: the two slash commands and the hook.
-// Your data (data/, out/, projects.json, programados.jsonl) is left exactly as it is.
+// uninstall.mjs — undo what install.mjs did: the two slash commands and the note.
+// Your data (data/, out/, projects.json) is left exactly as it is.
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';

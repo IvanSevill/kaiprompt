@@ -1,3 +1,7 @@
+// El instalador escribe dentro del ~/.claude de alguien, al lado de su configuración.
+// La regla que prueba casi todo este archivo: NO PISA NADA. Ni los comandos, ni la nota,
+// ni projects.json, ni settings.json (en el que ya no registra nada).
+
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -10,8 +14,7 @@ process.env.CLAUDE_CONFIG_DIR = path.join(TMP, 'claude');   // un ~/.claude de m
 
 const { readJSON } = await import('../lib/store.mjs');
 const {
-  addHook, commandFiles, detectBase, hookCommand, install, posix,
-  removeHook, shellSnippets, uninstall,
+  commandFiles, detectBase, install, noteBody, notePath, posix, shellSnippets, uninstall,
 } = await import('../lib/install.mjs');
 
 const ROOT = 'C:/tools/kaiprompt';                          // una instalación de ejemplo
@@ -26,19 +29,14 @@ const reset = () => {
 };
 
 // --- los slash commands -------------------------------------------------------
-test('commandFiles: los dos comandos llevan la ruta REAL de instalación', () => {
+test('commandFiles: son DOS, y llevan la ruta REAL de instalación', () => {
   const files = commandFiles(ROOT);
-  assert.deepEqual(Object.keys(files).sort(), ['programar.md', 'resumen-prompts.md']);
+  assert.deepEqual(Object.keys(files).sort(), ['kaip-summary.md', 'prompt.md']);
 
-  assert.match(files['programar.md'], /C:\/tools\/kaiprompt\/programar\.mjs/);
-  assert.match(files['resumen-prompts.md'], /C:\/tools\/kaiprompt\/kaip\.mjs/);
-  assert.match(files['resumen-prompts.md'], /C:\/tools\/kaiprompt\/out/);
-});
-
-test('commandFiles: resumen-prompts apunta al binario que existe (no al nombre viejo)', () => {
-  // El instalado a mano apuntaba a "programar-prompt.mjs", que no existe: estaba roto.
-  const md = commandFiles(ROOT)['resumen-prompts.md'];
-  assert.doesNotMatch(md, /programar-prompt\.mjs/);
+  for (const body of Object.values(files)) {
+    assert.match(body, /C:\/tools\/kaiprompt\/kaip\.mjs/, 'apunta al binario que existe');
+  }
+  assert.match(files['kaip-summary.md'], /C:\/tools\/kaiprompt\/out/);
 });
 
 test('commandFiles: llevan front-matter, si no Claude Code no los reconoce', () => {
@@ -48,81 +46,53 @@ test('commandFiles: llevan front-matter, si no Claude Code no los reconoce', () 
   }
 });
 
-// --- el hook ------------------------------------------------------------------
-test('addHook: registra UserPromptSubmit apuntando a programar.mjs', () => {
-  const { settings: s, changed } = addHook({}, ROOT);
-  assert.equal(changed, true);
-  assert.equal(s.hooks.UserPromptSubmit[0].hooks[0].command, hookCommand(ROOT));
-  assert.match(s.hooks.UserPromptSubmit[0].hooks[0].command, /programar\.mjs/);
-});
-
-test('addHook: es idempotente (dos hooks = el turno se bloquea dos veces)', () => {
-  const uno = addHook({}, ROOT).settings;
-  const { settings: dos, changed } = addHook(uno, ROOT);
-  assert.equal(changed, false, 'la segunda vez no cambia nada');
-  assert.equal(dos.hooks.UserPromptSubmit.length, 1);
-});
-
-test('addHook: NO pisa otros ajustes ni otros hooks del usuario', () => {
-  const previo = {
-    model: 'opus',
-    hooks: {
-      PreToolUse: [{ hooks: [{ type: 'command', command: 'otra-cosa' }] }],
-      UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'hook-ajeno' }] }],
-    },
-  };
-  const { settings: s } = addHook(previo, ROOT);
-
-  assert.equal(s.model, 'opus', 'lo que no es nuestro se queda');
-  assert.equal(s.hooks.PreToolUse[0].hooks[0].command, 'otra-cosa');
-  assert.equal(s.hooks.UserPromptSubmit.length, 2, 'el hook ajeno sigue ahí');
-  assert.ok(s.hooks.UserPromptSubmit.some((g) => g.hooks[0].command === hookCommand(ROOT)));
-});
-
-test('removeHook: se lleva el nuestro y deja el resto intacto', () => {
-  const conAmbos = addHook({
-    model: 'opus',
-    hooks: { UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'hook-ajeno' }] }] },
-  }, ROOT).settings;
-
-  const { settings: s, changed } = removeHook(conAmbos, ROOT);
-  assert.equal(changed, true);
-  assert.equal(s.model, 'opus');
-  assert.equal(s.hooks.UserPromptSubmit.length, 1);
-  assert.equal(s.hooks.UserPromptSubmit[0].hooks[0].command, 'hook-ajeno');
-});
-
-test('removeHook: si era el único, no deja restos vacíos', () => {
-  const solo = addHook({}, ROOT).settings;
-  const { settings: s } = removeHook(solo, ROOT);
-  assert.equal(s.hooks, undefined, 'ni hooks: {} colgando');
-});
-
-test('removeHook: sin hook registrado no rompe', () => {
-  assert.equal(removeHook({}, ROOT).changed, false);
-  assert.equal(removeHook({ model: 'opus' }, ROOT).changed, false);
-});
-
 // --- install / uninstall de verdad, sobre disco -------------------------------
-test('install: escribe los comandos, registra el hook y crea projects.json', () => {
+test('install: escribe los comandos, la nota y projects.json', () => {
   reset();
   const root = fs.mkdtempSync(path.join(TMP, 'root-'));
   const acciones = install({ root, claudeDir: CLAUDE, base: 'C:/mis/proyectos' });
 
-  assert.ok(fs.existsSync(cmdFile('programar.md')));
-  assert.ok(fs.existsSync(cmdFile('resumen-prompts.md')));
-  assert.equal(settings().hooks.UserPromptSubmit[0].hooks[0].command, hookCommand(root));
+  assert.ok(fs.existsSync(cmdFile('prompt.md')));
+  assert.ok(fs.existsSync(cmdFile('kaip-summary.md')));
+  assert.ok(fs.existsSync(notePath(CLAUDE)));
   assert.deepEqual(readJSON(path.join(root, 'projects.json'), null), { _base: 'C:/mis/proyectos' });
   assert.ok(acciones.length >= 4, 'y cuenta lo que ha hecho');
 });
 
-test('install: dos veces seguidas deja UN solo hook (idempotente en disco)', () => {
+test('install: NO registra nada en settings.json (ya no hay hook)', () => {
+  reset();
+  const root = fs.mkdtempSync(path.join(TMP, 'root-'));
+  fs.writeFileSync(settingsFile, JSON.stringify({ model: 'opus' }));
+
+  install({ root, claudeDir: CLAUDE, base: null });
+
+  assert.deepEqual(settings(), { model: 'opus' }, 'settings.json, intacto');
+});
+
+test('install: dos veces seguidas no duplica ni cambia nada (idempotente en disco)', () => {
   reset();
   const root = fs.mkdtempSync(path.join(TMP, 'root-'));
   install({ root, claudeDir: CLAUDE, base: 'C:/x' });
+
+  const antes = fs.readdirSync(path.join(CLAUDE, 'commands')).sort();
+  const nota = fs.readFileSync(notePath(CLAUDE), 'utf8');
+
   install({ root, claudeDir: CLAUDE, base: 'C:/x' });
 
-  assert.equal(settings().hooks.UserPromptSubmit.length, 1);
+  assert.deepEqual(fs.readdirSync(path.join(CLAUDE, 'commands')).sort(), antes);
+  assert.equal(fs.readFileSync(notePath(CLAUDE), 'utf8'), nota);
+});
+
+test('install: NO pisa un slash command que el usuario ya tenía tuneado', () => {
+  reset();
+  const root = fs.mkdtempSync(path.join(TMP, 'root-'));
+  fs.mkdirSync(path.join(CLAUDE, 'commands'), { recursive: true });
+  fs.writeFileSync(cmdFile('prompt.md'), 'el mio, y me ha costado');
+
+  install({ root, claudeDir: CLAUDE, base: null });
+
+  assert.equal(fs.readFileSync(cmdFile('prompt.md'), 'utf8'), 'el mio, y me ha costado');
+  assert.ok(fs.existsSync(cmdFile('kaip-summary.md')), 'el que faltaba sí se escribe');
 });
 
 test('install: NO pisa un projects.json que ya existía (es dato del usuario)', () => {
@@ -142,20 +112,7 @@ test('install: sin carpeta base, projects.json se crea vacío (no revienta)', ()
   assert.deepEqual(readJSON(path.join(root, 'projects.json'), null), {});
 });
 
-test('install: respeta un settings.json que ya tenía cosas', () => {
-  reset();
-  const root = fs.mkdtempSync(path.join(TMP, 'root-'));
-  fs.writeFileSync(settingsFile, JSON.stringify({ model: 'opus', permissions: { allow: ['Bash'] } }));
-
-  install({ root, claudeDir: CLAUDE, base: null });
-
-  const s = settings();
-  assert.equal(s.model, 'opus');
-  assert.deepEqual(s.permissions.allow, ['Bash']);
-  assert.ok(s.hooks.UserPromptSubmit);
-});
-
-test('uninstall: revierte los comandos y el hook, y NO toca los datos', () => {
+test('uninstall: revierte los comandos y la nota, y NO toca los datos', () => {
   reset();
   const root = fs.mkdtempSync(path.join(TMP, 'root-'));
   fs.writeFileSync(settingsFile, JSON.stringify({ model: 'opus' }));
@@ -163,10 +120,10 @@ test('uninstall: revierte los comandos y el hook, y NO toca los datos', () => {
 
   uninstall({ root, claudeDir: CLAUDE });
 
-  assert.equal(fs.existsSync(cmdFile('programar.md')), false);
-  assert.equal(fs.existsSync(cmdFile('resumen-prompts.md')), false);
-  assert.equal(settings().hooks, undefined, 'el hook fuera');
-  assert.equal(settings().model, 'opus', 'settings.json como estaba');
+  assert.equal(fs.existsSync(cmdFile('prompt.md')), false);
+  assert.equal(fs.existsSync(cmdFile('kaip-summary.md')), false);
+  assert.equal(fs.existsSync(notePath(CLAUDE)), false);
+  assert.deepEqual(settings(), { model: 'opus' }, 'settings.json como estaba');
   assert.ok(fs.existsSync(path.join(root, 'projects.json')), 'projects.json NO se borra');
 });
 
@@ -174,6 +131,28 @@ test('uninstall: sin haber instalado, no rompe', () => {
   reset();
   const root = fs.mkdtempSync(path.join(TMP, 'root-'));
   assert.doesNotThrow(() => uninstall({ root, claudeDir: CLAUDE }));
+});
+
+// --- la nota ------------------------------------------------------------------
+test('la nota es un archivo PROPIO: el CLAUDE.md del usuario no se toca', () => {
+  reset();
+  const root = fs.mkdtempSync(path.join(TMP, 'root-'));
+  const suyo = path.join(CLAUDE, 'CLAUDE.md');
+  fs.writeFileSync(suyo, '# mis instrucciones\nno me las toques');
+
+  install({ root, claudeDir: CLAUDE, base: null });
+  assert.equal(fs.readFileSync(suyo, 'utf8'), '# mis instrucciones\nno me las toques');
+
+  uninstall({ root, claudeDir: CLAUDE });
+  assert.ok(fs.existsSync(suyo), 'y el uninstall tampoco se lo lleva por delante');
+});
+
+test('la nota dice qué es, dónde vive y cómo desinstalarlo', () => {
+  const body = noteBody('C:/tools/kaiprompt');
+  assert.match(body, /kaiprompt/);
+  assert.match(body, /C:\/tools\/kaiprompt/, 'dónde vive');
+  assert.match(body, /uninstall\.mjs/, 'cómo se quita');
+  assert.match(body, /\/prompt|\/kaip-summary/, 'y qué comandos trae');
 });
 
 // --- detalles -----------------------------------------------------------------

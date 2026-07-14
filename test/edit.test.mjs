@@ -128,23 +128,6 @@ test('edit: prompt vacío se rechaza', () => {
   assert.throws(() => editJob(j.id, { prompt: '   ' }), /--prompt cannot be empty/);
 });
 
-// --- lo agendado desde el chat ----------------------------------------------
-test('edit: se puede editar algo programado con /programar (importa antes de buscar)', () => {
-  saveQueue([]);
-  fs.writeFileSync(path.join(TMP, 'data', 'programados.state.json'), '{"imported":[]}');
-  const entry = {
-    id: 'p-edit-1', prompt: 'lo de siempre', target: null, adapter: 'mock',
-    when: Date.now() + 3600_000, dir: 'C:/proj', permMode: null, createdAt: Date.now(),
-  };
-  fs.writeFileSync(path.join(TMP, 'programados.jsonl'), JSON.stringify(entry) + '\n');
-
-  const { job: n } = editJob('p-edit-1', { prompt: 'mejor esto' });
-  assert.equal(n.prompt, 'mejor esto');
-  assert.equal(loadQueue().find((x) => x.id === 'p-edit-1').prompt, 'mejor esto');
-
-  fs.rmSync(path.join(TMP, 'programados.jsonl'), { force: true });
-});
-
 // --- applyEdits (puro) -------------------------------------------------------
 test('applyEdits: no muta el job original', () => {
   const j = job({ prompt: 'original' });

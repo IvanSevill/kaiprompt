@@ -204,7 +204,7 @@ test('reapStale: un job de un runner VIVO no se toca', async () => {
 
 // --- alimentar un run que ya esta corriendo ---------------------------------
 // El caso real: dejas un "run" puesto, y antes de quedarte sin tokens encolas lo que
-// falta desde otra terminal (o con /programar). Tiene que recogerlo el solo.
+// falta desde otra terminal. Tiene que recogerlo el solo.
 
 test('un run en marcha recoge los prompts añadidos DESPUES de arrancar', async () => {
   const { addJob } = await import('../lib/queue.mjs');
