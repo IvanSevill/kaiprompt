@@ -1,10 +1,9 @@
-// El prompt puede ser el texto, o un ENLACE a un archivo que lo contiene.
+// A prompt can be the text itself, or a LINK to a file that holds it.
 //
-// La diferencia está en CUÁNDO se lee. --file copia el contenido al encolar (una foto).
-// --from guarda la RUTA, y el archivo se lee al LANZAR: así puedes seguir puliendo el
-// prompt hasta el segundo antes de que salga, y lo que diga el archivo a las 03:00 es lo
-// que se manda. Eso es lo que hace útil a la skill /prompt: escribe un archivo, y tú
-// encolas el archivo.
+// The difference is WHEN it is read. --file copies the contents in at queue time (a snapshot).
+// --from stores the PATH, and the file is read at LAUNCH: so you can keep polishing the prompt
+// right up to the second it goes out, and whatever the file says at 03:00 is what gets sent.
+// That is what makes the /prompt skill useful: it writes a file, and you queue the file.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -26,147 +25,147 @@ const write = (name, body) => {
   return f;
 };
 
-// --- enlazar ----------------------------------------------------------------
-test('addJob --from: guarda la RUTA, no el texto', () => {
+// --- linking -----------------------------------------------------------------
+test('addJob --from: stores the PATH, not the text', () => {
   saveQueue([]);
-  const f = write('p1.md', 'haz los tests');
+  const f = write('p1.md', 'run the tests');
   const j = addJob({ from: f, adapter: 'mock' });
 
   assert.equal(j.promptFile, path.resolve(f));
-  assert.equal(j.prompt, null, 'el texto NO se copia: se lee al lanzar');
+  assert.equal(j.prompt, null, 'the text is NOT copied: it is read at launch');
   assert.ok(isLinked(j));
 });
 
-test('addJob --from: una ruta que no existe se rechaza AL ENCOLAR (no a las 3am)', () => {
-  assert.throws(() => addJob({ from: path.join(TMP, 'no-existe.md') }), /no such prompt file/);
+test('addJob --from: a path that does not exist is refused AT QUEUE TIME (not at 3am)', () => {
+  assert.throws(() => addJob({ from: path.join(TMP, 'does-not-exist.md') }), /no such prompt file/);
 });
 
-test('addJob --from: un archivo vacío se rechaza al encolar', () => {
-  const f = write('vacio.md', '   \n  ');
+test('addJob --from: an empty file is refused at queue time', () => {
+  const f = write('empty.md', '   \n  ');
   assert.throws(() => addJob({ from: f }), /empty/i);
 });
 
-test('linkPrompt: devuelve ruta ABSOLUTA (el job puede correr desde otra carpeta)', () => {
+test('linkPrompt: returns an ABSOLUTE path (the job may run from another folder)', () => {
   const f = write('abs.md', 'x');
   assert.ok(path.isAbsolute(linkPrompt(f)));
 });
 
-// --- lo importante: se lee al LANZAR ----------------------------------------
-test('el archivo se lee al EJECUTAR, no al encolar: editarlo después cambia lo que se manda', async () => {
+// --- the point of it: it is read at LAUNCH -----------------------------------
+test('the file is read when it RUNS, not when queued: editing it afterwards changes what is sent', async () => {
   saveQueue([]);
-  const f = write('vivo.md', 'version vieja');
+  const f = write('live.md', 'old version');
   const j = addJob({ from: f, adapter: 'mock' });
 
-  fs.writeFileSync(f, 'VERSION NUEVA');          // lo pules justo antes de que salga
+  fs.writeFileSync(f, 'NEW VERSION');            // you polish it right before it goes out
 
-  assert.equal(resolvePrompt(j), 'VERSION NUEVA', 'manda lo que dice el archivo AHORA');
+  assert.equal(resolvePrompt(j), 'NEW VERSION', 'it sends what the file says NOW');
 
   await executeJob(j);
   assert.equal(j.status, 'done');
-  const salida = fs.readFileSync(path.join(TMP, 'out', `${j.id}.txt`), 'utf8');
-  assert.match(salida, /VERSION NUEVA/, 'y es lo que le llegó de verdad al adaptador');
+  const out = fs.readFileSync(path.join(TMP, 'out', `${j.id}.txt`), 'utf8');
+  assert.match(out, /NEW VERSION/, 'and that is what really reached the adapter');
 });
 
-test('un prompt normal (texto pegado) sigue funcionando igual', async () => {
+test('an ordinary prompt (pasted text) still works exactly as before', async () => {
   saveQueue([]);
-  const j = addJob({ prompt: 'texto de toda la vida', adapter: 'mock' });
+  const j = addJob({ prompt: 'good old plain text', adapter: 'mock' });
   assert.equal(isLinked(j), false);
-  assert.equal(resolvePrompt(j), 'texto de toda la vida');
+  assert.equal(resolvePrompt(j), 'good old plain text');
   await executeJob(j);
   assert.equal(j.status, 'done');
 });
 
-// --- lo que NO puede pasar nunca --------------------------------------------
-// Un lanzamiento desatendido corre con autonomía total en un proyecto de verdad.
-// Mandarle un prompt en blanco y dejar que improvise es lo peor que podría hacer
-// esta herramienta. Así que si el archivo no está, NO se lanza.
+// --- what may never happen ---------------------------------------------------
+// An unattended launch runs with full autonomy in a real project. Handing it a blank prompt
+// and letting it improvise is the worst thing this tool could do. So if the file is not
+// there, NOTHING is launched.
 
-test('si el archivo DESAPARECE antes de lanzar, no se manda nada: error claro', async () => {
+test('if the file DISAPPEARS before launch, nothing is sent: a clear error', async () => {
   saveQueue([]);
-  const f = write('se-borra.md', 'algo');
+  const f = write('gets-deleted.md', 'something');
   const j = addJob({ from: f, adapter: 'mock' });
   fs.rmSync(f);
 
   await assert.rejects(() => executeJob(j), /prompt file is gone/i);
-  assert.ok(!fs.existsSync(path.join(TMP, 'out', `${j.id}.txt`)), 'no llega a ejecutar nada');
+  assert.ok(!fs.existsSync(path.join(TMP, 'out', `${j.id}.txt`)), 'it never gets as far as running');
 });
 
-test('si el archivo se queda VACÍO antes de lanzar, tampoco se manda nada', async () => {
+test('if the file is EMPTIED before launch, nothing is sent either', async () => {
   saveQueue([]);
-  const f = write('se-vacia.md', 'algo');
+  const f = write('gets-emptied.md', 'something');
   const j = addJob({ from: f, adapter: 'mock' });
   fs.writeFileSync(f, '');
 
   await assert.rejects(() => executeJob(j), /empty/i);
 });
 
-test('el error dice CÓMO arreglarlo (reapuntar el job a otro archivo)', async () => {
-  const f = write('tmp2.md', 'algo');
+test('the error says HOW to fix it (point the job at another file)', async () => {
+  const f = write('tmp2.md', 'something');
   const j = addJob({ from: f, adapter: 'mock' });
   fs.rmSync(f);
   await assert.rejects(() => executeJob(j), /kaip edit/);
 });
 
-// --- verlo en la cola --------------------------------------------------------
-test('jobPreview: para un job enlazado enseña lo que dice el archivo AHORA, marcado con ↪', () => {
-  const f = write('prev.md', 'primera linea\nsegunda');
+// --- seeing it in the queue ---------------------------------------------------
+test('jobPreview: for a linked job it shows what the file says NOW, marked with ↪', () => {
+  const f = write('prev.md', 'first line\nsecond');
   const j = addJob({ from: f, adapter: 'mock' });
-  assert.match(jobPreview(j), /^↪ primera linea/);
+  assert.match(jobPreview(j), /^↪ first line/);
 
-  fs.writeFileSync(f, 'ha cambiado');
-  assert.match(jobPreview(j), /ha cambiado/, 'no se queda con una copia rancia');
+  fs.writeFileSync(f, 'it has changed');
+  assert.match(jobPreview(j), /it has changed/, 'it does not keep a stale copy');
 });
 
-test('jobPreview: un archivo que ya no está se ve como AVISO en la lista (te enteras antes)', () => {
-  const f = write('roto.md', 'x');
+test('jobPreview: a file that is gone shows as a WARNING in the list (you find out early)', () => {
+  const f = write('broken.md', 'x');
   const j = addJob({ from: f, adapter: 'mock' });
   fs.rmSync(f);
-  assert.match(jobPreview(j), /⚠.*ilegible/);
+  assert.match(jobPreview(j), /⚠.*unreadable/);
 });
 
-// --- editar ------------------------------------------------------------------
-test('edit --from: reapunta un job a otro archivo', () => {
+// --- editing -------------------------------------------------------------------
+test('edit --from: repoints a job at another file', () => {
   saveQueue([]);
-  const a = write('a.md', 'archivo A');
-  const b = write('b.md', 'archivo B');
+  const a = write('a.md', 'file A');
+  const b = write('b.md', 'file B');
   const j = addJob({ from: a, adapter: 'mock' });
 
   const { job } = editJob(j.id, { from: b });
   assert.equal(job.promptFile, path.resolve(b));
-  assert.equal(resolvePrompt(job), 'archivo B');
+  assert.equal(resolvePrompt(job), 'file B');
 });
 
-test('edit --prompt sobre un job enlazado ROMPE el enlace (si no, no sabrías cuál manda)', () => {
+test('edit --prompt on a linked job BREAKS the link (otherwise you would not know which wins)', () => {
   saveQueue([]);
-  const f = write('c.md', 'del archivo');
+  const f = write('c.md', 'from the file');
   const j = addJob({ from: f, adapter: 'mock' });
 
-  const { job } = editJob(j.id, { prompt: 'ahora texto a pelo' });
-  assert.equal(job.promptFile, null, 'ya no está enlazado');
-  assert.equal(job.prompt, 'ahora texto a pelo');
-  assert.equal(resolvePrompt(job), 'ahora texto a pelo');
+  const { job } = editJob(j.id, { prompt: 'plain text now' });
+  assert.equal(job.promptFile, null, 'no longer linked');
+  assert.equal(job.prompt, 'plain text now');
+  assert.equal(resolvePrompt(job), 'plain text now');
 });
 
-test('edit --from apuntando a algo que no existe se rechaza (la cola no se corrompe)', () => {
+test('edit --from pointing at something that does not exist is refused (the queue is not corrupted)', () => {
   saveQueue([]);
   const f = write('d.md', 'x');
   const j = addJob({ from: f, adapter: 'mock' });
-  assert.throws(() => editJob(j.id, { from: path.join(TMP, 'fantasma.md') }), /no such prompt file/);
-  assert.equal(loadQueue()[0].promptFile, path.resolve(f), 'el job se queda como estaba');
+  assert.throws(() => editJob(j.id, { from: path.join(TMP, 'ghost.md') }), /no such prompt file/);
+  assert.equal(loadQueue()[0].promptFile, path.resolve(f), 'the job is left as it was');
 });
 
-// --- reanudar NO es repetir --------------------------------------------------
-// Si el cupo corta un lanzamiento a mitad, la sesion sigue ahi: ya leyo el proyecto, hizo
-// un plan y quiza escribio media funcionalidad. Volver a pegarle el prompt entero le hace
-// EMPEZAR DE CERO: paga todo ese contexto por segunda vez y puede deshacer lo hecho.
+// --- resuming is NOT repeating -------------------------------------------------
+// If the quota cuts a launch off halfway, the session is still there: it has already read the
+// project, made a plan and maybe written half the feature. Pasting the whole prompt at it
+// again makes it START OVER: it pays for all that context a second time and may undo the work.
 
-test('un job cortado por cupo, CON sesion, se reanuda con "Continua" y no con el prompt', async () => {
+test('a job cut off by the quota, WITH a session, resumes with "carry on" and not with the prompt', async () => {
   const { CONTINUATION, isContinuation } = await import('../lib/prompt.mjs');
   const { requeue, settle } = await import('../lib/launch.mjs');
 
   saveQueue([]);
-  const j = addJob({ prompt: 'un prompt largisimo con todo el contexto', adapter: 'mock' });
-  j.sessionId = 'sess-viva';                          // el lanzamiento llego a arrancar
+  const j = addJob({ prompt: 'an enormous prompt with all the context', adapter: 'mock' });
+  j.sessionId = 'sess-alive';                         // the launch did get started
 
   const s = settle(j, {
     ok: false,
@@ -177,19 +176,19 @@ test('un job cortado por cupo, CON sesion, se reanuda con "Continua" y no con el
 
   assert.equal(j.continuation, true);
   assert.equal(isContinuation(j), true);
-  assert.match(CONTINUATION, /Contin[uú]a/i);
-  assert.match(CONTINUATION, /NO empieces de cero/i);
-  assert.doesNotMatch(CONTINUATION, /prompt largisimo/);
+  assert.match(CONTINUATION, /carry on/i);
+  assert.match(CONTINUATION, /do NOT start over/i);
+  assert.doesNotMatch(CONTINUATION, /enormous prompt/);
 });
 
-test('sin sesion, el lanzamiento nunca arranco: se le manda el prompt ORIGINAL', async () => {
-  // Aqui no hay nada que continuar. Mandarle "Continua" a una conversacion que no existe
-  // seria mandarle a Claude un mensaje sin ningun contexto.
+test('with no session, the launch never started: the ORIGINAL prompt is sent', async () => {
+  // There is nothing to continue here. Sending "carry on" to a conversation that does not
+  // exist would be sending Claude a message with no context at all.
   const { isContinuation } = await import('../lib/prompt.mjs');
   const { requeue, settle } = await import('../lib/launch.mjs');
 
   saveQueue([]);
-  const j = addJob({ prompt: 'el original', adapter: 'mock' });   // sessionId null
+  const j = addJob({ prompt: 'the original', adapter: 'mock' });   // sessionId null
 
   requeue(j, settle(j, { ok: false, output: "You've hit your session limit", error: 'x' }));
 

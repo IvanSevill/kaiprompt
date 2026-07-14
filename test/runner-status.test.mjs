@@ -1,12 +1,12 @@
-// "¿Se va a lanzar algo?" — la pregunta que la herramienta contestaba MAL.
+// "Will anything actually fire?" — the question the tool used to get WRONG.
 //
-// Todo (el aviso de la GUI, la despedida, la app del movil, lo que imprime "add")
-// respondia a otra pregunta: "¿esta el daemon encendido?". No son la misma. Un "kaip run"
-// abierto en un terminal procesa la cola exactamente igual que el daemon. Pero cada
-// pantalla te decia, en rojo, que no se iba a lanzar nada — mientras se lanzaba.
+// Everything (the GUI banner, the goodbye screen, the phone app, what "add" prints) was
+// answering a different question: "is the daemon on?". They are not the same. A "kaip run"
+// left open in a terminal processes the queue exactly like the daemon does. But every screen
+// told you, in red, that nothing was going to fire — while it was firing.
 //
-// Eso es peor que un mensaje inutil: es la herramienta mintiendo sobre su propio estado
-// mientras hace lo correcto.
+// That is worse than a useless message: it is the tool lying about its own state while doing
+// the right thing.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -26,7 +26,7 @@ const takeLock = (pid) => {
 };
 const dropLock = () => fs.rmSync(LOCK, { force: true });
 
-test('sin nadie: lo agendado NO se va a lanzar, y se dice', () => {
+test('with nobody there: scheduled work will NOT fire, and it says so', () => {
   dropLock();
   const st = runnerStatus();
   assert.equal(st.willFire, false);
@@ -34,16 +34,16 @@ test('sin nadie: lo agendado NO se va a lanzar, y se dice', () => {
 
   const line = runnerLine(st);
   assert.equal(line.ok, false);
-  assert.match(line.text, /NO se lanzar/i);
+  assert.match(line.text, /will NOT fire/i);
   assert.match(line.hint, /kaip daemon start/);
 });
 
-test('un "run" vivo SI dispara lo agendado (esto era la mentira)', () => {
-  // El cerrojo lo tiene un proceso vivo que no es el daemon: es alguien con un run abierto.
+test('a live "run" DOES fire scheduled work (this was the lie)', () => {
+  // The lock is held by a live process that is not the daemon: it is someone with a run open.
   takeLock(process.pid);
   const st = runnerStatus();
 
-  assert.equal(st.willFire, true, 'un run procesa la cola igual que el daemon');
+  assert.equal(st.willFire, true, 'a run processes the queue just like the daemon');
   assert.equal(st.kind, 'run');
   assert.equal(st.pid, process.pid);
 
@@ -53,17 +53,17 @@ test('un "run" vivo SI dispara lo agendado (esto era la mentira)', () => {
   dropLock();
 });
 
-test('pero un "run" NO sobrevive a que cierres su ventana, y eso hay que decirlo', () => {
-  // Es la diferencia que de verdad importa cuando estas a punto de cerrar algo.
+test('but a "run" does NOT survive closing its window, and that has to be said', () => {
+  // It is the difference that really matters when you are about to close something.
   takeLock(process.pid);
   const st = runnerStatus();
 
-  assert.equal(st.durable, false, 'un run muere con su terminal');
-  assert.match(runnerLine(st).hint, /cierras|daemon start/i);
+  assert.equal(st.durable, false, 'a run dies with its terminal');
+  assert.match(runnerLine(st).hint, /close|daemon start/i);
   dropLock();
 });
 
-test('un cerrojo CADUCADO no cuenta: ese runner murio', () => {
+test('an EXPIRED lock does not count: that runner died', () => {
   fs.mkdirSync(path.dirname(LOCK), { recursive: true });
   fs.writeFileSync(LOCK, JSON.stringify({ pid: 999999, at: Date.now() - 10 * 60_000 }));
 

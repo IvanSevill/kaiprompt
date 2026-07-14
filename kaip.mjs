@@ -78,11 +78,11 @@ async function cmdAdd({ flags, pos, engine }) {
     session: typeof flags.session === 'string' ? flags.session : null,
     priority: Boolean(flags.first),
   });
-  console.log(`+ ${job.id}  ${job.when ? '@ ' + fmt(job.when) : job.priority ? '(la primera)' : '(sequential)'}  `
+  console.log(`+ ${job.id}  ${job.when ? '@ ' + fmt(job.when) : job.priority ? '(first in line)' : '(sequential)'}  `
     + `${job.target ? '[' + job.target + '] ' : ''}${preview(prompt ?? '')}`);
   if (job.promptFile) {
     console.log(`  ← ${job.promptFile}`);
-    console.log('    (se lee al lanzar: puedes seguir editándolo hasta entonces)');
+    console.log('    (read at launch: you can keep editing it until then)');
   }
 
   // Adding never launches. But a job with a time is a PROMISE, and something has to be
@@ -90,7 +90,7 @@ async function cmdAdd({ flags, pos, engine }) {
   // A --first job makes the same promise ("as soon as there is quota"), so it gets the
   // same guarantee: it too needs someone draining the queue, or it will just sit there.
   if (!job.when && !job.priority) {
-    console.log(c.muted('  secuencial: sale en tu próximo "run" (aquí no se lanza nada)'));
+    console.log(c.muted('  sequential: it goes out on your next "run" (nothing is launched here)'));
     return;
   }
 
@@ -130,7 +130,7 @@ function cmdList({ flags, pos }) {
     // A job that jumps the queue has to LOOK like it does. It sits wherever it was added but
     // runs before everything above it, and a row that says "seq" while the runner quietly
     // takes it first is the tool lying about its own order.
-    const when = j.when ? '@ ' + fmt(j.when) : j.priority ? '↑ la primera' : 'seq';
+    const when = j.when ? '@ ' + fmt(j.when) : j.priority ? '↑ first in line' : 'seq';
     console.log(`${icon[j.status] || '?'} ${j.id}  ${String(j.status).padEnd(7)} `
       + `${when.padEnd(22)} ${j.adapter}${j.target ? '/' + j.target : ''}  ${jobPreview(j)}`);
   }
@@ -338,29 +338,29 @@ async function cmdApp({ pos }) {
     if (!fs.existsSync(path.join(appDir, 'local.properties'))) {
       // Gradle cannot find the Android SDK without this, and its own error message about it
       // is famously unhelpful.
-      console.log(c.warn('falta app/local.properties (Gradle no sabe dónde está el SDK de Android).'));
-      console.log(c.muted('  créalo con una línea:'));
-      console.log(c.accent('  sdk.dir=C:/Users/<tu-usuario>/AppData/Local/Android/Sdk'));
+      console.log(c.warn('app/local.properties is missing (Gradle cannot find the Android SDK).'));
+      console.log(c.muted('  create it with a single line:'));
+      console.log(c.accent('  sdk.dir=C:/Users/<your-user>/AppData/Local/Android/Sdk'));
       return;
     }
 
-    console.log(c.muted('compilando el APK… (la primera vez tarda unos minutos)'));
+    console.log(c.muted('building the APK… (the first time takes a few minutes)'));
     const r = gradle(':app:assembleRelease');
-    if (r.status !== 0) return console.log(c.err('\nla compilación falló.'));
+    if (r.status !== 0) return console.log(c.err('\nthe build failed.'));
 
     const apk = apkPath();
-    console.log('\n' + c.ok('✓ APK listo') + c.muted(`  ${apk}`));
-    console.log(c.muted('  para enlazarlo con este PC: ') + c.accent('kaip serve') + c.muted(' (saca el QR de emparejamiento)'));
+    console.log('\n' + c.ok('✓ APK ready') + c.muted(`  ${apk}`));
+    console.log(c.muted('  to pair it with this PC: ') + c.accent('kaip serve') + c.muted(' (it shows the pairing QR)'));
     return;
   }
 
   if (pos[0] === 'test') {
     const r = gradle(':app:testDebugUnitTest');
-    if (r.status !== 0) return console.log(c.err('\nlos tests de la app fallaron.'));
-    return console.log(c.ok('\n✓ tests de la app en verde'));
+    if (r.status !== 0) return console.log(c.err('\nthe app tests failed.'));
+    return console.log(c.ok('\n✓ app tests passing'));
   }
 
-  console.log('uso: kaip app [build|test]');
+  console.log('usage: kaip app [build|test]');
 }
 
 async function cmdServe({ flags }) {
@@ -374,8 +374,8 @@ async function cmdServe({ flags }) {
   // left the tool with an unpair button you could not press.
   if (flags.reset) {
     resetToken();
-    console.log(c.ok('✓ emparejamientos anulados') + c.muted(' — token y clave nuevos.'));
-    console.log(c.muted('  los móviles que había quedan fuera desde ya; vuelve a escanear el QR.\n'));
+    console.log(c.ok('✓ pairings revoked') + c.muted(' — new token, new key.'));
+    console.log(c.muted('  every phone you had is locked out from now on; scan the QR again.\n'));
   }
 
   // --wifi: nothing leaves the house. No tunnel, no Cloudflare, no third party at all —
@@ -384,7 +384,7 @@ async function cmdServe({ flags }) {
   const wifiOnly = !!flags.wifi || !!flags.local || !!flags['no-tunnel'] || flags.tunnel === false;
 
   createServer({ port });
-  console.log(c.bold('kaip serve') + c.muted(`  ·  puerto ${port}`));
+  console.log(c.bold('kaip serve') + c.muted(`  ·  port ${port}`));
 
   // The window title says whether the phone is actually on the other end — the one thing you
   // want to know from a glance at the taskbar, and the one thing a terminal called "node"
@@ -398,44 +398,44 @@ async function cmdServe({ flags }) {
   setInterval(titleTick, 1000).unref?.();
 
   const lan = addresses(port)[0];
-  if (lan) console.log(c.muted('  en casa:  ') + (wifiOnly ? c.accent(lan.url) : lan.url));
+  if (lan) console.log(c.muted('  at home:  ') + (wifiOnly ? c.accent(lan.url) : lan.url));
 
   if (wifiOnly) {
     // Forget any tunnel URL from a previous run, or the QR would hand the phone an address
     // that died when that tunnel closed — and it would fail far from here, silently.
     await saveLastUrl(null);
-    console.log(c.muted('\n  solo wifi: sin túnel, sin Cloudflare, sin terceros.'));
-    console.log(c.muted('  el móvil tiene que estar en tu misma red.'));
+    console.log(c.muted('\n  wifi only: no tunnel, no Cloudflare, no third party.'));
+    console.log(c.muted('  the phone has to be on the same network as this machine.'));
   } else {
     const { startTunnel, TunnelError, waitForTunnel } = await import('./lib/tunnel.mjs');
-    process.stdout.write(c.muted('  abriendo el túnel de Cloudflare… '));
+    process.stdout.write(c.muted('  opening the Cloudflare tunnel… '));
     try {
       const { url } = await startTunnel(port);
       await saveLastUrl(url);
-      console.log(c.ok('listo'));
-      console.log(c.muted('  fuera:    ') + c.accent(url) + c.muted('   ← funciona desde cualquier red'));
+      console.log(c.ok('up'));
+      console.log(c.muted('  outside:  ') + c.accent(url) + c.muted('   ← works from any network'));
 
       // cloudflared prints the URL when Cloudflare ASSIGNS it, not when its edge routes to
       // it — and for the next few seconds that address answers 502. The QR used to go up
       // right here, so the first thing the phone ever did was knock on a door that did not
       // exist yet: it failed, you retried a minute later, and it worked. Ask the tunnel
       // ourselves first, and hand out the code only once it has actually answered.
-      process.stdout.write(c.muted('  esperando a que el túnel responda… '));
+      process.stdout.write(c.muted('  waiting for the tunnel to answer… '));
       const ready = await waitForTunnel(url);
       if (ready.ok) {
-        console.log(c.ok('responde'));
+        console.log(c.ok('it answers'));
       } else {
-        console.log(c.warn('sin respuesta todavía'));
-        console.log(c.muted(`  (${ready.error}) — te doy el QR igual; si el móvil falla, reintenta en unos segundos.`));
+        console.log(c.warn('no answer yet'));
+        console.log(c.muted(`  (${ready.error}) — here is the QR anyway; if the phone fails, retry in a few seconds.`));
       }
 
-      console.log(c.muted('\n  va cifrado extremo a extremo: Cloudflare mueve bytes que no puede leer.'));
-      console.log(c.muted('  ¿lo quieres sin Cloudflare? → ') + c.accent('kaip serve --wifi'));
+      console.log(c.muted('\n  it is sealed end to end: Cloudflare moves bytes it cannot read.'));
+      console.log(c.muted('  want it without Cloudflare? → ') + c.accent('kaip serve --wifi'));
     } catch (e) {
-      console.log(c.err('falló'));
+      console.log(c.err('failed'));
       console.log(c.muted('  ' + (e instanceof TunnelError ? e.message : e.message).replace(/\n/g, '\n  ')));
       await saveLastUrl(null);
-      console.log(c.muted('\n  seguimos en local: el móvil solo llega estando en tu wifi.'));
+      console.log(c.muted('\n  carrying on locally: the phone only reaches this machine on your wifi.'));
     }
   }
 
@@ -445,7 +445,7 @@ async function cmdServe({ flags }) {
   // friction with no upside.
   await showPairing(port);
 
-  console.log(c.muted('\n  Ctrl+C para parar.  (el túnel muere con esta ventana)'));
+  console.log(c.muted('\n  Ctrl+C to stop.  (the tunnel dies with this window)'));
 }
 
 /**
@@ -477,18 +477,18 @@ async function showPairing(port) {
   // difference between "scans" and "worked yesterday, doesn't today".
   const p = pairingCompact(port, serverConfig().publicUrl || null);
 
-  console.log('\n' + c.bold('  escanea esto DESDE la app') + c.muted('  — para enlazarla con este PC\n'));
+  console.log('\n' + c.bold('  scan this FROM the app') + c.muted('  — to pair it with this PC\n'));
   console.log(render(JSON.stringify(p)).replace(/^/gm, '  '));
 
   // And the escape hatch, because a terminal QR is always going to be the hard way to read
   // one: the same code in a browser, ten times the size, scans every time.
-  console.log(c.muted('\n  ¿no lo pilla la cámara? ábrelo GRANDE en el navegador:'));
+  console.log(c.muted('\n  camera not picking it up? open it BIG in the browser:'));
   console.log('  ' + c.accent(`http://localhost:${port}/pair`));
 
   // The key is why the tunnel is safe, and why it must go by QR and not down the wire.
-  console.log(c.muted('\n  la clave de cifrado viaja DENTRO de ese código, no por el túnel:'));
-  console.log(c.muted('  la escaneas de tu propia pantalla, así que Cloudflare nunca la ve.'));
-  console.log(c.muted('\n  ¿aún no tienes la app? → ') + c.accent('kaip mobile'));
+  console.log(c.muted('\n  the encryption key travels INSIDE that code, not through the tunnel:'));
+  console.log(c.muted('  you scan it off your own screen, so Cloudflare never sees it.'));
+  console.log(c.muted('\n  no app yet? → ') + c.accent('kaip mobile'));
 
   const timer = setInterval(async () => {
     const paired = pairedThisSession(BOOTED_AT);
@@ -511,11 +511,11 @@ async function livePanel(port, paired) {
   const { fmt, humanDur } = await import('./lib/time.mjs');
 
   const LABEL = {
-    running: () => c.accent('● ejecutando'),
-    quota: () => c.warn('⏸ esperando cupo'),
-    stalled: () => c.err('■ parado'),
-    queued: () => c.info('◷ en espera'),
-    idle: () => c.ok('✓ al día'),
+    running: () => c.accent('● running'),
+    quota: () => c.warn('⏸ waiting for quota'),
+    stalled: () => c.err('■ stalled'),
+    queued: () => c.info('◷ queued'),
+    idle: () => c.ok('✓ nothing pending'),
   };
 
   const draw = () => {
@@ -523,31 +523,31 @@ async function livePanel(port, paired) {
     const a = s.activity;
 
     hardClear();
-    console.log(c.bold(c.accent('  ✦ kaip')) + c.muted('  ·  servidor en marcha\n'));
-    console.log(c.ok(`  ✓ ${paired.name ?? 'un móvil'} emparejado`) + c.muted('  — el QR ya no hace falta.\n'));
+    console.log(c.bold(c.accent('  ✦ kaip')) + c.muted('  ·  server up\n'));
+    console.log(c.ok(`  ✓ ${paired.name ?? 'a phone'} paired`) + c.muted('  — the QR is done with.\n'));
 
     console.log('  ' + (LABEL[a.state] ?? LABEL.idle)());
 
     // The detail under each state is the thing you would have to go and look up otherwise.
     if (a.state === 'running') {
       console.log(c.muted(`     ${a.preview ?? a.jobId}`));
-      if (a.since) console.log(c.muted(`     desde hace ${humanDur(Date.now() - a.since)}`));
+      if (a.since) console.log(c.muted(`     for ${humanDur(Date.now() - a.since)}`));
     } else if (a.state === 'quota') {
       // The whole point of telling these two apart: this one is NOT broken. It comes back.
-      console.log(c.muted(`     vuelve ${fmt(a.until)}`) + c.muted(`  ·  ${a.pending} en cola`));
+      console.log(c.muted(`     back at ${fmt(a.until)}`) + c.muted(`  ·  ${a.pending} queued`));
     } else if (a.state === 'stalled') {
-      console.log(c.err(`     ${a.pending} en cola y nadie que los lance.`));
-      console.log(c.muted('     arráncalo:  ') + c.accent('kaip daemon start'));
+      console.log(c.err(`     ${a.pending} in the queue and nothing to launch them.`));
+      console.log(c.muted('     start it:  ') + c.accent('kaip daemon start'));
     } else if (a.state === 'queued') {
-      console.log(c.muted(`     ${a.pending} en cola`) + (a.next ? c.muted(`  ·  el próximo, ${fmt(a.next)}`) : ''));
+      console.log(c.muted(`     ${a.pending} queued`) + (a.next ? c.muted(`  ·  next at ${fmt(a.next)}`) : ''));
     }
 
-    if (s.server.tunnel) console.log(c.muted(`\n  túnel:  ${s.server.tunnel}`));
+    if (s.server.tunnel) console.log(c.muted(`\n  tunnel:  ${s.server.tunnel}`));
     const ips = s.server.clients.map((x) => x.ip).join(', ');
-    if (ips) console.log(c.muted(`  desde:  ${ips}`));
+    if (ips) console.log(c.muted(`  from:    ${ips}`));
 
-    console.log(c.muted('\n  te avisará al móvil cuando termine un lanzamiento.'));
-    console.log(c.muted('  Ctrl+C para parar.'));
+    console.log(c.muted('\n  it will notify your phone when a launch ends.'));
+    console.log(c.muted('  Ctrl+C to stop.'));
   };
 
   draw();
@@ -569,11 +569,11 @@ async function livePanel(port, paired) {
 async function cmdMobile() {
   const { render } = await import('./lib/qr.mjs');
 
-  console.log(c.bold('descargar Kaiprompt') + c.muted('  — escanea con la cámara del móvil\n'));
+  console.log(c.bold('download Kaiprompt') + c.muted('  — scan it with the phone camera\n'));
   console.log(render(APK_RELEASE));
   console.log(c.muted(`\n   ${APK_RELEASE}\n`));
-  console.log(c.muted('   Android te pedirá permiso para instalar de origen desconocido: acéptalo.'));
-  console.log(c.muted('   luego, para enlazarla con este PC: ') + c.accent('kaip serve') + c.muted(' — el QR de emparejamiento sale ahí mismo.'));
+  console.log(c.muted('   Android will ask permission to install from an unknown source: accept it.'));
+  console.log(c.muted('   then, to pair it with this PC: ') + c.accent('kaip serve') + c.muted(' — the pairing QR comes up right there.'));
 }
 
 function cmdSessions({ pos } = { pos: [] }) {

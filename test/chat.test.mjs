@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-// Aislar datos (store) y el ~/.claude falso (transcripts) ANTES de importar.
+// Isolate the data (store) and the fake ~/.claude (transcripts) BEFORE importing.
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-chat-'));
 process.env.KAIP_HOME = TMP;
 process.env.CLAUDE_CONFIG_DIR = path.join(TMP, 'claude');
@@ -18,18 +18,18 @@ const DIR = 'C:\\proj\\app';
 const SID = 'ff679ec5-531d-4424-aba3-7341b2fcaa38';
 const ts = (n) => new Date(Date.UTC(2026, 6, 12, 9, n)).toISOString();
 
-// Un transcript como los de verdad: mezcla turnos con entradas de servicio
-// (attachment, queue-operation, mode…) que NO son conversación.
+// A transcript like the real ones: it mixes turns with bookkeeping entries (attachment,
+// queue-operation, mode…) that are NOT conversation.
 const LINES = [
   { type: 'queue-operation', sessionId: SID },
-  { type: 'user', cwd: DIR, timestamp: ts(0), message: { role: 'user', content: 'arregla los tests' } },
+  { type: 'user', cwd: DIR, timestamp: ts(0), message: { role: 'user', content: 'fix the tests' } },
   { type: 'attachment', cwd: DIR },
-  { type: 'assistant', cwd: DIR, timestamp: ts(1), message: { content: [{ type: 'thinking', thinking: 'pensando…' }] } },
-  { type: 'assistant', cwd: DIR, timestamp: ts(2), message: { content: [{ type: 'text', text: 'Voy a mirar el fichero.' }] } },
+  { type: 'assistant', cwd: DIR, timestamp: ts(1), message: { content: [{ type: 'thinking', thinking: 'thinking…' }] } },
+  { type: 'assistant', cwd: DIR, timestamp: ts(2), message: { content: [{ type: 'text', text: 'I will look at the file.' }] } },
   { type: 'assistant', cwd: DIR, timestamp: ts(3), message: { content: [{ type: 'tool_use', name: 'Read', input: { file_path: 'app/main.py' } }] } },
   { type: 'user', cwd: DIR, timestamp: ts(4), message: { role: 'user', content: [{ type: 'tool_result', content: 'def main(): ...' }] } },
-  { type: 'assistant', cwd: DIR, timestamp: ts(5), message: { content: [{ type: 'text', text: 'Listo: 3 tests en verde.' }] } },
-  { type: 'user', cwd: DIR, timestamp: ts(6), isMeta: true, message: { role: 'user', content: 'ruido interno' } },
+  { type: 'assistant', cwd: DIR, timestamp: ts(5), message: { content: [{ type: 'text', text: 'Done: 3 tests passing.' }] } },
+  { type: 'user', cwd: DIR, timestamp: ts(6), isMeta: true, message: { role: 'user', content: 'internal noise' } },
 ];
 
 const projDir = path.join(projectsRoot(), encodeDir(DIR));
@@ -37,19 +37,19 @@ fs.mkdirSync(projDir, { recursive: true });
 fs.writeFileSync(path.join(projDir, `${SID}.jsonl`), LINES.map((l) => JSON.stringify(l)).join('\n') + '\n');
 
 const job = (over = {}) => ({
-  id: nid(), prompt: 'haz algo', target: null, adapter: 'mock', when: null,
+  id: nid(), prompt: 'do something', target: null, adapter: 'mock', when: null,
   dir: DIR, permMode: null, status: 'done', createdAt: Date.now(),
   sessionId: SID, output: null, ...over,
 });
 
-// --- codificación de la carpeta ---------------------------------------------
-test('encodeDir: sustituye : \\ / . por guiones (así nombra Claude Code la carpeta)', () => {
+// --- encoding the folder ------------------------------------------------------
+test('encodeDir: swaps : \\ / . for dashes (that is how Claude Code names the folder)', () => {
   assert.equal(encodeDir('C:\\Users\\x\\.claude\\tools'), 'C--Users-x--claude-tools');
   assert.equal(encodeDir('C:/proj/app'), 'C--proj-app');
 });
 
-// --- resolver la referencia --------------------------------------------------
-test('resolveRef: un target guardado → su session-id', () => {
+// --- resolving the reference --------------------------------------------------
+test('resolveRef: a saved target → its session-id', () => {
   saveQueue([]);
   saveSessions({ fixes: { sessionId: SID, adapter: 'claude', updatedAt: 1 } });
   const r = resolveRef('fixes');
@@ -57,69 +57,69 @@ test('resolveRef: un target guardado → su session-id', () => {
   assert.equal(r.target, 'fixes');
 });
 
-test('resolveRef: un id de job → la sesión de ese job', () => {
+test('resolveRef: a job id → that job\'s session', () => {
   saveSessions({});
-  const j = job({ target: 'revision' });
+  const j = job({ target: 'review' });
   saveQueue([j]);
   const r = resolveRef(j.id);
   assert.equal(r.sessionId, SID);
-  assert.equal(r.target, 'revision');
-  assert.deepEqual(r.jobs.map((x) => x.id), [j.id], 'y los jobs que usaron esa sesión');
+  assert.equal(r.target, 'review');
+  assert.deepEqual(r.jobs.map((x) => x.id), [j.id], 'and the jobs that used that session');
 });
 
-test('resolveRef: un session-id suelto vale tal cual', () => {
+test('resolveRef: a bare session-id is taken as it is', () => {
   saveQueue([]); saveSessions({});
   assert.equal(resolveRef(SID).sessionId, SID);
 });
 
-test('resolveRef: job que aún no ha corrido → error claro, no crash', () => {
+test('resolveRef: a job that has not run yet → a clear error, not a crash', () => {
   const j = job({ status: 'pending', sessionId: null });
   saveQueue([j]);
   assert.throws(() => resolveRef(j.id), /no session yet/);
 });
 
-test('resolveRef: sin argumento → uso', () => {
+test('resolveRef: no argument → usage', () => {
   assert.throws(() => resolveRef(undefined), /usage/);
 });
 
-// --- localizar el transcript -------------------------------------------------
-test('findTranscript: lo encuentra por la carpeta del job', () => {
+// --- finding the transcript ---------------------------------------------------
+test('findTranscript: finds it by the job\'s folder', () => {
   assert.equal(findTranscript(SID, [DIR]), path.join(projDir, `${SID}.jsonl`));
 });
 
-test('findTranscript: sin pista de carpeta, barre todos los proyectos', () => {
+test('findTranscript: with no folder hint, it sweeps every project', () => {
   assert.equal(findTranscript(SID, []), path.join(projDir, `${SID}.jsonl`));
 });
 
-test('findTranscript: sesión inexistente → null (no revienta)', () => {
-  assert.equal(findTranscript('no-existe', [DIR]), null);
+test('findTranscript: a session that does not exist → null (it does not blow up)', () => {
+  assert.equal(findTranscript('does-not-exist', [DIR]), null);
 });
 
-// --- parsear -----------------------------------------------------------------
-test('parseTranscript: se queda solo con la conversación real', () => {
+// --- parsing ------------------------------------------------------------------
+test('parseTranscript: it keeps only the real conversation', () => {
   const chat = parseTranscript(path.join(projDir, `${SID}.jsonl`));
   assert.equal(chat.cwd, DIR);
-  assert.equal(chat.turns.length, 6, 'fuera queue-operation, attachment y el isMeta');
+  assert.equal(chat.turns.length, 6, 'queue-operation, attachment and the isMeta are out');
   assert.ok(chat.turns.every((t) => t.role === 'user' || t.role === 'assistant'));
   assert.equal(chat.first, ts(0));
   assert.equal(chat.last, ts(5));
 });
 
-test('parseTranscript: el user es string y el assistant bloques', () => {
+test('parseTranscript: the user is a string and the assistant is blocks', () => {
   const { turns } = parseTranscript(path.join(projDir, `${SID}.jsonl`));
-  assert.deepEqual(turns[0].blocks, [{ type: 'text', text: 'arregla los tests' }]);
+  assert.deepEqual(turns[0].blocks, [{ type: 'text', text: 'fix the tests' }]);
   assert.equal(turns[2].blocks[0].type, 'text');
 });
 
-test('parseTranscript: marca el eco de una herramienta (no es un turno humano)', () => {
+test('parseTranscript: it marks a tool echo (that is not a human turn)', () => {
   const { turns } = parseTranscript(path.join(projDir, `${SID}.jsonl`));
-  const eco = turns.find((t) => t.role === 'user' && t.toolResult);
-  assert.ok(eco, 'el tool_result debe quedar marcado');
-  assert.equal(turns[0].toolResult, false, 'el prompt humano no');
+  const echo = turns.find((t) => t.role === 'user' && t.toolResult);
+  assert.ok(echo, 'the tool_result must be marked');
+  assert.equal(turns[0].toolResult, false, 'the human prompt is not');
 });
 
-// --- render ------------------------------------------------------------------
-test('renderChat: cabecera con target, sesión, carpeta, turnos y fechas', () => {
+// --- render -------------------------------------------------------------------
+test('renderChat: a header with target, session, folder, turns and dates', () => {
   saveQueue([job({ target: 'fixes' })]);
   saveSessions({ fixes: { sessionId: SID, adapter: 'claude', updatedAt: 1 } });
   const out = renderChat('fixes');
@@ -130,64 +130,64 @@ test('renderChat: cabecera con target, sesión, carpeta, turnos y fechas', () =>
   assert.match(out, /folder\s+C:\\proj\\app/);
   assert.match(out, /turns\s+6/);
   assert.match(out, /dates/);
-  assert.match(out, /claude --resume/, 'y cómo retomar la conversación');
+  assert.match(out, /claude --resume/, 'and how to pick the conversation back up');
 });
 
-test('renderChat: pinta la conversación y resume los tool_use', () => {
+test('renderChat: it paints the conversation and summarises the tool_use calls', () => {
   const out = renderChat('fixes');
-  assert.match(out, /❯ arregla los tests/, 'el turno humano');
-  assert.match(out, /⏺ Voy a mirar el fichero\./, 'la respuesta');
-  assert.match(out, /Read\(app\/main\.py\)/, 'la herramienta, resumida');
-  assert.doesNotMatch(out, /pensando…/, 'el thinking no sale sin --full');
-  assert.doesNotMatch(out, /def main/, 'ni el eco del tool_result');
+  assert.match(out, /❯ fix the tests/, 'the human turn');
+  assert.match(out, /⏺ I will look at the file\./, 'the answer');
+  assert.match(out, /Read\(app\/main\.py\)/, 'the tool, summarised');
+  assert.doesNotMatch(out, /thinking…/, 'the thinking does not show without --full');
+  assert.doesNotMatch(out, /def main/, 'nor the tool_result echo');
 });
 
-test('renderChat --full: saca también thinking y resultados de herramienta', () => {
+test('renderChat --full: it brings out the thinking and the tool results as well', () => {
   const out = renderChat('fixes', { full: true });
-  assert.match(out, /pensando…/);
+  assert.match(out, /thinking…/);
   assert.match(out, /def main/);
 });
 
-test('renderChat --last: limita los turnos mostrados', () => {
+test('renderChat --last: limits the turns shown', () => {
   const out = renderChat('fixes', { last: 1 });
-  assert.match(out, /Listo: 3 tests en verde\./, 'el último turno sí');
-  assert.doesNotMatch(out, /arregla los tests/, 'los anteriores no');
+  assert.match(out, /Done: 3 tests passing\./, 'the last turn, yes');
+  assert.doesNotMatch(out, /fix the tests/, 'the earlier ones, no');
   assert.match(out, /showing the last 1/);
 });
 
-test('renderChat --raw: devuelve las líneas del transcript tal cual', () => {
+test('renderChat --raw: returns the transcript lines exactly as they are', () => {
   const out = renderChat('fixes', { raw: true, last: 2 });
-  for (const line of out.split('\n')) JSON.parse(line);           // debe ser JSONL válido
-  assert.doesNotMatch(out, /╭/, 'sin adornos');
+  for (const line of out.split('\n')) JSON.parse(line);           // it must be valid JSONL
+  assert.doesNotMatch(out, /╭/, 'no decoration');
 });
 
-test('renderChat: sin transcript → error claro (no crash)', () => {
+test('renderChat: no transcript → a clear error (not a crash)', () => {
   saveQueue([]); saveSessions({});
-  assert.throws(() => renderChat('sesion-fantasma'), /no transcript found/);
+  assert.throws(() => renderChat('ghost-session'), /no transcript found/);
 });
 
-test('renderChat: sesión sin mensajes no revienta', () => {
-  const vacio = 'aaaaaaaa-0000-0000-0000-000000000000';
-  fs.writeFileSync(path.join(projDir, `${vacio}.jsonl`),
+test('renderChat: a session with no messages does not blow up', () => {
+  const empty = 'aaaaaaaa-0000-0000-0000-000000000000';
+  fs.writeFileSync(path.join(projDir, `${empty}.jsonl`),
     JSON.stringify({ type: 'ai-title', aiTitle: 'x' }) + '\n');
-  assert.match(renderChat(vacio), /no messages yet/);
+  assert.match(renderChat(empty), /no messages yet/);
 });
 
-// --- entrar EN la conversación (tecla "y" de la GUI) -------------------------
-// Leer el transcript te dice qué pasó. Esto te deja retomar el hilo y seguir hablando,
-// en un Claude Code de verdad.
+// --- walking INTO the conversation (the GUI's "y" key) ------------------------
+// Reading the transcript tells you what happened. This lets you pick the thread back up and
+// keep talking, in a real Claude Code.
 
-// Las carpetas tienen que EXISTIR de verdad: resumeTarget lo comprueba a propósito
-// (ver el test de más abajo sobre el ENOENT engañoso).
+// The folders have to REALLY exist: resumeTarget checks that on purpose (see the test below
+// about the misleading ENOENT).
 const realDir = (name) => {
   const d = path.join(TMP, name);
   fs.mkdirSync(d, { recursive: true });
   return d;
 };
 
-test('resumeTarget: da la sesión Y la carpeta (sin la carpeta, --resume no la encuentra)', async () => {
+test('resumeTarget: gives the session AND the folder (without the folder, --resume finds nothing)', async () => {
   const { resumeTarget, resumeCommand } = await import('../lib/chat.mjs');
-  const dir = realDir('miapp');
+  const dir = realDir('myapp');
   saveSessions({ fixes: { sessionId: 'sess-1', adapter: 'claude', updatedAt: 1 } });
   saveQueue([{
     id: 'j1', target: 'fixes', sessionId: 'sess-1', dir,
@@ -196,34 +196,34 @@ test('resumeTarget: da la sesión Y la carpeta (sin la carpeta, --resume no la e
 
   const r = resumeTarget('fixes');
   assert.equal(r.sessionId, 'sess-1');
-  assert.equal(r.dir, dir, 'las sesiones de Claude Code son POR CARPETA');
+  assert.equal(r.dir, dir, 'Claude Code sessions are PER FOLDER');
   assert.match(resumeCommand(r), /claude --resume sess-1$/);
 });
 
-test('resumeTarget: por id de job también', async () => {
+test('resumeTarget: by job id too', async () => {
   const { resumeTarget } = await import('../lib/chat.mjs');
   saveQueue([{
-    id: 'j2', target: null, sessionId: 'sess-2', dir: realDir('otra'),
+    id: 'j2', target: null, sessionId: 'sess-2', dir: realDir('another'),
     status: 'done', adapter: 'claude', prompt: 'x', createdAt: 1,
   }]);
   assert.equal(resumeTarget('j2').sessionId, 'sess-2');
 });
 
-test('resumeTarget: si la carpeta ya no existe, error CLARO (no un "spawn cmd.exe ENOENT")', async () => {
-  // Regresión real: al renombrar la herramienta, la carpeta de sesiones viejas desapareció
-  // y el spawn fallaba con ENOENT sobre cmd.exe — Node reporta ENOENT del SHELL cuando el
-  // cwd no existe, y te manda a buscar un cmd.exe roto que está perfectamente.
+test('resumeTarget: if the folder is gone, a CLEAR error (not a "spawn cmd.exe ENOENT")', async () => {
+  // A real regression: renaming the tool made the old sessions folder disappear, and the spawn
+  // failed with ENOENT on cmd.exe — Node reports the SHELL's ENOENT when the cwd does not
+  // exist, and sends you hunting for a broken cmd.exe that is perfectly fine.
   const { resumeTarget } = await import('../lib/chat.mjs');
   saveQueue([{
-    id: 'j3', target: null, sessionId: 'sess-3', dir: path.join(TMP, 'carpeta-que-ya-no-esta'),
+    id: 'j3', target: null, sessionId: 'sess-3', dir: path.join(TMP, 'folder-that-is-gone'),
     status: 'done', adapter: 'claude', prompt: 'x', createdAt: 1,
   }]);
   assert.throws(() => resumeTarget('j3'), /folder .* is gone/i);
 });
 
-test('resumeTarget: sin carpeta conocida, error CLARO (no un --resume que no encuentra nada)', async () => {
+test('resumeTarget: with no folder on record, a CLEAR error (not a --resume that finds nothing)', async () => {
   const { resumeTarget } = await import('../lib/chat.mjs');
-  saveSessions({ huerfana: { sessionId: 'sess-3', adapter: 'claude', updatedAt: 1 } });
+  saveSessions({ orphan: { sessionId: 'sess-3', adapter: 'claude', updatedAt: 1 } });
   saveQueue([]);
-  assert.throws(() => resumeTarget('huerfana'), /which folder/i);
+  assert.throws(() => resumeTarget('orphan'), /which folder/i);
 });

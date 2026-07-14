@@ -10,63 +10,63 @@ const { loadQueue, loadSessions, nid, outPath, rememberSession, saveQueue, saveS
 const { executeJob, requeue, runQueue, settle } = await import('../lib/runner.mjs');
 
 const job = (over = {}) => ({
-  id: nid(), prompt: 'haz algo', target: null, adapter: 'mock', when: null,
+  id: nid(), prompt: 'do something', target: null, adapter: 'mock', when: null,
   dir: null, permMode: null, status: 'pending', createdAt: Date.now(),
   sessionId: null, output: null, ...over,
 });
 
-// --- quedarse sin cupo no es un fallo ---------------------------------------
-// La tanda nocturna perdió su última fase justo aquí: Claude imprime "you've hit your
-// session limit" y sale con código 1, que visto desde fuera es igual que un crash. Se
-// marcó como `error` y nadie volvió a recogerlo nunca.
+// --- running out of quota is not a failure -----------------------------------
+// The overnight batch lost its last stage right here: Claude prints "you've hit your session
+// limit" and exits 1, which from the outside looks exactly like a crash. It got marked
+// `error` and nobody ever picked it up again.
 
 const LIMIT = "You've hit your session limit · resets 1:30pm (Europe/Madrid)";
 
-test('settle: un lanzamiento OK termina, sin más', () => {
+test('settle: a launch that went fine is simply done', () => {
   assert.deepEqual(settle(job(), { ok: true }), { action: 'done' });
 });
 
-test('settle: cortado por cupo → vuelve a la cola, NO se marca como error', () => {
+test('settle: cut off by the quota → back in the queue, NOT marked as an error', () => {
   const s = settle(job(), { ok: false, output: LIMIT, error: 'claude exited with code 1' });
   assert.equal(s.action, 'requeue');
-  assert.ok(s.waitUntil > Date.now(), 'con una hora de reanudación en el futuro');
+  assert.ok(s.waitUntil > Date.now(), 'with a resume time in the future');
 });
 
-test('settle: un fallo de VERDAD sigue siendo un error (no se reintenta eternamente)', () => {
+test('settle: a REAL failure is still an error (it is not retried forever)', () => {
   const s = settle(job(), { ok: false, output: 'TypeError: boom', error: 'crashed' });
   assert.equal(s.action, 'fail');
 });
 
-test('settle: se rinde si el cupo lo tumba una y otra vez', () => {
+test('settle: it gives up if the quota knocks it out again and again', () => {
   const s = settle(job({ quotaRetries: 3 }), { ok: false, output: LIMIT, error: 'x' });
   assert.equal(s.action, 'fail');
   assert.match(s.reason, /giving up/);
 });
 
-test('requeue: vuelve a pending y NO toca "when" — eso conserva el ORDEN de la cola', () => {
-  // Lo que pediste: que al volver el cupo siga en el mismo sitio en que estaba.
-  const primero = job({ when: 1000 });
-  const segundo = job({ when: 2000 });
-  saveQueue([primero, segundo]);
+test('requeue: back to pending, and it does NOT touch "when" — that is what keeps the ORDER', () => {
+  // What you asked for: when the quota comes back, it is still in the place it was.
+  const first = job({ when: 1000 });
+  const second = job({ when: 2000 });
+  saveQueue([first, second]);
 
-  const s = settle(primero, { ok: false, output: LIMIT, error: 'x' });
-  requeue(primero, s);
+  const s = settle(first, { ok: false, output: LIMIT, error: 'x' });
+  requeue(first, s);
 
   const q = loadQueue();
-  const vuelto = q.find((j) => j.id === primero.id);
-  assert.equal(vuelto.status, 'pending', 'de vuelta en la cola');
-  assert.equal(vuelto.when, 1000, 'su hora NO cambia');
-  assert.equal(vuelto.quotaRetries, 1);
-  assert.ok(vuelto.pausedUntil > Date.now());
-  assert.equal(vuelto.finishedAt, null, 'no cuenta como terminado');
+  const back = q.find((j) => j.id === first.id);
+  assert.equal(back.status, 'pending', 'back in the queue');
+  assert.equal(back.when, 1000, 'its time does NOT change');
+  assert.equal(back.quotaRetries, 1);
+  assert.ok(back.pausedUntil > Date.now());
+  assert.equal(back.finishedAt, null, 'it does not count as finished');
 
-  // Y sigue siendo el más antiguo pendiente: al volver el cupo, sale primero otra vez.
-  const pendientes = q.filter((j) => j.status === 'pending').sort((a, b) => a.when - b.when);
-  assert.equal(pendientes[0].id, primero.id);
-  assert.equal(pendientes[1].id, segundo.id);
+  // And it is still the oldest pending one: when the quota returns, it goes first again.
+  const pending = q.filter((j) => j.status === 'pending').sort((a, b) => a.when - b.when);
+  assert.equal(pending[0].id, first.id);
+  assert.equal(pending[1].id, second.id);
 });
 
-test('executeJob: marca done, escribe la salida y guarda la sesión del target', async () => {
+test('executeJob: marks it done, writes the output and saves the target session', async () => {
   const j = job({ target: 'fixes' });
   saveQueue([j]);
 
@@ -75,220 +75,221 @@ test('executeJob: marca done, escribe la salida y guarda la sesión del target',
   assert.equal(res.ok, true);
   assert.equal(j.status, 'done');
   assert.ok(j.finishedAt);
-  assert.ok(fs.existsSync(outPath(j.id)), 'debe escribir out/<id>.txt');
+  assert.ok(fs.existsSync(outPath(j.id)), 'it must write out/<id>.txt');
   assert.match(fs.readFileSync(outPath(j.id), 'utf8'), /\[mock\]/);
-  assert.ok(j.sessionId, 'debe capturar el session id');
-  assert.equal(loadSessions().fixes.sessionId, j.sessionId, 'y asociarlo al target');
+  assert.ok(j.sessionId, 'it must capture the session id');
+  assert.equal(loadSessions().fixes.sessionId, j.sessionId, 'and tie it to the target');
 });
 
-test('executeJob: reanuda la sesión guardada del target', async () => {
-  saveSessions({ reanuda: { sessionId: 'sesion-previa', adapter: 'mock', updatedAt: 1 } });
-  const j = job({ target: 'reanuda' });
+test('executeJob: resumes the session saved for the target', async () => {
+  saveSessions({ resumes: { sessionId: 'earlier-session', adapter: 'mock', updatedAt: 1 } });
+  const j = job({ target: 'resumes' });
   await executeJob(j);
-  assert.equal(j.sessionId, 'sesion-previa', 'reutiliza la sesión, no crea otra');
+  assert.equal(j.sessionId, 'earlier-session', 'it reuses the session, it does not create another');
 });
 
-test('executeJob: adaptador inexistente → error controlado', async () => {
-  const j = job({ adapter: 'no-existe' });
+test('executeJob: an adapter that does not exist → a controlled error', async () => {
+  const j = job({ adapter: 'does-not-exist' });
   await assert.rejects(() => executeJob(j), /unknown adapter/);
 });
 
-// --- sessions.json: la escritura perdida --------------------------------------
-// executeJob cargaba sessions.json al EMPEZAR y lo guardaba al TERMINAR, con un lanzamiento
-// entero en medio. Todo lo que se escribiera en ese hueco desaparecía al salir. Y `--parallel`
-// vive dentro de ese hueco por diseño: los carriles arrancan juntos, cada uno con el fichero
-// tal y como estaba ANTES de que corriera ninguno, y gana el último en terminar.
+// --- sessions.json: the lost write ---------------------------------------------
+// executeJob loaded sessions.json when it STARTED and saved it when it FINISHED, with a whole
+// launch in between. Anything written in that gap disappeared on the way out. And `--parallel`
+// lives inside that gap by design: the lanes start together, each with the file exactly as it
+// was BEFORE any of them ran, and the last one to finish wins.
 //
-// Coste real: el target que perdió su sessionId abre una conversación nueva la próxima vez y
-// vuelve a pagar el contexto que ya tenía. Es exactamente el ahorro que `--target` promete.
+// The real cost: the target that lost its sessionId opens a fresh conversation next time and
+// pays again for the context it already had. That is precisely the saving `--target` promises.
 
-test('sessions.json: dos carriles a la vez NO se borran la sesión el uno al otro', async () => {
+test('sessions.json: two lanes at once do NOT wipe each other\'s session', async () => {
   saveSessions({});
   const a = job({ target: 'alpha' });
   const b = job({ target: 'beta' });
   saveQueue([a, b]);
 
-  // Esto es lo que hace `kaip run --parallel 2`: dos carriles, a la vez.
+  // This is what `kaip run --parallel 2` does: two lanes, at the same time.
   await Promise.all([executeJob(a), executeJob(b)]);
 
   const s = loadSessions();
-  assert.ok(s.alpha?.sessionId, 'alpha guardó su sesión');
-  assert.ok(s.beta?.sessionId, 'beta también — antes el último en terminar borraba al otro');
-  assert.notEqual(s.alpha.sessionId, s.beta.sessionId, 'y son conversaciones distintas');
+  assert.ok(s.alpha?.sessionId, 'alpha saved its session');
+  assert.ok(s.beta?.sessionId, 'beta too — the last one to finish used to wipe the other');
+  assert.notEqual(s.alpha.sessionId, s.beta.sessionId, 'and they are different conversations');
 });
 
-test('sessions.json: lo que se escribe DURANTE el lanzamiento sobrevive', async () => {
-  saveSessions({ viejo: { sessionId: 'ya-estaba', adapter: 'mock', updatedAt: 1 } });
+test('sessions.json: what gets written DURING the launch survives', async () => {
+  saveSessions({ old: { sessionId: 'was-here-already', adapter: 'mock', updatedAt: 1 } });
 
-  const j = job({ target: 'nuevo' });
-  const corriendo = executeJob(j);
+  const j = job({ target: 'new' });
+  const running = executeJob(j);
 
-  // Alguien más escribe mientras el lanzamiento está en vuelo: otro carril, la GUI,
-  // un `kaip sessions set`. El lanzamiento no puede llevarse eso por delante al terminar.
-  rememberSession('de-en-medio', 'escrita-a-mitad', 'mock');
-  await corriendo;
+  // Somebody else writes while the launch is in flight: another lane, the GUI, a
+  // `kaip sessions set`. The launch may not take that with it when it finishes.
+  rememberSession('in-between', 'written-midway', 'mock');
+  await running;
 
   const s = loadSessions();
-  assert.equal(s['de-en-medio']?.sessionId, 'escrita-a-mitad', 'la escritura de en medio, que se perdía');
-  assert.equal(s.viejo?.sessionId, 'ya-estaba', 'y lo que ya había sigue ahí');
-  assert.ok(s.nuevo?.sessionId, 'junto con la sesión del propio job');
+  assert.equal(s['in-between']?.sessionId, 'written-midway', 'the write in the middle, which used to be lost');
+  assert.equal(s.old?.sessionId, 'was-here-already', 'and what was already there is still there');
+  assert.ok(s.new?.sessionId, 'along with the job\'s own session');
 });
 
-test('executeJob: emite eventos en vivo cuando se pasa onEvent', async () => {
-  const vistos = [];
+test('executeJob: emits live events when onEvent is passed', async () => {
+  const seen = [];
   const j = job();
-  await executeJob(j, { onEvent: (e) => vistos.push(e.type) });
+  await executeJob(j, { onEvent: (e) => seen.push(e.type) });
 
-  assert.ok(vistos.includes('system'), 'evento de init');
-  assert.ok(vistos.includes('assistant'), 'eventos de trabajo');
-  assert.ok(vistos.includes('result'), 'evento final');
+  assert.ok(seen.includes('system'), 'the init event');
+  assert.ok(seen.includes('assistant'), 'the working events');
+  assert.ok(seen.includes('result'), 'the final event');
 });
 
-test('executeJob: sin onEvent NO hay streaming (modo de una tacada)', async () => {
+test('executeJob: with no onEvent there is NO streaming (the one-shot mode)', async () => {
   const j = job();
-  const res = await executeJob(j);          // no debe romper ni colgarse
+  const res = await executeJob(j);          // it must neither break nor hang
   assert.equal(res.ok, true);
 });
 
-test('runQueue (sin TTY): procesa los secuenciales en orden', async () => {
-  const a = job({ prompt: 'primero' });
-  const b = job({ prompt: 'segundo' });
+test('runQueue (with no TTY): processes the sequential ones in order', async () => {
+  const a = job({ prompt: 'first' });
+  const b = job({ prompt: 'second' });
   saveQueue([a, b]);
 
   await runQueue({ once: true });
 
   const q = loadQueue();
   assert.equal(q.length, 2);
-  assert.ok(q.every((j) => j.status === 'done'), 'los dos deben quedar done');
-  assert.ok(q[0].finishedAt <= q[1].finishedAt, 'y en orden: el 2º tras el 1º');
+  assert.ok(q.every((j) => j.status === 'done'), 'both must end up done');
+  assert.ok(q[0].finishedAt <= q[1].finishedAt, 'and in order: the 2nd after the 1st');
 });
 
-test('runQueue --once: NO espera a los agendados a futuro', async () => {
-  const futuro = job({ when: Date.now() + 3600_000 });
-  saveQueue([futuro]);
+test('runQueue --once: does NOT wait for jobs scheduled in the future', async () => {
+  const future = job({ when: Date.now() + 3600_000 });
+  saveQueue([future]);
 
   const t0 = Date.now();
   await runQueue({ once: true });
 
-  assert.ok(Date.now() - t0 < 3000, 'debe salir enseguida, no esperar una hora');
-  assert.equal(loadQueue()[0].status, 'pending', 'y dejarlo pendiente');
+  assert.ok(Date.now() - t0 < 3000, 'it must come straight back, not wait an hour');
+  assert.equal(loadQueue()[0].status, 'pending', 'and leave it pending');
 });
 
-test('runQueue --dry-run: no ejecuta nada', async () => {
+test('runQueue --dry-run: runs nothing', async () => {
   const j = job();
   saveQueue([j]);
   await runQueue({ dryRun: true });
-  assert.equal(loadQueue()[0].status, 'pending', 'sigue pendiente: no se ha lanzado');
-  assert.ok(!fs.existsSync(outPath(j.id)), 'y no escribe salida');
+  assert.equal(loadQueue()[0].status, 'pending', 'still pending: nothing was launched');
+  assert.ok(!fs.existsSync(outPath(j.id)), 'and it writes no output');
 });
 
-test('runQueue: cola vacía no rompe', async () => {
+test('runQueue: an empty queue does not break it', async () => {
   saveQueue([]);
   await runQueue({ once: true });
   assert.deepEqual(loadQueue(), []);
 });
 
-// --- cerrojo: evita que dos runners ejecuten el mismo job dos veces ----------
-test('cerrojo: un segundo runner no hace nada mientras hay otro activo', async () => {
+// --- the lock: it stops two runners running the same job twice ----------------
+test('lock: a second runner does nothing while another one is active', async () => {
   const { lockIsHeld } = await import('../lib/runner.mjs');
   const lock = path.join(TMP, 'data', 'runner.lock');
 
-  // Un runner VIVO. Este test fingía uno con el pid 999999, que no existe: el cerrojo solo
-  // miraba el reloj, así que colaba. Un runner activo es un proceso que está ahí, y el único
-  // que este test puede garantizar que lo está es él mismo.
+  // A LIVE runner. This test used to fake one with pid 999999, which does not exist: the lock
+  // only looked at the clock, so it got away with it. An active runner is a process that is
+  // really there, and the only one this test can guarantee is there is itself.
   fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now() }));
-  assert.equal(lockIsHeld(), true, 'proceso vivo + latido fresco = hay runner');
+  assert.equal(lockIsHeld(), true, 'live process + fresh heartbeat = there is a runner');
 
   const j = job();
   saveQueue([j]);
   await runQueue({ once: true });
-  assert.equal(loadQueue()[0].status, 'pending', 'no debe tocar la cola: hay otro runner');
+  assert.equal(loadQueue()[0].status, 'pending', 'it must not touch the queue: another runner is up');
 
   fs.rmSync(lock, { force: true });
 });
 
-test('cerrojo de un runner MUERTO se ignora: se puede lanzar YA, sin esperar al latido', async () => {
-  // Lo que se sentía: cierras un `kaip run` y durante dos minutos el daemon se niega a
-  // arrancar porque "ya hay alguien". No había nadie — solo su cerrojo, todavía calentito.
+test('a DEAD runner\'s lock is ignored: you can launch NOW, without waiting for the heartbeat', async () => {
+  // What it felt like: you close a `kaip run` and for two minutes the daemon refuses to start
+  // because "somebody is already there". Nobody was — only its lock, still warm.
   const { lockIsHeld } = await import('../lib/runner.mjs');
   const lock = path.join(TMP, 'data', 'runner.lock');
 
-  fs.writeFileSync(lock, JSON.stringify({ pid: 999999, at: Date.now() }));   // latido RECIÉN escrito
-  assert.equal(lockIsHeld(), false, 'el proceso no existe: da igual lo fresco que sea el latido');
+  fs.writeFileSync(lock, JSON.stringify({ pid: 999999, at: Date.now() }));   // a BRAND NEW heartbeat
+  assert.equal(lockIsHeld(), false, 'the process does not exist: however fresh the heartbeat is');
 
   saveQueue([job()]);
   await runQueue({ once: true });
-  assert.equal(loadQueue()[0].status, 'done', 'debe poder ejecutar al instante');
+  assert.equal(loadQueue()[0].status, 'done', 'it must be able to run straight away');
 });
 
-test('cerrojo caducado (runner vivo pero colgado) también se ignora', async () => {
-  // El latido sigue haciendo falta: cubre al runner que existe pero ya no procesa nada.
+test('an expired lock (live runner, but hung) is ignored too', async () => {
+  // The heartbeat is still needed: it covers the runner that exists but no longer processes
+  // anything.
   const { lockIsHeld } = await import('../lib/runner.mjs');
   const lock = path.join(TMP, 'data', 'runner.lock');
 
   fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now() - 10 * 60_000 }));
-  assert.equal(lockIsHeld(), false, 'lleva 10 min sin latir: ese runner no está procesando nada');
+  assert.equal(lockIsHeld(), false, 'no heartbeat for 10 min: that runner is processing nothing');
 
   saveQueue([job()]);
   await runQueue({ once: true });
-  assert.equal(loadQueue()[0].status, 'done', 'debe poder ejecutar igualmente');
+  assert.equal(loadQueue()[0].status, 'done', 'it must be able to run all the same');
 });
 
-test('cerrojo: se libera al terminar', async () => {
+test('lock: it is released on the way out', async () => {
   saveQueue([]);
   await runQueue({ once: true });
-  assert.equal(fs.existsSync(path.join(TMP, 'data', 'runner.lock')), false, 'no debe quedar colgado');
+  assert.equal(fs.existsSync(path.join(TMP, 'data', 'runner.lock')), false, 'it must not be left hanging');
 });
 
-// --- jobs que se quedan colgados en "running" -------------------------------
-test('reapStale: un job SIN runnerPid (de una version vieja) tambien se cierra', async () => {
-  // Si no, se queda en "running" para siempre: nadie puede confirmar que murio.
-  // Le paso justo eso al lanzamiento que se cancelo a mitad.
+// --- jobs left hanging in "running" ------------------------------------------
+test('reapStale: a job with NO runnerPid (from an older version) is closed out too', async () => {
+  // Otherwise it stays "running" forever: nobody can confirm it died.
+  // That is exactly what happened to the launch that was cancelled halfway.
   const { reapStale } = await import('../lib/runner.mjs');
-  const colgado = job({ status: 'running', startedAt: Date.now() - 3600_000 });
-  delete colgado.runnerPid;
-  saveQueue([colgado]);
+  const hung = job({ status: 'running', startedAt: Date.now() - 3600_000 });
+  delete hung.runnerPid;
+  saveQueue([hung]);
 
   assert.equal(reapStale(), 1);
   assert.equal(loadQueue()[0].status, 'error');
   assert.match(loadQueue()[0].error, /interrupted/);
 });
 
-test('reapStale: un job de un runner VIVO no se toca', async () => {
+test('reapStale: a job from a LIVE runner is left alone', async () => {
   const { reapStale } = await import('../lib/runner.mjs');
-  saveQueue([job({ status: 'running', runnerPid: process.pid })]);   // este proceso existe
+  saveQueue([job({ status: 'running', runnerPid: process.pid })]);   // this process exists
   assert.equal(reapStale(), 0);
   assert.equal(loadQueue()[0].status, 'running');
 });
 
-// --- alimentar un run que ya esta corriendo ---------------------------------
-// El caso real: dejas un "run" puesto, y antes de quedarte sin tokens encolas lo que
-// falta desde otra terminal. Tiene que recogerlo el solo.
+// --- feeding a run that is already going -------------------------------------
+// The real case: you leave a "run" up and, before you run out of tokens, you queue what is
+// left from another terminal. It has to pick that up on its own.
 
-test('un run en marcha recoge los prompts añadidos DESPUES de arrancar', async () => {
+test('a run in progress picks up prompts added AFTER it started', async () => {
   const { addJob } = await import('../lib/queue.mjs');
   saveQueue([]);
-  const primero = job({ prompt: 'el primero' });
-  saveQueue([primero]);
+  const first = job({ prompt: 'the first one' });
+  saveQueue([first]);
 
-  // Mientras el runner trabaja, otro proceso mete un job nuevo en la cola.
-  const meterOtro = new Promise((r) => setTimeout(() => {
-    addJob({ prompt: 'metido a mitad', adapter: 'mock' });
+  // While the runner works, another process puts a new job into the queue.
+  const addAnother = new Promise((r) => setTimeout(() => {
+    addJob({ prompt: 'slipped in halfway', adapter: 'mock' });
     r();
   }, 50));
 
-  await meterOtro;
+  await addAnother;
   await runQueue({ once: true });
 
   const q = loadQueue();
   assert.equal(q.length, 2);
-  assert.ok(q.every((j) => j.status === 'done'), 'los DOS deben ejecutarse, no solo el primero');
-  assert.ok(q.some((j) => j.prompt === 'metido a mitad'));
+  assert.ok(q.every((j) => j.status === 'done'), 'BOTH must run, not just the first');
+  assert.ok(q.some((j) => j.prompt === 'slipped in halfway'));
 });
 
-test('--watch: la cola vacia NO termina el run; se queda esperando y ejecuta lo que llegue', async () => {
-  // Este es EL caso: dejas un run puesto y le vas metiendo trabajo. Se lanza como proceso
-  // aparte porque --watch, a proposito, no acaba nunca: hay que matarlo.
+test('--watch: an empty queue does NOT end the run; it waits and runs whatever arrives', async () => {
+  // This is THE case: you leave a run up and keep feeding it work. It is spawned as a separate
+  // process because --watch, deliberately, never finishes: it has to be killed.
   const { spawn } = await import('node:child_process');
   const { addJob } = await import('../lib/queue.mjs');
   saveQueue([]);
@@ -300,20 +301,20 @@ test('--watch: la cola vacia NO termina el run; se queda esperando y ejecuta lo 
   });
 
   try {
-    await new Promise((r) => setTimeout(r, 800));          // arranca con la cola VACIA
-    assert.equal(run.exitCode, null, 'no debe haberse muerto al no ver trabajo');
+    await new Promise((r) => setTimeout(r, 800));          // it starts with an EMPTY queue
+    assert.equal(run.exitCode, null, 'it must not have died on seeing no work');
 
-    addJob({ prompt: 'llego tarde', adapter: 'mock' });     // y ahora le metemos algo
+    addJob({ prompt: 'late arrival', adapter: 'mock' });    // and now we give it something
 
     await new Promise((resolve, reject) => {
       const t0 = Date.now();
       const iv = setInterval(() => {
         if (loadQueue().some((j) => j.status === 'done')) { clearInterval(iv); resolve(); }
-        else if (Date.now() - t0 > 15000) { clearInterval(iv); reject(new Error('no lo recogio')); }
+        else if (Date.now() - t0 > 15000) { clearInterval(iv); reject(new Error('it never picked it up')); }
       }, 200);
     });
 
-    assert.equal(loadQueue()[0].status, 'done', 'lo ejecuto el solo, sin reiniciar nada');
+    assert.equal(loadQueue()[0].status, 'done', 'it ran it on its own, with nothing restarted');
   } finally {
     run.kill();
   }

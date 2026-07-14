@@ -1,16 +1,16 @@
-// Comandos fantasma: referencias a comandos que YA NO EXISTEN.
+// Ghost commands: references to commands that NO LONGER EXIST.
 //
-// `pair` se absorbió dentro de `serve`, y el nombre viejo se quedó vivo en el README, en un
-// par de comentarios y —la que llegó al usuario— en la pantalla de emparejamiento de la app,
-// que durante semanas mandó a la gente a teclear un comando que fallaba. Renombrar un
-// comando es fácil; acordarse de los ocho sitios donde estaba escrito, no.
+// `pair` was absorbed into `serve`, and the old name stayed alive in the README, in a couple of
+// comments and — the one that reached the user — on the app's pairing screen, which for weeks
+// sent people off to type a command that failed. Renaming a command is easy; remembering the
+// eight places it was written down is not.
 //
-// Este test cierra los dos extremos:
-//   1. la lista de lib/commands.mjs sigue siendo la del switch de kaip.mjs (no se desincroniza);
-//   2. ninguna referencia del repo —README, HELP, GUI, skills, slash commands, la app— apunta
-//      a un comando que no está en esa lista.
+// This test closes both ends:
+//   1. the list in lib/commands.mjs is still the one in the kaip.mjs switch (they cannot drift);
+//   2. no reference in the repo — README, HELP, GUI, skills, slash commands, the app — points at
+//      a command that is not on that list.
 //
-// Si mañana desaparece `mobile`, esto se pone rojo antes de que nadie lo teclee.
+// If `mobile` disappears tomorrow, this goes red before anybody types it.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -27,24 +27,24 @@ const { COMMANDS, ENGINES, SUBCOMMANDS, isCommand } = await import('../lib/comma
 const REPO = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const CLAUDE = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
 
-// --- 1. la lista no puede desincronizarse del dispatch ------------------------
-test('la lista de comandos es EXACTAMENTE la que despacha kaip.mjs', () => {
+// --- 1. the list cannot drift away from the dispatch --------------------------
+test('the command list is EXACTLY what kaip.mjs dispatches', () => {
   const src = fs.readFileSync(path.join(REPO, 'kaip.mjs'), 'utf8');
   const dispatch = src.slice(src.indexOf('// --- dispatch'));
-  assert.ok(dispatch.length > 200, 'no encuentro el bloque de dispatch en kaip.mjs');
+  assert.ok(dispatch.length > 200, 'cannot find the dispatch block in kaip.mjs');
 
   const cases = [...dispatch.matchAll(/case '([^']+)':/g)]
     .map((m) => m[1])
-    .filter((w) => !w.startsWith('-'));            // --help y -h son banderas, no comandos
+    .filter((w) => !w.startsWith('-'));            // --help and -h are flags, not commands
 
   assert.deepEqual(
     [...new Set(cases)].sort(),
     [...COMMANDS].sort(),
-    'lib/commands.mjs y el switch de kaip.mjs se han separado: uno de los dos miente',
+    'lib/commands.mjs and the kaip.mjs switch have parted ways: one of the two is lying',
   );
 });
 
-test('los subcomandos declarados son los que el switch de daemon acepta', () => {
+test('the declared subcommands are the ones the daemon switch accepts', () => {
   const src = fs.readFileSync(path.join(REPO, 'kaip.mjs'), 'utf8');
   const body = src.slice(src.indexOf('async function cmdDaemon'), src.indexOf('const APK_RELEASE'));
   const cases = [...body.matchAll(/case '([a-z]+)':/g)].map((m) => m[1]);
@@ -52,7 +52,7 @@ test('los subcomandos declarados son los que el switch de daemon acepta', () => 
   assert.deepEqual([...new Set(cases)].sort(), [...SUBCOMMANDS.daemon].sort());
 });
 
-// --- 2. nadie puede citar un comando que no existe ----------------------------
+// --- 2. nobody may quote a command that does not exist ------------------------
 const SKIP_DIRS = new Set(['.git', 'node_modules', 'build', '.gradle', 'data', 'out', '.tasks', 'prompts']);
 const SCAN_EXT = new Set(['.mjs', '.md', '.kt', '.cmd', '.json']);
 
@@ -69,16 +69,16 @@ function walk(dir, acc = []) {
 }
 
 /**
- * Una INVOCACIÓN, no la palabra "kaip" en una frase.
+ * An INVOCATION, not the word "kaip" in a sentence.
  *
- * Solo cuenta cuando el texto está escrito como se teclea: entre comillas, entre backticks,
- * entre «», o al principio de una línea (bloques de código y ejemplos del HELP). Si no, un
- * comentario como "how kaip leaves the screen" saldría como comando inexistente "leaves", y
- * un test que grita en falso se acaba ignorando — que es como se cuelan los de verdad.
+ * It only counts when the text is written the way it is typed: in quotes, in backticks, in
+ * «», or at the start of a line (code blocks and the HELP examples). Otherwise a comment like
+ * "how kaip leaves the screen" would come out as the non-existent command "leaves", and a test
+ * that cries wolf ends up ignored — which is how the real ones get through.
  */
 const INVOCATION = /(?:^\s*|[`'"«(])kaip ([a-z][a-z-]*)((?: [a-z][a-z-]*)?)/gm;
 
-/** Cada referencia del repo: de dónde sale, qué comando cita y qué subcomando. */
+/** Every reference in the repo: where it comes from, which command it quotes, which subcommand. */
 function references() {
   const files = [
     ...walk(REPO),
@@ -92,13 +92,13 @@ function references() {
   const out = [];
   for (const file of files) {
     let text;
-    try { text = fs.readFileSync(file, 'utf8'); } catch { continue; }   // fuera de este PC: se salta
-    if (file === path.join(REPO, 'lib', 'commands.mjs')) continue;      // la propia lista
-    if (file === fileURLToPath(import.meta.url)) continue;              // y este test
+    try { text = fs.readFileSync(file, 'utf8'); } catch { continue; }   // not on this PC: skip it
+    if (file === path.join(REPO, 'lib', 'commands.mjs')) continue;      // the list itself
+    if (file === fileURLToPath(import.meta.url)) continue;              // and this test
 
     for (const m of text.matchAll(INVOCATION)) {
       let [word, rest] = [m[1], m[2].trim()];
-      if (ENGINES.includes(word)) {                 // "kaip claude add" → el motor no es el comando
+      if (ENGINES.includes(word)) {                 // "kaip claude add" → the engine is not the command
         if (!rest) continue;
         [word, rest] = [rest, ''];
       }
@@ -109,55 +109,55 @@ function references() {
   return out;
 }
 
-test('el barrido encuentra las referencias de verdad (si no, no probaría nada)', () => {
+test('the sweep really does find the references (otherwise it would prove nothing)', () => {
   const refs = references();
   const files = new Set(refs.map((r) => r.file));
 
-  assert.ok(refs.length > 30, `esperaba decenas de referencias, encontré ${refs.length}`);
-  assert.ok([...files].some((f) => f === 'README.md'), 'el README debe entrar en el barrido');
-  assert.ok([...files].some((f) => f === 'kaip.mjs'), 'el HELP de kaip.mjs también');
-  assert.ok([...files].some((f) => f.endsWith('MainActivity.kt')), 'y la app de Android');
+  assert.ok(refs.length > 30, `expected dozens of references, found ${refs.length}`);
+  assert.ok([...files].some((f) => f === 'README.md'), 'the README must be in the sweep');
+  assert.ok([...files].some((f) => f === 'kaip.mjs'), 'the HELP in kaip.mjs too');
+  assert.ok([...files].some((f) => f.endsWith('MainActivity.kt')), 'and the Android app');
 });
 
-test('NINGUNA referencia apunta a un comando que no existe', () => {
-  const fantasmas = references()
+test('NO reference points at a command that does not exist', () => {
+  const ghosts = references()
     .filter((r) => !isCommand(r.word))
-    .map((r) => `${r.file}:${r.line}  «${r.text}» → no existe "${r.word}"`);
+    .map((r) => `${r.file}:${r.line}  «${r.text}» → there is no "${r.word}"`);
 
-  assert.deepEqual(fantasmas, [], 'comandos fantasma:\n  ' + fantasmas.join('\n  '));
+  assert.deepEqual(ghosts, [], 'ghost commands:\n  ' + ghosts.join('\n  '));
 });
 
-test('tampoco a un subcomando que no existe (kaip daemon <x>, kaip app <x>)', () => {
-  const fantasmas = references()
+test('nor at a subcommand that does not exist (kaip daemon <x>, kaip app <x>)', () => {
+  const ghosts = references()
     .filter((r) => SUBCOMMANDS[r.word] && r.rest && !SUBCOMMANDS[r.word].includes(r.rest))
-    .map((r) => `${r.file}:${r.line}  «${r.text}» → "${r.word}" no tiene subcomando "${r.rest}"`);
+    .map((r) => `${r.file}:${r.line}  «${r.text}» → "${r.word}" has no subcommand "${r.rest}"`);
 
-  assert.deepEqual(fantasmas, [], 'subcomandos fantasma:\n  ' + fantasmas.join('\n  '));
+  assert.deepEqual(ghosts, [], 'ghost subcommands:\n  ' + ghosts.join('\n  '));
 });
 
-test('"pair" está muerto y enterrado: lo absorbió "serve"', () => {
-  // La regresión concreta que trajo aquí: la app mandaba a teclear «kaip pair».
-  assert.equal(isCommand('pair'), false, 'pair ya no es un comando');
+test('"pair" is dead and buried: "serve" absorbed it', () => {
+  // The specific regression that brought us here: the app told you to type «kaip pair».
+  assert.equal(isCommand('pair'), false, 'pair is not a command any more');
 
-  const citas = references().filter((r) => r.word === 'pair');
-  assert.deepEqual(citas.map((r) => `${r.file}:${r.line}`), [], 'todavía hay quien lo cita');
+  const quotes = references().filter((r) => r.word === 'pair');
+  assert.deepEqual(quotes.map((r) => `${r.file}:${r.line}`), [], 'somebody is still quoting it');
 });
 
-// --- el detector, probado: un test que no caza nada no protege de nada --------
-test('el detector distingue una invocación de la palabra suelta en prosa', () => {
-  const invocaciones = ['`kaip pair`', '"kaip pair"', '«kaip pair»', '  kaip pair --reset'];
-  for (const s of invocaciones) {
-    assert.deepEqual([...s.matchAll(INVOCATION)].map((m) => m[1]), ['pair'], `debe cazar: ${s}`);
+// --- the detector, tested: a test that catches nothing protects nothing -------
+test('the detector tells an invocation from the bare word in prose', () => {
+  const invocations = ['`kaip pair`', '"kaip pair"', '«kaip pair»', '  kaip pair --reset'];
+  for (const s of invocations) {
+    assert.deepEqual([...s.matchAll(INVOCATION)].map((m) => m[1]), ['pair'], `it must catch: ${s}`);
   }
 
-  const prosa = ['// how kaip leaves the screen', 'pregunte por kaip o kaip'];
-  for (const s of prosa) {
-    assert.deepEqual([...s.matchAll(INVOCATION)].map((m) => m[1]), [], `no debe saltar en prosa: ${s}`);
+  const prose = ['// how kaip leaves the screen', 'asks about kaip or kaip'];
+  for (const s of prose) {
+    assert.deepEqual([...s.matchAll(INVOCATION)].map((m) => m[1]), [], `it must not fire on prose: ${s}`);
   }
 });
 
-test('el detector ve el comando detrás del motor (kaip claude add)', () => {
+test('the detector sees the command behind the engine (kaip claude add)', () => {
   const refs = [...'`kaip claude add "x"`'.matchAll(INVOCATION)];
   assert.equal(refs[0][1], 'claude');
-  assert.equal(refs[0][2].trim(), 'add', 'y "add" es lo que hay que validar');
+  assert.equal(refs[0][2].trim(), 'add', 'and "add" is what needs validating');
 });

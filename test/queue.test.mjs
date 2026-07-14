@@ -11,39 +11,39 @@ const {
   addJob, clearFinished, jobDetails, removeJobs, suggestDirs, suggestTargets,
 } = await import('../lib/queue.mjs');
 
-// --- conversaciones recomendadas --------------------------------------------
-// Reutilizar un target es el mayor ahorro de tokens de la herramienta: el lanzamiento
-// retoma una sesión que YA tiene el contexto cargado. Por eso el asistente las ofrece
-// en vez de obligarte a recordar el nombre.
+// --- suggested conversations --------------------------------------------------
+// Reusing a target is the biggest token saving in the tool: the launch picks up a session that
+// ALREADY has the context loaded. Which is why the wizard offers them instead of making you
+// remember the name.
 
-test('suggestTargets: propone las sesiones ya existentes, la más reciente primero', () => {
+test('suggestTargets: offers the sessions that already exist, most recent first', () => {
   saveQueue([]);
   saveSessions({
-    vieja: { sessionId: 's-vieja', adapter: 'claude', updatedAt: 1000 },
-    reciente: { sessionId: 's-reciente', adapter: 'claude', updatedAt: 9000 },
+    old: { sessionId: 's-old', adapter: 'claude', updatedAt: 1000 },
+    recent: { sessionId: 's-recent', adapter: 'claude', updatedAt: 9000 },
   });
 
   const s = suggestTargets();
-  assert.deepEqual(s.map((x) => x.target), ['reciente', 'vieja']);
-  assert.equal(s[0].sessionId, 's-reciente');
+  assert.deepEqual(s.map((x) => x.target), ['recent', 'old']);
+  assert.equal(s[0].sessionId, 's-recent');
   assert.equal(s[0].upcoming, false);
 });
 
-test('suggestTargets: incluye targets que aún no han corrido, marcados como "upcoming"', () => {
-  // Encadenar trabajo sobre un lanzamiento que todavía no ha salido es un caso real.
+test('suggestTargets: includes targets that have not run yet, marked "upcoming"', () => {
+  // Chaining work onto a launch that has not gone out yet is a real case.
   saveSessions({});
   saveQueue([{
-    id: 'j1', target: 'manana', prompt: 'x', status: 'pending',
+    id: 'j1', target: 'tomorrow', prompt: 'x', status: 'pending',
     createdAt: 5000, sessionId: null, adapter: 'claude',
   }]);
 
   const [s] = suggestTargets();
-  assert.equal(s.target, 'manana');
-  assert.equal(s.upcoming, true, 'aún no tiene sesión');
+  assert.equal(s.target, 'tomorrow');
+  assert.equal(s.upcoming, true, 'it has no session yet');
   assert.equal(s.jobs, 1);
 });
 
-test('suggestTargets: un target con sesión Y jobs sale una sola vez, no duplicado', () => {
+test('suggestTargets: a target with a session AND jobs appears once, not twice', () => {
   saveSessions({ fixes: { sessionId: 's-fixes', adapter: 'claude', updatedAt: 1000 } });
   saveQueue([
     { id: 'j1', target: 'fixes', status: 'done', createdAt: 2000, finishedAt: 3000, sessionId: 's-fixes', adapter: 'claude', prompt: 'a' },
@@ -57,107 +57,108 @@ test('suggestTargets: un target con sesión Y jobs sale una sola vez, no duplica
   assert.equal(s[0].upcoming, false);
 });
 
-test('suggestTargets: sin nada, lista vacía (no revienta)', () => {
+test('suggestTargets: with nothing there, an empty list (it does not blow up)', () => {
   saveSessions({}); saveQueue([]);
   assert.deepEqual(suggestTargets(), []);
 });
 
-test('suggestDirs: junta los alias de proyectos y las carpetas ya usadas, sin repetir', () => {
-  saveProjects({ _base: 'C:/base', miapp: 'C:/base/MiApp' });
+test('suggestDirs: merges the project aliases and the folders already used, without repeats', () => {
+  saveProjects({ _base: 'C:/base', myapp: 'C:/base/MyApp' });
   saveQueue([
-    { id: 'j1', dir: 'C:/base/MiApp', status: 'done', createdAt: 5000, adapter: 'claude', prompt: 'a' },
-    { id: 'j2', dir: 'C:/otra', status: 'done', createdAt: 9000, adapter: 'claude', prompt: 'b' },
+    { id: 'j1', dir: 'C:/base/MyApp', status: 'done', createdAt: 5000, adapter: 'claude', prompt: 'a' },
+    { id: 'j2', dir: 'C:/other', status: 'done', createdAt: 9000, adapter: 'claude', prompt: 'b' },
   ]);
 
   const dirs = suggestDirs();
-  assert.equal(dirs.filter((d) => d.dir === 'C:/base/MiApp').length, 1, 'sin duplicar');
-  assert.equal(dirs[0].dir, 'C:/otra', 'la más reciente primero');
-  assert.equal(dirs.find((d) => d.dir === 'C:/base/MiApp').label, 'miapp', 'conserva el alias');
+  assert.equal(dirs.filter((d) => d.dir === 'C:/base/MyApp').length, 1, 'no duplicates');
+  assert.equal(dirs[0].dir, 'C:/other', 'the most recent one first');
+  assert.equal(dirs.find((d) => d.dir === 'C:/base/MyApp').label, 'myapp', 'it keeps the alias');
 });
 
-test('addJob: crea un job pending y lo mete en la cola', () => {
+test('addJob: creates a pending job and puts it in the queue', () => {
   saveQueue([]);
-  const j = addJob({ prompt: 'haz algo', adapter: 'mock' });
+  const j = addJob({ prompt: 'do something', adapter: 'mock' });
 
   assert.equal(j.status, 'pending');
-  assert.equal(j.prompt, 'haz algo');
-  assert.equal(j.when, null, 'sin --at es secuencial');
+  assert.equal(j.prompt, 'do something');
+  assert.equal(j.when, null, 'with no --at it is sequential');
   assert.ok(j.createdAt);
-  assert.deepEqual(loadQueue().map((x) => x.id), [j.id], 'y queda guardado');
+  assert.deepEqual(loadQueue().map((x) => x.id), [j.id], 'and it is saved');
 });
 
-test('addJob: --at pasa por parseWhen y --dir por resolveDir (como en la CLI)', () => {
+test('addJob: --at goes through parseWhen and --dir through resolveDir (as in the CLI)', () => {
   saveQueue([]);
-  saveProjects({ mialias: 'C:/algun/sitio/MiApp' });
-  const j = addJob({ prompt: 'x', at: '+2h', dir: 'mialias' });
+  saveProjects({ myalias: 'C:/some/where/MyApp' });
+  const j = addJob({ prompt: 'x', at: '+2h', dir: 'myalias' });
 
   assert.ok(Math.abs(j.when - (Date.now() + 2 * 3600_000)) < 5000);
-  assert.equal(j.dir, 'C:/algun/sitio/MiApp');
+  assert.equal(j.dir, 'C:/some/where/MyApp');
 });
 
-test('addJob: sin --dir cae en la carpeta actual', () => {
-  const j = addJob({ prompt: 'x', cwd: 'C:/donde/estoy' });
-  assert.equal(j.dir, 'C:/donde/estoy');
+test('addJob: with no --dir it falls back to the current folder', () => {
+  const j = addJob({ prompt: 'x', cwd: 'C:/where/i/am' });
+  assert.equal(j.dir, 'C:/where/i/am');
 });
 
-test('addJob: prompt vacío se rechaza (un job sin prompt no lanza nada)', () => {
+test('addJob: an empty prompt is refused (a job with no prompt launches nothing)', () => {
   assert.throws(() => addJob({ prompt: '   ' }), /missing prompt/);
 });
 
-test('addJob: con session + target, el target apunta a esa sesión', () => {
+test('addJob: with session + target, the target points at that session', () => {
   saveQueue([]);
-  addJob({ prompt: 'x', target: 'fixes', session: 'sesion-123', adapter: 'mock' });
-  assert.equal(loadSessions().fixes.sessionId, 'sesion-123');
+  addJob({ prompt: 'x', target: 'fixes', session: 'session-123', adapter: 'mock' });
+  assert.equal(loadSessions().fixes.sessionId, 'session-123');
 });
 
-test('addJob: hora que no se entiende → error de parseWhen, y la cola intacta', () => {
+test('addJob: a time it cannot make sense of → a parseWhen error, and the queue untouched', () => {
   saveQueue([]);
-  assert.throws(() => addJob({ prompt: 'x', at: 'a las tantas' }), /can't parse time/);
+  assert.throws(() => addJob({ prompt: 'x', at: 'whenever' }), /can't parse time/);
   assert.equal(loadQueue().length, 0);
 });
 
-// --- el modelo se GUARDA en el job -------------------------------------------
-// Aquí es donde se caía: la CLI parseaba --model, lo validaba y se lo pasaba a addJob, que
-// no lo guardaba. El job salía sin modelo y el lanzamiento usaba el de por defecto. Aceptar
-// una bandera y no hacer nada con ella es peor que no tenerla: te crees que elegiste.
+// --- the model is SAVED on the job --------------------------------------------
+// This is where it fell over: the CLI parsed --model, validated it and passed it to addJob,
+// which did not store it. The job went out with no model and the launch used the default.
+// Accepting a flag and doing nothing with it is worse than not having it: you believe you
+// chose.
 
-test('addJob: guarda el modelo elegido', () => {
+test('addJob: it stores the chosen model', () => {
   saveQueue([]);
   const j = addJob({ prompt: 'x', model: 'sonnet', adapter: 'mock' });
   assert.equal(j.model, 'sonnet');
-  assert.equal(loadQueue()[0].model, 'sonnet', 'y sobrevive al disco');
+  assert.equal(loadQueue()[0].model, 'sonnet', 'and it survives the disk');
 });
 
-test('addJob: sin --model el job no fija ninguno (manda el default del motor)', () => {
+test('addJob: with no --model the job pins none (the engine default wins)', () => {
   saveQueue([]);
   assert.equal(addJob({ prompt: 'x', adapter: 'mock' }).model, null);
 });
 
-test('addJob: --model vacío se rechaza, no se traga en silencio', () => {
+test('addJob: an empty --model is refused, not swallowed in silence', () => {
   saveQueue([]);
   assert.throws(() => addJob({ prompt: 'x', model: '  ' }), /model cannot be empty/);
   assert.equal(loadQueue().length, 0);
 });
 
-test('removeJobs: quita los pedidos y devuelve cuántos', () => {
+test('removeJobs: removes the ones asked for and returns how many', () => {
   saveQueue([]);
   const a = addJob({ prompt: 'a' }), b = addJob({ prompt: 'b' }), cc = addJob({ prompt: 'c' });
   assert.equal(removeJobs([a.id, cc.id]), 2);
   assert.deepEqual(loadQueue().map((j) => j.id), [b.id]);
 });
 
-test('removeJobs: un id que no existe no borra nada', () => {
+test('removeJobs: an id that does not exist deletes nothing', () => {
   saveQueue([]);
   addJob({ prompt: 'a' });
   assert.equal(removeJobs(['nope']), 0);
   assert.equal(loadQueue().length, 1);
 });
 
-test('clearFinished: se lleva done/error y respeta pending/running', () => {
+test('clearFinished: takes done/error and leaves pending/running alone', () => {
   saveQueue([]);
-  const keep = addJob({ prompt: 'pendiente' });
-  const run = addJob({ prompt: 'corriendo' });
-  const old = addJob({ prompt: 'terminado' });
+  const keep = addJob({ prompt: 'pending' });
+  const run = addJob({ prompt: 'running' });
+  const old = addJob({ prompt: 'finished' });
   saveQueue(loadQueue().map((j) => {
     if (j.id === run.id) return { ...j, status: 'running' };
     if (j.id === old.id) return { ...j, status: 'done' };
@@ -170,18 +171,18 @@ test('clearFinished: se lleva done/error y respeta pending/running', () => {
   assert.ok(!ids.includes(old.id));
 });
 
-test('jobDetails: enseña lo que importa del job', () => {
-  const j = addJob({ prompt: 'revisa el PR', target: 'review', perm: 'acceptEdits', adapter: 'mock' });
+test('jobDetails: shows what matters about the job', () => {
+  const j = addJob({ prompt: 'review the PR', target: 'review', perm: 'acceptEdits', adapter: 'mock' });
   const out = jobDetails(j);
   assert.match(out, new RegExp(j.id));
   assert.match(out, /status:\s+pending/);
   assert.match(out, /target:\s+review/);
   assert.match(out, /perm:\s+acceptEdits/);
-  assert.match(out, /revisa el PR/);
+  assert.match(out, /review the PR/);
 });
 
-test('jobDetails: sin target/sesión no se rompe (pinta —)', () => {
+test('jobDetails: with no target/session it does not break (it paints —)', () => {
   const out = jobDetails(addJob({ prompt: 'x' }));
   assert.match(out, /target:\s+—/);
-  assert.match(out, /perm:\s+bypass/, 'sin permMode, bypass');
+  assert.match(out, /perm:\s+bypass/, 'with no permMode, bypass');
 });

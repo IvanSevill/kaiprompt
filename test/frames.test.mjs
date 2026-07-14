@@ -1,13 +1,13 @@
-// Lo que pinta el runner. Estado dentro, líneas fuera: un frame se puede dibujar siempre,
-// sin consecuencias.
+// What the runner paints. State in, lines out: a frame can always be drawn, with no
+// consequences.
 //
-// Aquí vive la regresión de la tecla "i" (ver el prompt entero). jobCard leía job.prompt,
-// pero un job encolado con --from guarda la RUTA, no el texto: su prompt es null. Así que
-// wrap(null) y trunc(null) devolvían vacío en las DOS ramas —plegada y expandida— y la
-// tecla parecía muerta. No había ni un test de frames: por eso llegó hasta el usuario.
+// This is where the "i" key regression lives (see the whole prompt). jobCard read job.prompt,
+// but a job queued with --from stores the PATH, not the text: its prompt is null. So wrap(null)
+// and trunc(null) came back empty on BOTH branches — folded and expanded — and the key looked
+// dead. There was not a single frames test: which is how it reached the user.
 //
-// La regla, y es la misma en todas partes: el prompt de un job se lee con resolvePrompt(),
-// que es lo que hace el lanzamiento. Lo que enseña la tarjeta tiene que ser lo que se manda.
+// The rule, and it is the same everywhere: a job's prompt is read with resolvePrompt(), which
+// is what the launch does. What the card shows has to be what gets sent.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -23,133 +23,133 @@ const { addJob } = await import('../lib/queue.mjs');
 const { clockFrame, runningFrame } = await import('../lib/frames.mjs');
 const { strip } = await import('../lib/ui.mjs');
 
-// Sin TTY, size() cae a 80x24; forzamos algo cómodo para que la caja no recorte.
+// With no TTY, size() falls back to 80x24; force something roomy so the box does not cut.
 process.stdout.columns = 100;
 process.stdout.rows = 40;
 
-const texto = (lines) => strip(lines.join('\n'));
-const card = (job, view = {}) => texto(runningFrame(job, [], Date.now(), 0, view));
+const text = (lines) => strip(lines.join('\n'));
+const card = (job, view = {}) => text(runningFrame(job, [], Date.now(), 0, view));
 
-const promptFile = (nombre, contenido) => {
-  const f = path.join(TMP, nombre);
-  fs.writeFileSync(f, contenido);
+const promptFile = (name, content) => {
+  const f = path.join(TMP, name);
+  fs.writeFileSync(f, content);
   return f;
 };
 
-// --- un job normal (el texto vive en la cola) --------------------------------
-test('plegado: una línea del prompt, y la pista dice cuántas hay', () => {
+// --- an ordinary job (the text lives in the queue) ---------------------------
+test('folded: one line of the prompt, and the hint says how many there are', () => {
   saveQueue([]);
-  const job = addJob({ prompt: 'arregla los tests\ny luego el README', adapter: 'mock' });
+  const job = addJob({ prompt: 'fix the tests\nand then the README', adapter: 'mock' });
 
   const out = card(job);
-  assert.match(out, /arregla los tests/);
-  assert.match(out, /i: full prompt · 2 líneas/, 'plegado hay que avisar de que hay más detrás');
+  assert.match(out, /fix the tests/);
+  assert.match(out, /i: full prompt · 2 lines/, 'folded, it has to say there is more behind');
 });
 
-test('plegado: un prompt de una sola línea lo dice en singular', () => {
+test('folded: a single-line prompt says so in the singular', () => {
   saveQueue([]);
-  const job = addJob({ prompt: 'corre los tests', adapter: 'mock' });
-  assert.match(card(job), /i: full prompt · 1 línea\b/);
+  const job = addJob({ prompt: 'run the tests', adapter: 'mock' });
+  assert.match(card(job), /i: full prompt · 1 line\b/);
 });
 
-test('expandido: sale el prompt ENTERO, no solo la primera línea', () => {
+test('expanded: the WHOLE prompt comes out, not just the first line', () => {
   saveQueue([]);
-  const job = addJob({ prompt: 'primera línea\nsegunda línea\ntercera línea', adapter: 'mock' });
+  const job = addJob({ prompt: 'first line\nsecond line\nthird line', adapter: 'mock' });
 
   const out = card(job, { expanded: true });
-  assert.match(out, /primera línea/);
-  assert.match(out, /segunda línea/, 'esto es justo lo que la tecla "i" existe para enseñar');
-  assert.match(out, /tercera línea/);
+  assert.match(out, /first line/);
+  assert.match(out, /second line/, 'this is exactly what the "i" key exists to show');
+  assert.match(out, /third line/);
   assert.match(out, /i: collapse/);
 });
 
-// --- LA REGRESIÓN: un job con --from (prompt: null) --------------------------
-test('--from, plegado: enseña el texto del ARCHIVO, no un hueco', () => {
+// --- THE REGRESSION: a job with --from (prompt: null) ------------------------
+test('--from, folded: shows the text of the FILE, not a blank', () => {
   saveQueue([]);
-  const f = promptFile('tarea.md', 'refactoriza el runner\ncon calma');
+  const f = promptFile('task.md', 'refactor the runner\ncarefully');
   const job = addJob({ from: f, adapter: 'mock' });
 
-  assert.equal(job.prompt, null, 'un job --from guarda la ruta, no el texto (esa era la trampa)');
+  assert.equal(job.prompt, null, 'a --from job stores the path, not the text (that was the trap)');
 
   const out = card(job);
-  assert.match(out, /refactoriza el runner/, 'la tarjeta leía job.prompt (null) y salía vacía');
-  assert.match(out, /tarea\.md/, 'y si viene de un archivo, se dice de cuál');
-  assert.match(out, /2 líneas/);
+  assert.match(out, /refactor the runner/, 'the card read job.prompt (null) and came out empty');
+  assert.match(out, /task\.md/, 'and if it comes from a file, say which one');
+  assert.match(out, /2 lines/);
 });
 
-test('--from, expandido: el prompt entero del archivo', () => {
+test('--from, expanded: the whole prompt from the file', () => {
   saveQueue([]);
-  const f = promptFile('largo.md', 'uno\ndos\ntres\ncuatro');
+  const f = promptFile('long.md', 'one\ntwo\nthree\nfour');
   const job = addJob({ from: f, adapter: 'mock' });
 
   const out = card(job, { expanded: true });
-  for (const l of ['uno', 'dos', 'tres', 'cuatro']) {
-    assert.match(out, new RegExp(`\\b${l}\\b`), `falta "${l}": la tecla "i" no enseña nada`);
+  for (const l of ['one', 'two', 'three', 'four']) {
+    assert.match(out, new RegExp(`\\b${l}\\b`), `"${l}" is missing: the "i" key shows nothing`);
   }
 });
 
-test('--from: lo que enseña la tarjeta es lo que dice el archivo AHORA', () => {
-  // El archivo se lee al lanzar, no al encolar: puedes seguir puliéndolo. La tarjeta tiene
-  // que ir a la misma fuente, o enseñaría una copia vieja de lo que se va a mandar.
+test('--from: what the card shows is what the file says NOW', () => {
+  // The file is read at launch, not at queue time: you can keep polishing it. The card has to
+  // go to the same source, or it would show a stale copy of what is about to be sent.
   saveQueue([]);
-  const f = promptFile('vivo.md', 'versión vieja');
+  const f = promptFile('live.md', 'old version');
   const job = addJob({ from: f, adapter: 'mock' });
 
-  fs.writeFileSync(f, 'versión NUEVA');
+  fs.writeFileSync(f, 'NEW version');
 
   const out = card(job, { expanded: true });
-  assert.match(out, /versión NUEVA/);
-  assert.doesNotMatch(out, /versión vieja/);
+  assert.match(out, /NEW version/);
+  assert.doesNotMatch(out, /old version/);
 });
 
-// --- el archivo se rompe: avisar, no reventar --------------------------------
-test('--from con el archivo borrado: pinta el aviso y NO tumba el runner', () => {
-  // resolvePrompt LANZA cuando el archivo no está, y eso es deliberado: un lanzamiento
-  // desatendido no puede recibir un prompt en blanco e improvisar (test/prompt.test.mjs).
-  // Pero esto es un frame, solo pinta: si la excepción subiera, se llevaría por delante al
-  // runner en mitad de una tanda.
+// --- the file breaks: warn, do not blow up -----------------------------------
+test('--from with the file deleted: it paints the warning and does NOT take the runner down', () => {
+  // resolvePrompt THROWS when the file is not there, and that is deliberate: an unattended
+  // launch cannot be handed a blank prompt and left to improvise (test/prompt.test.mjs).
+  // But this is a frame, it only paints: if the exception rose, it would take the runner out
+  // in the middle of a batch.
   saveQueue([]);
-  const f = promptFile('efimero.md', 'esto va a desaparecer');
+  const f = promptFile('ephemeral.md', 'this is about to disappear');
   const job = addJob({ from: f, adapter: 'mock' });
   fs.rmSync(f);
 
   let out;
-  assert.doesNotThrow(() => { out = card(job); }, 'el frame no puede propagar la excepción');
+  assert.doesNotThrow(() => { out = card(job); }, 'the frame may not propagate the exception');
   assert.match(out, /⚠/);
-  assert.match(out, /prompt file is gone|efimero\.md/i, 'y hay que decir cuál falta');
+  assert.match(out, /prompt file is gone|ephemeral\.md/i, 'and it has to say which one is missing');
 
-  assert.doesNotThrow(() => card(job, { expanded: true }), 'expandido tampoco');
+  assert.doesNotThrow(() => card(job, { expanded: true }), 'nor expanded');
 });
 
-test('--from con el archivo vacío: mismo aviso (un prompt en blanco no se lanza)', () => {
+test('--from with an empty file: the same warning (a blank prompt is never launched)', () => {
   saveQueue([]);
-  const f = promptFile('vacio.md', 'algo, para poder encolarlo');
+  const f = promptFile('empty.md', 'something, so it can be queued');
   const job = addJob({ from: f, adapter: 'mock' });
   fs.writeFileSync(f, '   \n  ');
 
   const out = card(job);
   assert.match(out, /⚠/);
-  assert.match(out, /empty|vacio\.md/i);
+  assert.match(out, /empty/i);
 });
 
-// --- prompts largos ----------------------------------------------------------
-test('expandido: si el prompt no cabe, dice cuántas líneas se quedan fuera', () => {
-  // Cortar en silencio por la línea 20 es como acabas convencido de haber pedido algo que
-  // en realidad nunca pediste.
+// --- long prompts ------------------------------------------------------------
+test('expanded: if the prompt does not fit, it says how many lines are left out', () => {
+  // Cutting it off in silence at line 20 is how you end up sure you asked for something you
+  // never actually asked for.
   saveQueue([]);
-  const job = addJob({ prompt: Array.from({ length: 50 }, (_, i) => `línea ${i + 1}`).join('\n'), adapter: 'mock' });
+  const job = addJob({ prompt: Array.from({ length: 50 }, (_, i) => `line ${i + 1}`).join('\n'), adapter: 'mock' });
 
   const out = card(job, { expanded: true });
-  assert.match(out, /línea 1\b/);
-  assert.match(out, /\+\d+ líneas/, 'hay que decir cuánto queda fuera, no cortar a la brava');
+  assert.match(out, /line 1\b/);
+  assert.match(out, /\+\d+ lines/, 'say how much is left out, do not just chop it');
 });
 
-// --- la otra pantalla que usa la misma tarjeta -------------------------------
-test('el reloj (job agendado) usa la misma tarjeta: también enseña el archivo', () => {
+// --- the other screen that uses the same card --------------------------------
+test('the clock (a scheduled job) uses the same card: it shows the file too', () => {
   saveQueue([]);
-  const f = promptFile('agendado.md', 'lo de las 3am');
+  const f = promptFile('scheduled.md', 'the 3am job');
   const job = addJob({ from: f, at: '+2h', adapter: 'mock' });
 
-  const out = texto(clockFrame(job, Date.now() + 7200_000, [job], Date.now(), { expanded: true }));
-  assert.match(out, /lo de las 3am/, 'el prompt del job que va a salir tiene que verse');
+  const out = text(clockFrame(job, Date.now() + 7200_000, [job], Date.now(), { expanded: true }));
+  assert.match(out, /the 3am job/, 'the prompt of the job about to go out has to be visible');
 });

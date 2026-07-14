@@ -20,199 +20,199 @@ function asTTY(fn) {
   return out.join('');
 }
 
-// Sin TTY (los tests corren con la salida redirigida) los helpers de color no pintan:
-// eso es justo lo que garantiza que el modo desatendido salga en texto plano.
+// With no TTY (the tests run with output redirected) the colour helpers paint nothing:
+// that is exactly what guarantees the unattended mode comes out as plain text.
 
-test('sin TTY no se emiten códigos de color', () => {
-  assert.equal(c.accent('hola'), 'hola');
-  assert.equal(c.bold('hola'), 'hola');
+test('with no TTY no colour codes are emitted', () => {
+  assert.equal(c.accent('hello'), 'hello');
+  assert.equal(c.bold('hello'), 'hello');
 });
 
-test('strip/width ignoran los códigos ANSI', () => {
-  const s = '\x1b[38;2;1;2;3mhola\x1b[39m';
-  assert.equal(strip(s), 'hola');
-  assert.equal(width(s), 4);
+test('strip/width ignore the ANSI codes', () => {
+  const s = '\x1b[38;2;1;2;3mhello\x1b[39m';
+  assert.equal(strip(s), 'hello');
+  assert.equal(width(s), 5);
 });
 
-test('trunc: recorta y añade elipsis, colapsa espacios', () => {
-  assert.equal(trunc('hola   mundo', 20), 'hola mundo');
+test('trunc: cuts and adds an ellipsis, collapses spaces', () => {
+  assert.equal(trunc('hello   world', 20), 'hello world');
   assert.equal(trunc('x'.repeat(30), 10).length, 10);
   assert.ok(trunc('x'.repeat(30), 10).endsWith('…'));
   assert.equal(trunc(undefined, 5), '');
 });
 
-test('centerLine centra por ancho visible', () => {
+test('centerLine centres by visible width', () => {
   assert.equal(centerLine('ab', 10), ' '.repeat(4) + 'ab');
   assert.equal(width(centerLine('ab', 10)), 6);
 });
 
 // --- centerBlock -------------------------------------------------------------
-// Regresión visual: centrar CADA línea por su cuenta descuadra el conjunto — una barra
-// corta se iba flotando a un lado mientras la caja ancha quedaba en el medio. Un bloque
-// se centra como bloque: todas las líneas arrancan en la misma columna.
+// Visual regression: centring EACH line on its own throws the whole thing out of square —
+// a short bar drifted off to one side while the wide box sat in the middle. A block is
+// centred as a block: every line starts in the same column.
 
-test('centerBlock: todas las líneas empiezan en la MISMA columna', () => {
-  const lines = centerBlock(['caja muy ancha de aqui a alli', 'corto', 'x'], 60);
-  const sangrias = lines.map((l) => l.length - l.trimStart().length);
-  assert.equal(new Set(sangrias).size, 1, 'una sola sangría para todas');
+test('centerBlock: every line starts in the SAME column', () => {
+  const lines = centerBlock(['a very wide box from here to there', 'short', 'x'], 60);
+  const indents = lines.map((l) => l.length - l.trimStart().length);
+  assert.equal(new Set(indents).size, 1, 'one single indent for all of them');
 });
 
-test('centerBlock: el bloque queda centrado por su línea más ancha', () => {
-  const ancha = 'x'.repeat(20);
-  const [primera] = centerBlock([ancha, 'y'], 40);
-  assert.equal(primera.length - primera.trimStart().length, 10, '(40 - 20) / 2');
+test('centerBlock: the block is centred by its widest line', () => {
+  const wide = 'x'.repeat(20);
+  const [first] = centerBlock([wide, 'y'], 40);
+  assert.equal(first.length - first.trimStart().length, 10, '(40 - 20) / 2');
 });
 
-test('centerBlock: mide por ancho visible, los colores no descuadran', () => {
-  const lines = centerBlock([c.accent('hola'), 'hola'], 20);
-  const sangrias = lines.map((l) => strip(l).length - strip(l).trimStart().length);
-  assert.equal(new Set(sangrias).size, 1, 'el color no debe empujar la línea');
+test('centerBlock: measures by visible width, colours do not shift it', () => {
+  const lines = centerBlock([c.accent('hello'), 'hello'], 20);
+  const indents = lines.map((l) => strip(l).length - strip(l).trimStart().length);
+  assert.equal(new Set(indents).size, 1, 'colour must not push the line along');
 });
 
-test('centerBlock: nada desborda la terminal', () => {
+test('centerBlock: nothing overflows the terminal', () => {
   const lines = centerBlock(['x'.repeat(200)], 40);
   assert.ok(lines.every((l) => width(l) <= 40));
 });
 
-// --- fit (ninguna línea puede desbordar la terminal) ------------------------
-test('fit: deja pasar lo que cabe, recorta lo que no', () => {
-  assert.equal(fit('hola', 10), 'hola');
+// --- fit (no line may overflow the terminal) --------------------------------
+test('fit: lets through what fits, cuts what does not', () => {
+  assert.equal(fit('hello', 10), 'hello');
   assert.equal(width(fit('x'.repeat(30), 10)), 10);
 });
 
-test('fit: mide por ancho visible, no por bytes (los ANSI no ocupan)', () => {
-  const coloreada = '\x1b[38;2;1;2;3mhola\x1b[39m';
-  assert.equal(fit(coloreada, 10), coloreada, 'cabe: se respeta el color');
-  assert.ok(width(fit(coloreada, 2)) <= 2, 'no cabe: se recorta al ancho visible');
+test('fit: measures by visible width, not bytes (ANSI takes no room)', () => {
+  const coloured = '\x1b[38;2;1;2;3mhello\x1b[39m';
+  assert.equal(fit(coloured, 10), coloured, 'it fits: the colour is kept');
+  assert.ok(width(fit(coloured, 2)) <= 2, 'it does not fit: cut to the visible width');
 });
 
-// --- wrap (párrafos del visor de chat) --------------------------------------
-test('wrap: parte por palabras sin pasarse del ancho', () => {
-  const lineas = wrap('uno dos tres cuatro cinco seis', 10);
-  assert.ok(lineas.every((l) => l.length <= 10));
-  assert.equal(lineas.join(' '), 'uno dos tres cuatro cinco seis', 'sin perder ni una palabra');
+// --- wrap (the chat viewer's paragraphs) ------------------------------------
+test('wrap: breaks on words without going over the width', () => {
+  const lines = wrap('one two three four five six', 10);
+  assert.ok(lines.every((l) => l.length <= 10));
+  assert.equal(lines.join(' '), 'one two three four five six', 'not a single word lost');
 });
 
-test('wrap: respeta los saltos de línea que ya había', () => {
-  assert.deepEqual(wrap('uno\ndos', 20), ['uno', 'dos']);
+test('wrap: keeps the line breaks that were already there', () => {
+  assert.deepEqual(wrap('one\ntwo', 20), ['one', 'two']);
 });
 
-test('wrap: una palabra más larga que el ancho se trocea (si no, descuadra la caja)', () => {
-  const lineas = wrap('x'.repeat(25), 10);
-  assert.ok(lineas.every((l) => l.length <= 10));
-  assert.equal(lineas.join(''), 'x'.repeat(25));
+test('wrap: a word longer than the width is split (otherwise the box breaks)', () => {
+  const lines = wrap('x'.repeat(25), 10);
+  assert.ok(lines.every((l) => l.length <= 10));
+  assert.equal(lines.join(''), 'x'.repeat(25));
 });
 
-test('wrap: vacío o nulo no rompe', () => {
+test('wrap: empty or null does not break it', () => {
   assert.deepEqual(wrap('', 10), ['']);
   assert.deepEqual(wrap(undefined, 10), ['']);
 });
 
-// --- toolSummary (una llamada a herramienta en una línea) -------------------
-test('toolSummary: elige el argumento que importa de cada herramienta', () => {
+// --- toolSummary (one tool call on one line) --------------------------------
+test('toolSummary: picks the argument that matters for each tool', () => {
   assert.deepEqual(toolSummary('Read', { file_path: 'app/main.py' }), { name: 'Read', arg: 'app/main.py' });
   assert.deepEqual(toolSummary('Bash', { command: 'npm test' }), { name: 'Bash', arg: 'npm test' });
   assert.deepEqual(toolSummary('Grep', { pattern: 'TODO' }), { name: 'Grep', arg: 'TODO' });
 });
 
-test('toolSummary: sin argumento reconocible, solo el nombre', () => {
+test('toolSummary: with no argument it recognises, just the name', () => {
   assert.deepEqual(toolSummary('TodoWrite', { todos: [] }), { name: 'TodoWrite', arg: '' });
   assert.deepEqual(toolSummary('X', undefined), { name: 'X', arg: '' });
 });
 
-test('toolSummary: recorta el argumento largo al ancho disponible', () => {
+test('toolSummary: a long argument is cut to the width available', () => {
   const { arg } = toolSummary('Bash', { command: 'x'.repeat(200) }, 40);
   assert.ok(arg.length <= 40);
   assert.ok(arg.endsWith('…'));
 });
 
-// --- dígitos gigantes (el reloj) --------------------------------------------
-test('bigText: siempre 5 filas', () => {
+// --- giant digits (the clock) -----------------------------------------------
+test('bigText: always 5 rows', () => {
   assert.equal(bigText('00:00:00').length, 5);
   assert.equal(bigText('12:34:56').length, 5);
 });
 
-test('bigText: todas las filas miden lo mismo, y bigWidth lo predice', () => {
+test('bigText: every row is the same width, and bigWidth predicts it', () => {
   const txt = '02:34:11';
   const rows = bigText(txt);
-  const anchos = rows.map(width);
-  assert.equal(new Set(anchos).size, 1, 'filas desiguales romperían el centrado');
-  assert.equal(anchos[0], bigWidth(txt), 'bigWidth debe coincidir con el ancho real');
+  const widths = rows.map(width);
+  assert.equal(new Set(widths).size, 1, 'uneven rows would break the centring');
+  assert.equal(widths[0], bigWidth(txt), 'bigWidth must match the real width');
 });
 
-test('bigText: dibuja los 10 dígitos y los dos puntos', () => {
+test('bigText: draws all 10 digits and the colon', () => {
   for (const ch of '0123456789') {
     const rows = bigText(ch);
-    assert.ok(rows.some((r) => r.includes('█')), `el dígito ${ch} debe pintar algo`);
+    assert.ok(rows.some((r) => r.includes('█')), `digit ${ch} must paint something`);
   }
   assert.ok(bigText(':').some((r) => r.includes('█')));
 });
 
-test('bigText: ignora caracteres no soportados sin romper', () => {
+test('bigText: ignores unsupported characters without breaking', () => {
   assert.equal(bigText('ab').length, 5);
   assert.equal(bigWidth('ab'), 0);
 });
 
-test('bigText: la escala cambia el ancho, no la altura', () => {
+test('bigText: the scale changes the width, not the height', () => {
   assert.equal(bigText('12', { scale: 1 }).length, 5);
   assert.ok(bigWidth('12', { scale: 2 }) > bigWidth('12', { scale: 1 }));
 });
 
-// --- el título de la ventana ------------------------------------------------
-// La terminal se llama "node" y debería llamarse como lo que está haciendo: con la ventana
-// minimizada, la barra de tareas es lo único que se ve. Pero un uso desatendido no tiene
-// barra de tareas ninguna, así que ahí no se escribe nada.
+// --- the window title --------------------------------------------------------
+// The terminal is called "node" and it should be called after whatever it is doing: with the
+// window minimised, the taskbar is all you can see. But an unattended run has no taskbar at
+// all, so nothing is written there.
 
-test('sin TTY no se escribe ningún título (lo desatendido no se toca)', () => {
+test('with no TTY no title is written (the unattended path is left alone)', () => {
   const out = [];
   const write = process.stdout.write;
   process.stdout.write = (s) => { out.push(String(s)); return true; };
-  try { setTitle('⏳ 04:12:33 → factura por voz'); restoreTitle(); }
+  try { setTitle('⏳ 04:12:33 → voice invoice'); restoreTitle(); }
   finally { process.stdout.write = write; }
 
-  assert.equal(out.join(''), '', 'ni un byte: la salida plana se queda plana');
+  assert.equal(out.join(''), '', 'not one byte: plain output stays plain');
 });
 
-test('con TTY el título es el reloj, y se devuelve el nombre al salir', () => {
-  const out = asTTY(() => { setTitle('⏳ 04:12:33 → factura por voz'); restoreTitle(); });
+test('with a TTY the title is the clock, and the old name comes back on exit', () => {
+  const out = asTTY(() => { setTitle('⏳ 04:12:33 → voice invoice'); restoreTitle(); });
 
-  assert.ok(out.includes('\x1b]0;⏳ 04:12:33 → factura por voz\x07'), 'OSC 0 con el texto');
-  assert.ok(out.includes('\x1b[22;0t'), 'antes, guarda el nombre que tenía');
-  assert.ok(out.includes('\x1b[23;0t'), 'y al salir se lo devuelve');
+  assert.ok(out.includes('\x1b]0;⏳ 04:12:33 → voice invoice\x07'), 'OSC 0 with the text');
+  assert.ok(out.includes('\x1b[22;0t'), 'first, save the name it had');
+  assert.ok(out.includes('\x1b[23;0t'), 'and give it back on the way out');
   assert.ok(out.indexOf('\x1b]0;\x07') < out.indexOf('\x1b[23;0t'),
-    'con el título vacío por delante, por si la terminal no sabe de pilas');
+    'with an empty title first, in case the terminal knows nothing about stacks');
 });
 
-test('el título no puede llevar colores ni cerrar la secuencia antes de tiempo', () => {
+test('the title may not carry colours, nor close the sequence early', () => {
   assert.equal(titleText('\x1b[38;2;217;119;87mkaip\x1b[39m'), 'kaip');
-  assert.equal(titleText('mal\x07titulo\x1b'), 'mal titulo');
-  assert.equal(titleText('  varios   espacios  '), 'varios espacios');
+  assert.equal(titleText('bad\x07title\x1b'), 'bad title');
+  assert.equal(titleText('  several   spaces  '), 'several spaces');
 });
 
-// --- toolLines (lo que se ve mientras el lanzamiento corre) -----------------
-// Un "Edit(archivo)" pelado no dice QUÉ cambió, y un "TodoWrite" pelado no dice nada.
+// --- toolLines (what you see while the launch is running) -------------------
+// A bare "Edit(file)" does not say WHAT changed, and a bare "TodoWrite" says nothing at all.
 
-test('toolLines: TodoWrite enseña las tareas, no una llamada vacía', () => {
+test('toolLines: TodoWrite shows the tasks, not an empty call', () => {
   const lines = toolLines('TodoWrite', {
     todos: [
-      { content: 'leer el codigo', status: 'completed' },
-      { content: 'arreglar el bug', status: 'in_progress' },
-      { content: 'correr los tests', status: 'pending' },
+      { content: 'read the code', status: 'completed' },
+      { content: 'fix the bug', status: 'in_progress' },
+      { content: 'run the tests', status: 'pending' },
     ],
   }, 60).map(strip);
 
   assert.ok(lines[0].includes('TodoWrite'));
-  assert.ok(lines.some((l) => l.includes('✓') && l.includes('leer el codigo')));
-  assert.ok(lines.some((l) => l.includes('▶') && l.includes('arreglar el bug')));
-  assert.ok(lines.some((l) => l.includes('·') && l.includes('correr los tests')));
+  assert.ok(lines.some((l) => l.includes('✓') && l.includes('read the code')));
+  assert.ok(lines.some((l) => l.includes('▶') && l.includes('fix the bug')));
+  assert.ok(lines.some((l) => l.includes('·') && l.includes('run the tests')));
 });
 
-test('toolLines: TodoWrite sin tareas no revienta', () => {
+test('toolLines: TodoWrite with no tasks does not blow up', () => {
   assert.equal(toolLines('TodoWrite', {}, 60).length, 1);
   assert.equal(toolLines('TodoWrite', undefined, 60).length, 1);
 });
 
-test('toolLines: Edit enseña el cambio, lo que sale y lo que entra', () => {
+test('toolLines: Edit shows the change, what goes out and what comes in', () => {
   const lines = toolLines('Edit', {
     file_path: 'lib/ui.mjs', old_string: 'join("\\n")', new_string: 'join("\\r\\n")',
   }, 60).map(strip);
@@ -222,120 +222,120 @@ test('toolLines: Edit enseña el cambio, lo que sale y lo que entra', () => {
   assert.ok(lines.some((l) => l.trim().startsWith('+') && l.includes('join')));
 });
 
-test('toolLines: un Edit gigante se recorta (si no, tapa la pantalla)', () => {
-  const big = Array.from({ length: 40 }, (_, i) => `linea ${i}`).join('\n');
+test('toolLines: a huge Edit gets cut back (otherwise it swallows the screen)', () => {
+  const big = Array.from({ length: 40 }, (_, i) => `line ${i}`).join('\n');
   const lines = toolLines('Edit', { file_path: 'x', old_string: big, new_string: big }, 60).map(strip);
-  assert.ok(lines.length < 12, `demasiadas lineas: ${lines.length}`);
-  assert.ok(lines.some((l) => l.includes('…')), 'debe avisar de lo que oculta');
+  assert.ok(lines.length < 12, `too many lines: ${lines.length}`);
+  assert.ok(lines.some((l) => l.includes('…')), 'it must say what it is hiding');
 });
 
-test('toolLines: MultiEdit muestra todos los cambios', () => {
+test('toolLines: MultiEdit shows every change', () => {
   const lines = toolLines('MultiEdit', {
     file_path: 'a.mjs',
     edits: [
-      { old_string: 'uno', new_string: 'UNO' },
-      { old_string: 'dos', new_string: 'DOS' },
+      { old_string: 'one', new_string: 'ONE' },
+      { old_string: 'two', new_string: 'TWO' },
     ],
   }, 60).map(strip).join('\n');
-  for (const s of ['uno', 'UNO', 'dos', 'DOS']) assert.ok(lines.includes(s), s);
+  for (const s of ['one', 'ONE', 'two', 'TWO']) assert.ok(lines.includes(s), s);
 });
 
-test('toolLines: Write dice cuántas líneas escribe', () => {
+test('toolLines: Write says how many lines it writes', () => {
   const lines = toolLines('Write', { file_path: 'x.mjs', content: 'a\nb\nc' }, 60).map(strip);
   assert.ok(lines.some((l) => l.includes('3 lines')));
 });
 
-test('toolLines: una herramienta cualquiera sigue siendo una sola línea', () => {
+test('toolLines: any other tool is still one single line', () => {
   const lines = toolLines('Bash', { command: 'npm test' }, 60);
   assert.equal(lines.length, 1);
   assert.ok(strip(lines[0]).includes('Bash') && strip(lines[0]).includes('npm test'));
 });
 
-// --- pintado en crudo -------------------------------------------------------
-// Regresión: la GUI salía en escalera. El modo raw (necesario para leer teclas
-// sueltas) también apaga la traducción LF→CRLF de SALIDA, así que un "\n" pelado
-// baja una fila pero NO vuelve a la columna 0. Con CRLF va bien en ambos modos.
+// --- raw painting ------------------------------------------------------------
+// Regression: the GUI came out in a staircase. Raw mode (needed to read single keys) also
+// turns off the LF→CRLF translation on OUTPUT, so a bare "\n" drops one row but does NOT
+// return to column 0. With CRLF it works in both modes.
 
-test('paint: separa las líneas con CRLF, nunca con LF pelado', () => {
-  const out = asTTY(() => paint(['uno', 'dos', 'tres']));
-  assert.ok(out.includes('uno\r\ndos\r\ntres'), 'las filas deben ir con CRLF');
-  assert.ok(!/[^\r]\n/.test(out), 'ni un solo LF sin su CR delante');
+test('paint: separates the lines with CRLF, never with a bare LF', () => {
+  const out = asTTY(() => paint(['one', 'two', 'three']));
+  assert.ok(out.includes('one\r\ntwo\r\nthree'), 'the rows must go out with CRLF');
+  assert.ok(!/[^\r]\n/.test(out), 'not one LF without its CR in front');
 });
 
-test('paint: limpia la pantalla antes de pintar (si no, quedan restos del frame anterior)', () => {
+test('paint: clears the screen before painting (otherwise the last frame shows through)', () => {
   const out = asTTY(() => paint(['x']));
-  assert.ok(out.includes('\x1b[2J'), 'debe borrar');
-  assert.ok(out.includes('\x1b[H'), 'y volver al origen');
+  assert.ok(out.includes('\x1b[2J'), 'it must erase');
+  assert.ok(out.includes('\x1b[H'), 'and go back to the origin');
 });
 
-test('clear: borra TAMBIÉN el historial de desplazamiento', () => {
-  // Regresión: al salir de la pantalla alternativa el terminal restaura lo que había antes,
-  // y "2J" solo borra lo visible. Sin "3J" quedaba basura por debajo y el adiós salía
-  // encima de los restos.
+test('clear: erases the scrollback TOO', () => {
+  // Regression: on leaving the alternate screen the terminal restores whatever was there
+  // before, and "2J" only erases what is visible. Without "3J" there was debris underneath
+  // and the farewell landed on top of it.
   const out = asTTY(() => clear());
-  assert.ok(out.includes('\x1b[3J'), 'sin esto, el scrollback sobrevive');
+  assert.ok(out.includes('\x1b[3J'), 'without this, the scrollback survives');
   assert.ok(out.includes('\x1b[2J'));
   assert.ok(out.includes('\x1b[H'));
 });
 
-test('paint: sin TTY sale texto plano, sin códigos ANSI (el modo desatendido)', () => {
+test('paint: with no TTY it comes out as plain text, no ANSI codes (the unattended mode)', () => {
   const logged = [];
   const log = console.log;
   console.log = (s) => logged.push(s);
-  try { paint([c.accent('hola'), 'adios']); } finally { console.log = log; }
-  assert.equal(logged.join(''), 'hola\nadios');
+  try { paint([c.accent('hello'), 'bye']); } finally { console.log = log; }
+  assert.equal(logged.join(''), 'hello\nbye');
 });
 
-test('writeLines: convierte los saltos del texto a CRLF (el visor de chat en la GUI)', () => {
-  const out = asTTY(() => writeLines('linea1\nlinea2'));
-  assert.ok(out.startsWith('linea1\r\nlinea2'));
+test('writeLines: turns the text breaks into CRLF (the chat viewer in the GUI)', () => {
+  const out = asTTY(() => writeLines('line1\nline2'));
+  assert.ok(out.startsWith('line1\r\nline2'));
   assert.ok(!/[^\r]\n/.test(out));
 });
 
-// --- barra y caja -----------------------------------------------------------
-test('bar: acota entre 0 y 100', () => {
+// --- bar and box -------------------------------------------------------------
+test('bar: clamps between 0 and 100', () => {
   assert.ok(strip(bar(0, 10)).startsWith('░'));
   assert.ok(strip(bar(100, 10)).startsWith('█'.repeat(10)));
   assert.ok(strip(bar(-50, 10)).includes('0%'));
   assert.ok(strip(bar(500, 10)).includes('100%'));
 });
 
-test('box: bordes redondeados y contenido dentro', () => {
-  const b = box(['hola'], { title: 'test' });
+test('box: rounded borders and the content inside', () => {
+  const b = box(['hello'], { title: 'test' });
   assert.ok(strip(b[0]).startsWith('╭'));
   assert.ok(strip(b.at(-1)).startsWith('╰'));
-  assert.ok(b.some((l) => l.includes('hola')));
+  assert.ok(b.some((l) => l.includes('hello')));
 });
 
-test('box: todas las líneas del mismo ancho (si no, el marco se descuadra)', () => {
-  const b = box(['corto', 'una linea bastante mas larga'], { title: 'x' });
-  const anchos = b.map(width);
-  assert.equal(new Set(anchos).size, 1);
+test('box: every line the same width (otherwise the frame goes crooked)', () => {
+  const b = box(['short', 'a considerably longer line'], { title: 'x' });
+  const widths = b.map(width);
+  assert.equal(new Set(widths).size, 1);
 });
 
-test('box: una línea MÁS ANCHA que la caja se recorta, no empuja el borde', () => {
-  // Regresión: el borde derecho se iba zigzagueando pantalla abajo, una distancia
-  // distinta por cada línea larga. Se veía en la vista de detalle con prompts largos.
-  const b = box(['x'.repeat(200), 'corto'], { title: 'job', cols: 40 });
-  const anchos = b.map(width);
-  assert.equal(new Set(anchos).size, 1, 'todas las filas al mismo ancho');
-  assert.equal(anchos[0], 42, 'el ancho pedido + los dos bordes');
+test('box: a line WIDER than the box is cut, it does not push the border out', () => {
+  // Regression: the right-hand border zigzagged its way down the screen, a different
+  // distance on every long line. You could see it in the detail view with long prompts.
+  const b = box(['x'.repeat(200), 'short'], { title: 'job', cols: 40 });
+  const widths = b.map(width);
+  assert.equal(new Set(widths).size, 1, 'every row at the same width');
+  assert.equal(widths[0], 42, 'the width asked for, plus the two borders');
   for (const l of b.slice(1, -1)) {
-    assert.ok(strip(l).startsWith('│') && strip(l).endsWith('│'), 'bordes en su sitio');
+    assert.ok(strip(l).startsWith('│') && strip(l).endsWith('│'), 'borders where they belong');
   }
 });
 
-// --- salir de la pantalla alternativa UNA sola vez ---------------------------
-test('altExit dos veces NO restaura la pantalla vieja (era el parpadeo al salir)', () => {
-  // "?1049l" no significa "borra": significa "restaura la pantalla que guardaste". Llamarlo
-  // por segunda vez, DESPUÉS de haber salido e impreso la despedida, hacía que el terminal
-  // devolviera obedientemente el búfer viejo: la pantalla se limpiaba y volvía a ensuciarse.
+// --- leaving the alternate screen ONCE and once only -------------------------
+test('altExit twice does NOT restore the old screen (that was the flash on the way out)', () => {
+  // "?1049l" does not mean "erase": it means "restore the screen you saved". Calling it a
+  // second time, AFTER having left and printed the farewell, made the terminal dutifully
+  // hand back the old buffer: the screen cleared itself and immediately got dirty again.
   const out = asTTY(() => { altEnter(); altExit(); altExit(); altExit(); });
-  const salidas = out.split('\x1b[?1049l').length - 1;
-  assert.equal(salidas, 1, 'solo puede salirse una vez');
+  const exits = out.split('\x1b[?1049l').length - 1;
+  assert.equal(exits, 1, 'it may only be left once');
 });
 
-test('altEnter dos veces tampoco entra dos veces', () => {
+test('altEnter twice does not enter twice either', () => {
   const out = asTTY(() => { altEnter(); altEnter(); altExit(); });
   assert.equal(out.split('\x1b[?1049h').length - 1, 1);
 });
