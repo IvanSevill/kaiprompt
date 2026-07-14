@@ -322,8 +322,10 @@ logs stay readable and nothing tries to paint a full-screen interface into them.
   one watching. Point it at a repo you can revert.
 - **There is no supervision mid-launch.** If a prompt was wrong, you find out afterwards.
   That is what `/prompt` is for.
-- **Only Claude Code is really supported.** There is an `opencode` stub, but the adapter that
-  is exercised in anger is `claude`.
+- **Only Claude Code is really supported.** There is a `codex` adapter and an `opencode` stub,
+  but the only one exercised in anger is `claude`. `codex` builds the right invocation and
+  resumes a thread — that much is tested — but nobody has run a night's queue through it, and
+  the quota rescue (the whole point of this tool) reads Claude Code's wording specifically.
 - **The phone app is Android only.**
 
 ---
@@ -346,18 +348,25 @@ lib/
   run-tui.mjs       the full-screen loop: the clock and the live view
   run-parallel.mjs  the lane loop
   quota.mjs         out-of-quota detection, and when it comes back
+  runner-status.mjs "will anything actually fire?" — asked HERE, by everyone
   cutshort.mjs      YOUR conversations the quota killed — the signal, and the offer
   daemon.mjs        the detached background runner
   chat.mjs          reading session transcripts
-  server.mjs        the HTTP API the phone talks to
+  server.mjs        the HTTP routes the phone talks to
+  server-pair.mjs   pairing: the token, the key, the QR, who is on the other end
+  server-dto.mjs    what the API answers with — shapes, no sockets
   tunnel.mjs        the Cloudflare tunnel
   crypto.mjs        end-to-end sealing (AES-256-GCM)
   qr.mjs            a QR encoder, from scratch — see below
   notify.mjs        knocking on the phone when a launch ends
-  tui.mjs           the guided GUI
+  tui.mjs           the guided GUI: the reducer and the loop
+  tui-keys.mjs      raw stdin bytes → a key name
+  tui-state.mjs     what the GUI is looking at
+  tui-render.mjs    state → the lines to paint (pure)
   ui.mjs            ANSI primitives
 adapters/
   claude.mjs        Claude Code (streams events for the live view)
+  codex.mjs         Codex CLI — opt-in, not verified in anger
   opencode.mjs      stub
   mock.mjs          for tests — costs nothing
 app/                the Android app (Kotlin + Compose)
