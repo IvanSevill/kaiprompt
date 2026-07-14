@@ -25,7 +25,6 @@ class Store(context: Context) {
                 lan = prefs.getString("lan", null),
                 token = token,
                 key = key,
-                host = prefs.getString("host", "?") ?: "?",
                 tunnel = prefs.getBoolean("tunnel", false),
             )
         }
@@ -38,7 +37,10 @@ class Store(context: Context) {
                     putString("lan", p.lan)
                     putString("token", p.token)
                     putString("key", p.key)
-                    putString("host", p.host)
+                    // No `host`. It was the PC's hostname, the compact QR stopped carrying it,
+                    // and what got persisted — and then painted on screen — was the literal
+                    // string "?". The PC's name now comes from /api/state, which always has it.
+                    remove("host")
                     putBoolean("tunnel", p.tunnel)
                 }
             }.apply()

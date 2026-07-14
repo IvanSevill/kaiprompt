@@ -19,7 +19,8 @@ const { patchJob, saveQueue, saveSessions } = await import('../lib/store.mjs');
 const { addJob } = await import('../lib/queue.mjs');
 const { executeJob } = await import('../lib/runner.mjs');
 const {
-  addresses, createServer, pairingPayload, publish, resetToken, serverConfig,
+  addresses, createServer, pairingPayload, publish, resetToken, serverConfig, saveServerConfig,
+  BOOTED_AT, clientList, forgetClients, pairedThisSession, stateDTO,
 } = await import('../lib/server.mjs');
 
 const PORT = 7899;
@@ -203,13 +204,60 @@ test('POST /api/device: el móvil dice dónde avisarle (el webhook PC → móvil
   assert.ok(serverConfig().devices.some((d) => d.name === 'pixel'));
 });
 
-test('POST /api/device sin url: 400 (sin dirección no hay a quién avisar)', async () => {
+// Antes esto era un 400: "sin dirección no hay a quién avisar". Cierto — pero de ahí se
+// seguía que el móvil NO quedaba registrado, y con él se perdía lo único que el PC no puede
+// saber por su cuenta: CÓMO SE LLAMA. El móvil solo sabe construir esa url si conoce su
+// propia IP de la LAN, y con datos móviles y sin wifi no la tiene. Resultado: el móvil se
+// emparejaba de verdad, hablaba con el PC — y el PC seguía sin saber que existía.
+//
+// Ahora la url es opcional: el nombre entra igual. Lo que el 400 protegía de verdad (que
+// nadie llame a una url que no existe) lo garantiza el test de abajo, no el rechazo.
+test('POST /api/device sin url: entra igual — el nombre es lo que no podemos deducir', async () => {
   const r = await fetch(`http://127.0.0.1:${PORT}/api/device`, {
     method: 'POST',
     headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
     body: JSON.stringify({ name: 'sin-url' }),
   });
-  assert.equal(r.status, 400);
+  assert.equal(r.status, 200);
+
+  const dev = serverConfig().devices.find((d) => d.name === 'sin-url');
+  assert.ok(dev, 'el móvil queda registrado aunque no haya dónde llamarle');
+  assert.equal(dev.url, null, 'y consta que no tiene dirección, en vez de inventarse una');
+});
+
+test('un móvil sin url no recibe llamada: no hay a dónde llamar, y no se cuenta como fallo', async () => {
+  const { notifyFinished } = await import('../lib/notify.mjs');
+
+  const conf = serverConfig();
+  conf.devices = [{ url: null, name: 'sin-url', pairedAt: Date.now() }];
+  saveServerConfig(conf);
+
+  // Sin este filtro, fetch(null) revienta dentro del try y el móvil cuenta como "dropped":
+  // un aviso fallido que nunca se intentó mandar.
+  const res = await notifyFinished({ id: 'x1', status: 'done', prompt: 'algo', finishedAt: Date.now() });
+  assert.equal(res.sent, 0);
+  assert.equal(res.dropped, 0, 'no se intentó: no es una entrega perdida');
+
+  conf.devices = [];
+  saveServerConfig(conf);
+});
+
+// --- el nombre: lo pone el móvil, y NUNCA es "?" -------------------------------
+test('el móvil se nombra a sí mismo; sin nombre queda "móvil", jamás "?"', async () => {
+  const post = (body) => fetch(`http://127.0.0.1:${PORT}/api/device`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  await post({ url: 'http://10.0.0.9:8899/job-done', name: '  ' });
+  const dev = serverConfig().devices.find((d) => d.url === 'http://10.0.0.9:8899/job-done');
+  assert.equal(dev.name, 'móvil', 'un nombre en blanco NO se convierte en "?"');
+
+  assert.ok(
+    !serverConfig().devices.some((d) => d.name === '?' || d.name === 'null' || !d.name),
+    'ningún dispositivo se queda sin nombre',
+  );
 });
 
 // --- la vista en vivo ----------------------------------------------------------
@@ -353,4 +401,155 @@ test('fromLoopback: pide las DOS cosas — socket local y Host local', async () 
   assert.equal(fromLoopback(req('127.0.0.1', 'evil.com')), false, 'DNS rebinding');
   assert.equal(fromLoopback(req('192.168.1.50', 'localhost:7777')), false, 'otra máquina de la red');
   assert.equal(fromLoopback(req('127.0.0.1', undefined)), false, 'sin Host no se fía');
+});
+
+// --- BUG 1: el QR no se quitaba nunca ------------------------------------------
+//
+// El QR bajaba cuando apareciese un dispositivo cuya URL no estuviera en la foto hecha al
+// arrancar. Pero la lista de dispositivos PERSISTE entre ejecuciones, el servidor deduplica
+// por NOMBRE, y un túnel rápido da una URL nueva cada vez — o sea que re-emparejas en CADA
+// `kaip serve`, y el móvil se vuelve a registrar con el mismo nombre y la misma IP de LAN que
+// ya tenía. Nada parecía nuevo, así que el QR no bajaba jamás.
+//
+// Solo funcionaba la primerísima vez que emparejabas: justo la única vez en que no ibas a
+// notar que estaba roto.
+test('el QR se quita al emparejar AUNQUE el móvil ya estuviera en la lista de otro día', () => {
+  forgetClients();
+
+  // El móvil de ayer, ya guardado, con la url de siempre. Esto es lo que cegaba al diff.
+  const conf = serverConfig();
+  conf.devices = [{ url: 'http://192.168.1.44:8899/job-done', name: 'pixel', pairedAt: Date.now() - 86_400_000 }];
+  saveServerConfig(conf);
+
+  const arranque = Date.now();
+  assert.equal(pairedThisSession(arranque), null, 'un móvil de ayer NO es un móvil emparejado hoy');
+
+  // Y ahora empareja de verdad: mismo nombre, misma url. El diff de urls no veía nada.
+  const c2 = serverConfig();
+  c2.devices = [{ url: 'http://192.168.1.44:8899/job-done', name: 'pixel', pairedAt: Date.now() }];
+  saveServerConfig(c2);
+
+  const vivo = pairedThisSession(arranque);
+  assert.ok(vivo, 'el QR TIENE que bajar: acaba de emparejarse');
+  assert.equal(vivo.name, 'pixel');
+
+  c2.devices = [];
+  saveServerConfig(c2);
+});
+
+test('las peticiones nuestras no cuentan: un curl desde el PC no es un móvil', async () => {
+  forgetClients();
+  await get('/api/state');                       // desde 127.0.0.1
+  assert.equal(clientList().length, 0, 'loopback no es un dispositivo conectado');
+  assert.equal(pairedThisSession(BOOTED_AT), null, 'y no baja el QR');
+});
+
+// --- BUG 6: "esperando cupo" vs "parado", y los otros tres ----------------------
+//
+// Los dos que importan son `quota` y `stalled`: desde el móvil se ven IGUAL —no se mueve
+// nada— y significan lo contrario. Uno vuelve solo; el otro no va a pasar nunca.
+test('los cinco estados de "qué está pasando ahora"', async () => {
+  const { activityState } = await import('../lib/activity.mjs');
+  const ahora = Date.now();
+
+  const running = activityState({
+    jobs: [{ id: 'a', status: 'running', startedAt: ahora - 60_000, preview: 'los tests' }],
+    willFire: true, now: ahora,
+  });
+  assert.equal(running.state, 'running');
+  assert.equal(running.since, ahora - 60_000, 'y desde cuándo');
+
+  // Cortado por el cupo: el runner le escribió pausedUntil al job y sigue ahí, durmiendo.
+  // ESTE es el que quieres ver. No está roto: está esperando, y vuelve a una hora concreta.
+  const cupo = activityState({
+    jobs: [{ id: 'a', status: 'pending', pausedUntil: ahora + 3_600_000, preview: 'los tests' }],
+    willFire: true, now: ahora,
+  });
+  assert.equal(cupo.state, 'quota');
+  assert.equal(cupo.until, ahora + 3_600_000, 'y CUÁNDO vuelve');
+
+  // Hay cola y NADIE que la drene: lo agendado no se va a lanzar. Este es el que duele.
+  const parado = activityState({
+    jobs: [{ id: 'a', status: 'pending', when: ahora + 60_000 }],
+    willFire: false, now: ahora,
+  });
+  assert.equal(parado.state, 'stalled');
+  assert.equal(parado.scheduled, 1);
+
+  const espera = activityState({
+    jobs: [{ id: 'a', status: 'pending', when: ahora + 60_000 }],
+    willFire: true, now: ahora,
+  });
+  assert.equal(espera.state, 'queued');
+  assert.equal(espera.next, ahora + 60_000);
+
+  assert.equal(activityState({ jobs: [{ id: 'a', status: 'done' }], willFire: true }).state, 'idle');
+});
+
+test('parado gana a esperando-cupo: si el runner murió, ese "vuelve a las 15:42" es mentira', async () => {
+  const { activityState } = await import('../lib/activity.mjs');
+  const ahora = Date.now();
+
+  // El job dice "me reanudo a las 15:42". Lo escribió un runner que ya no está. A las 15:42
+  // no viene nadie: eso no es esperar, es estar tirado.
+  const st = activityState({
+    jobs: [{ id: 'a', status: 'pending', pausedUntil: ahora + 3_600_000 }],
+    willFire: false, now: ahora,
+  });
+  assert.equal(st.state, 'stalled');
+});
+
+test('un pausedUntil ya vencido no deja el estado clavado en "esperando cupo"', async () => {
+  const { activityState } = await import('../lib/activity.mjs');
+  const ahora = Date.now();
+  const st = activityState({
+    jobs: [{ id: 'a', status: 'pending', pausedUntil: ahora - 1000, when: ahora + 5000 }],
+    willFire: true, now: ahora,
+  });
+  assert.equal(st.state, 'queued', 'el cupo ya volvió: esto es cola normal');
+});
+
+test('/api/state trae la franja y lo de Ajustes (túnel, IPs, versión)', () => {
+  const s = stateDTO();
+  assert.ok(s.activity, 'la franja viaja ya derivada: el PC y el móvil no pueden discrepar');
+  assert.ok(['running', 'quota', 'stalled', 'queued', 'idle'].includes(s.activity.state));
+
+  assert.ok(s.server.version, 'la versión del PC');
+  assert.ok(Array.isArray(s.server.clients), 'quién ha hablado con el PC');
+  assert.ok('tunnel' in s.server, 'la URL del túnel');
+});
+
+test('el job lleva pausedUntil: sin él el móvil no distingue "esperando" de "roto"', async () => {
+  const { addJob } = await import('../lib/queue.mjs');
+  const j = addJob({ prompt: 'cortado por el cupo' });
+  j.pausedUntil = Date.now() + 3_600_000;               // justo lo que escribe launch.mjs
+  patchJob(j);
+
+  const dto = stateDTO().jobs.find((x) => x.id === j.id);
+  assert.ok(dto.pausedUntil > Date.now(), 'viaja al móvil');
+});
+
+test('DELETE /api/finished: borra lo terminado y NO toca lo pendiente', async () => {
+  const { addJob } = await import('../lib/queue.mjs');
+  const { loadQueue } = await import('../lib/store.mjs');
+
+  const hecho = addJob({ prompt: 'ya corrió' });
+  hecho.status = 'done';
+  patchJob(hecho);
+  const pendiente = addJob({ prompt: 'aún no' });
+
+  const r = await fetch(`http://127.0.0.1:${PORT}/api/finished`, {
+    method: 'DELETE',
+    headers: { authorization: `Bearer ${token}` },
+  });
+  assert.equal(r.status, 200);
+
+  const ids = loadQueue().map((j) => j.id);
+  assert.ok(!ids.includes(hecho.id), 'lo terminado se va');
+  assert.ok(ids.includes(pendiente.id), 'lo pendiente se queda: eso NO se borra desde el móvil');
+});
+
+test('DELETE /api/finished exige token: no se vacía la cola sin credenciales', async () => {
+  const r = await fetch(`http://127.0.0.1:${PORT}/api/finished`, { method: 'DELETE' });
+  assert.equal(r.status, 401);
 });

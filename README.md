@@ -451,7 +451,7 @@ for it would have broken the only promise this tool makes about itself.
 ## Tests
 
 ```bash
-node --test test/*.test.mjs      # 425 tests, no dependencies
+node --test test/*.test.mjs      # 438 tests, no dependencies
 kaip app test                    # the app's, on the JVM — no emulator
 ```
 

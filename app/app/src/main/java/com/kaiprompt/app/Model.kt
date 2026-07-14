@@ -11,12 +11,28 @@ import org.json.JSONObject
  * never crash the phone — the PC may be running an older kaip than the app.
  */
 
+/**
+ * What the QR carries. Note what it does NOT carry: a name.
+ *
+ * It used to have `host`, the PC's hostname, and when the compact QR dropped the field to
+ * save bytes this class kept a `host` property defaulting to `"?"` — so the `?` was not a
+ * missing value being handled, it was a missing value being RENDERED. It got painted in the
+ * top bar and shipped inside the "no llego a ?" error message.
+ *
+ * There is no `host` any more, and there is nowhere left for a `?` to come from. The two
+ * names that matter each come from the machine that actually knows them:
+ *
+ *   the PC's name      the PC sends it in /api/state (`State.host`)
+ *   the phone's name   the PHONE sends it to the PC in POST /api/device
+ *
+ * which is the natural way round, because the name you want to see on the PC's screen when
+ * it says "✓ paired" is the phone's, and the PC has never had any way to know that.
+ */
 data class Pairing(
     val url: String,
     val lan: String?,
     val token: String,
     val key: String,
-    val host: String,
     val tunnel: Boolean,
 ) {
     companion object {
@@ -32,7 +48,8 @@ data class Pairing(
          * a long tunnel URL pushed it over.
          *
          * Reading both means an app in someone's pocket keeps working against an older PC,
-         * and an older app keeps working against this one.
+         * and an older app keeps working against this one. A long QR may still carry `host`;
+         * we simply ignore it rather than find somewhere to show it.
          */
         fun parse(text: String): Pairing {
             val j = JSONObject(text)
@@ -50,7 +67,6 @@ data class Pairing(
                 lan = (j.optStringOrNull("l") ?: j.optStringOrNull("lan"))?.trimEnd('/'),
                 token = token,
                 key = key,
-                host = j.optString("host", "?"),
                 // Not sent any more: a tunnel is exactly an https address. Derive it.
                 tunnel = j.optBoolean("tunnel", url.startsWith("https://")),
             )
@@ -71,16 +87,21 @@ data class Job(
     val whenAt: Long?,
     val startedAt: Long?,
     val finishedAt: Long?,
+    val pausedUntil: Long?,
     val error: String?,
 ) {
     val running get() = status == "running"
     val pending get() = status == "pending"
     val failed get() = status == "error" || status == "missed"
 
+    /** Cut short by the quota and put back in the queue. It is NOT broken: it resumes. */
+    fun waitingForQuota(now: Long = System.currentTimeMillis()) =
+        pending && (pausedUntil ?: 0) > now
+
     companion object {
         fun parse(j: JSONObject) = Job(
             id = j.getString("id"),
-            status = j.optString("status", "?"),
+            status = j.optString("status", "pending"),
             prompt = j.optStringOrNull("prompt"),
             promptFile = j.optStringOrNull("promptFile"),
             promptError = j.optStringOrNull("promptError"),
@@ -91,8 +112,81 @@ data class Job(
             whenAt = j.optLongOrNull("when"),
             startedAt = j.optLongOrNull("startedAt"),
             finishedAt = j.optLongOrNull("finishedAt"),
+            pausedUntil = j.optLongOrNull("pausedUntil"),
             error = j.optStringOrNull("error"),
         )
+    }
+}
+
+/**
+ * What the PC is doing RIGHT NOW, in one word. Derived on the PC and sent down the wire, so
+ * the terminal panel and this screen cannot drift into telling you different stories.
+ *
+ * The pair that earns this its place at the top of the screen is `quota` and `stalled`. From
+ * a phone they look identical — nothing is moving — and they are opposites:
+ *
+ *   quota    it IS going to run. Sit down. It resumes by itself, at a time we can show you.
+ *   stalled  it is NOT going to run. Nobody is draining the queue. Get up.
+ *
+ * Before this, both showed as "nothing happening", and a person learns to read that as
+ * "broken" — which means on the day it really is broken, they shrug at it.
+ */
+enum class Activity { RUNNING, QUOTA, STALLED, QUEUED, IDLE, UNKNOWN }
+
+data class Now(
+    val activity: Activity,
+    val jobId: String? = null,
+    val preview: String? = null,
+    val since: Long? = null,        // running: since when
+    val until: Long? = null,        // quota: when it comes back — the whole point
+    val next: Long? = null,         // queued: when the next one is due
+    val pending: Int = 0,
+    val scheduled: Int = 0,
+) {
+    companion object {
+        fun parse(j: JSONObject?): Now {
+            if (j == null) return Now(Activity.UNKNOWN)
+            val a = when (j.optString("state")) {
+                "running" -> Activity.RUNNING
+                "quota" -> Activity.QUOTA
+                "stalled" -> Activity.STALLED
+                "queued" -> Activity.QUEUED
+                "idle" -> Activity.IDLE
+                else -> Activity.UNKNOWN
+            }
+            return Now(
+                activity = a,
+                jobId = j.optStringOrNull("jobId"),
+                preview = j.optStringOrNull("preview"),
+                since = j.optLongOrNull("since"),
+                until = j.optLongOrNull("until"),
+                next = j.optLongOrNull("next"),
+                pending = j.optInt("pending"),
+                scheduled = j.optInt("scheduled"),
+            )
+        }
+    }
+}
+
+/** Diagnosis. Everything you only want when something is wrong — so it lives in Settings. */
+data class ServerInfo(
+    val version: String?,
+    val startedAt: Long?,
+    val tunnel: String?,
+    val clients: List<String>,
+) {
+    companion object {
+        fun parse(j: JSONObject?): ServerInfo {
+            val arr = j?.optJSONArray("clients") ?: JSONArray()
+            return ServerInfo(
+                version = j?.optStringOrNull("version"),
+                startedAt = j?.optLongOrNull("startedAt"),
+                tunnel = j?.optStringOrNull("tunnel"),
+                clients = (0 until arr.length()).mapNotNull {
+                    arr.optJSONObject(it)?.optStringOrNull("ip")
+                },
+            )
+        }
     }
 }
 
@@ -112,16 +206,19 @@ data class DaemonState(
     val kind: String? = null,       // "daemon" | "run" | null
     val durable: Boolean = true,
     val pid: Long? = null,
+    val since: Long? = null,        // when whoever holds the queue took it — the uptime
 )
 data class Quota(val freePct: Int?, val resetsAt: Long?, val renewed: Boolean)
 
 data class State(
-    val host: String,
+    val host: String?,
     val jobs: List<Job>,
     val pending: Int,
     val running: Int,
     val daemon: DaemonState,
     val quota: Quota?,
+    val now: Now = Now(Activity.UNKNOWN),
+    val server: ServerInfo = ServerInfo(null, null, null, emptyList()),
 ) {
     /**
      * The question the phone most needs answered, and the one the PC's own GUI kept getting
@@ -150,7 +247,10 @@ data class State(
             val q = j.optJSONObject("quota")
 
             return State(
-                host = j.optString("host", "?"),
+                // Null, not "?". The PC always sends this — but if it ever did not, the honest
+                // answer is "we do not know yet", and the screen says so in its own words. A
+                // "?" is not a value: it is a hole with a face drawn on it.
+                host = j.optStringOrNull("host"),
                 jobs = jobs,
                 pending = counts?.optInt("pending") ?: jobs.count { it.pending },
                 running = counts?.optInt("running") ?: jobs.count { it.running },
@@ -160,6 +260,7 @@ data class State(
                     kind = d?.optStringOrNull("kind"),
                     durable = d?.optBoolean("durable", true) ?: true,
                     pid = d?.optLongOrNull("pid"),
+                    since = d?.optLongOrNull("since"),
                 ),
                 quota = q?.let {
                     Quota(
@@ -168,6 +269,8 @@ data class State(
                         renewed = it.optBoolean("renewed", false),
                     )
                 },
+                now = Now.parse(j.optJSONObject("activity")),
+                server = ServerInfo.parse(j.optJSONObject("server")),
             )
         }
     }

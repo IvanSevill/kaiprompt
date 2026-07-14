@@ -48,6 +48,8 @@ class MainActivity : ComponentActivity() {
     private var chat by mutableStateOf<Chat?>(null)
     private var chatLoading by mutableStateOf(false)
     private var update by mutableStateOf<Update.Available?>(null)
+    private var settings by mutableStateOf(false)
+    private var confirmClear by mutableStateOf(false)
 
     private val scanner = registerForActivityResult(ScanContract()) { result ->
         val text = result.contents ?: return@registerForActivityResult
@@ -91,6 +93,7 @@ class MainActivity : ComponentActivity() {
                     Box(Modifier.fillMaxSize().systemBarsPadding()) {
                         when {
                             pairing == null -> PairScreen()
+                            settings -> SettingsScreen { settings = false }
                             chat != null -> ChatScreen(chat!!) { chat = null }
                             openJob != null -> JobScreen(openJob!!) { openJob = null }
                             else -> QueueScreen()
@@ -126,10 +129,31 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Tell the PC where to knock, so a finished launch shows up at once and not on the next poll. */
+    /**
+     * Introduce this phone to the PC: what it is called, and where to knock when a launch ends.
+     *
+     * The name goes up even when there is no address to knock on. It used to bail out here if
+     * `localAddress()` came back null — which it does on mobile data with no wifi — and the
+     * consequence was not just "no push notifications": the PC never heard from the phone at
+     * all, so it never learnt its name and never counted it as paired. The pairing QR stayed
+     * on screen and the device list showed nothing.
+     */
     private fun announceSelf(p: Pairing) = lifecycleScope.launch(Dispatchers.IO) {
-        val ip = localAddress() ?: return@launch
-        runCatching { Api(p).registerDevice(ListenerService.callbackUrl(ip), Build.MODEL ?: "móvil") }
+        val callback = localAddress()?.let { ListenerService.callbackUrl(it) }
+        runCatching { Api(p).registerDevice(callback, deviceName()) }
+    }
+
+    /** What this phone is called. Never blank, and never "?" — the PC cannot work this out. */
+    private fun deviceName(): String {
+        val model = Build.MODEL?.trim().orEmpty()
+        val brand = Build.MANUFACTURER?.trim().orEmpty()
+        return when {
+            model.isBlank() && brand.isBlank() -> "móvil"
+            model.isBlank() -> brand.replaceFirstChar(Char::uppercase)
+            // "Pixel 7" already says Google; "SM-A536B" does not say Samsung.
+            model.startsWith(brand, ignoreCase = true) || brand.isBlank() -> model
+            else -> "${brand.replaceFirstChar(Char::uppercase)} $model"
+        }
     }
 
     private fun localAddress(): String? = runCatching {
@@ -154,9 +178,16 @@ class MainActivity : ComponentActivity() {
         store.pairing = null
         pairing = null
         state = null
+        settings = false               // it is invoked from inside Settings; do not strand us there
         ListenerService.stop(this)
         CatchUpWorker.cancel(this)
     }
+
+    /** Same source Update.check compares against, so the two can never disagree. */
+    private fun appVersion(): String =
+        runCatching {
+            packageManager.getPackageInfo(packageName, 0).versionName?.trim().orEmpty()
+        }.getOrNull()?.takeIf { it.isNotBlank() } ?: "—"
 
     // ============================== PAIR ==========================================
     @Composable
@@ -258,52 +289,13 @@ class MainActivity : ComponentActivity() {
         Column(Modifier.fillMaxSize()) {
             TopBar(s)
 
-            // The alarm goes above everything, because it is the one thing that silently
-            // makes the whole tool a lie: work scheduled for 3am that nothing will fire.
-            AnimatedVisibility(s?.scheduledButDead == true) {
-                Alarm(
-                    "Nada está procesando la cola",
-                    "Tienes trabajo agendado que NO se va a lanzar. Arráncalo en el PC:",
-                    "kaip daemon start",
-                    K.Err,
-                )
-            }
-
-            // And the opposite mistake, which is the one it was actually making: shouting
-            // that nothing would fire while a `kaip run` was sitting there about to fire it.
-            // It IS running. Say so — and say the one caveat, that it dies with its window.
-            AnimatedVisibility(s?.firesButFragile == true) {
-                Alarm(
-                    "Un «kaip run» está procesando la cola",
-                    "Lo agendado SÍ se va a lanzar. Pero ese run muere si cierras su ventana; " +
-                        "para que sobreviva:",
-                    "kaip daemon start",
-                    K.Warn,
-                )
-            }
-
+            // The "nothing will fire" and "a run is draining it" banners used to live here.
+            // They are worth knowing and they are NOT what you open this app to look at —
+            // they are diagnosis, so they moved into Settings. What survives at the top is the
+            // one line that answers "what is happening", which now includes `Parado`: the
+            // same alarm, said in one word, and visible from across the room.
             AnimatedVisibility(error != null) {
                 Alarm("No llego al PC", error ?: "", "¿Está encendido y con «kaip serve» corriendo?")
-            }
-
-            // Nothing updates a sideloaded APK, so an old one can sit here for weeks quietly
-            // missing whatever got fixed. A notice, not an auto-update: replacing the app
-            // someone is looking at, over their data, is not ours to decide.
-            update?.let { u ->
-                Column(
-                    Modifier.fillMaxWidth().padding(14.dp, 10.dp)
-                        .clip(RoundedCornerShape(11.dp))
-                        .background(K.Accent.copy(alpha = 0.12f))
-                        .clickable { Update.download(this@MainActivity) }
-                        .padding(15.dp),
-                ) {
-                    Text(
-                        "✦  Hay una versión nueva: ${u.version}",
-                        color = K.Accent, fontSize = 13.sp, fontWeight = FontWeight.Bold,
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text("Toca para descargarla.", color = K.Muted, fontSize = 12.sp)
-                }
             }
 
             s?.quota?.let { QuotaStrip(it) }
@@ -339,29 +331,95 @@ class MainActivity : ComponentActivity() {
                         fontSize = 10.sp,
                     )
                     Spacer(Modifier.width(5.dp))
-                    Text(pairing?.host ?: "", color = K.Muted, fontSize = 12.sp)
-
-                    s?.let {
-                        Spacer(Modifier.width(10.dp))
-                        if (it.running > 0) Chip("${it.running} corriendo", K.Accent)
-                        else if (it.pending > 0) Chip("${it.pending} en cola", K.Info)
-                    }
+                    // The PC's name, from the PC. This used to read `pairing.host` — a field
+                    // the compact QR stopped carrying — so it painted a literal "?".
+                    Text(s?.host ?: "…", color = K.Muted, fontSize = 12.sp)
                 }
             }
 
-            IconButton(onClick = { refresh() }) {
-                Text(
-                    "↻",
-                    color = if (loading) K.Accent else K.Muted,
-                    fontSize = 20.sp,
-                    modifier = Modifier.alpha(if (loading) 0.5f else 1f),
-                )
-            }
-            IconButton(onClick = { unpair() }) {
-                Text("⏻", color = K.Muted, fontSize = 16.sp)
+            // One button. The reload was doing what onResume already does, and the unpair —
+            // the single most destructive thing here — sat one mis-tap from everything else.
+            // Both are now inside Settings, where you go on purpose.
+            IconButton(onClick = { settings = true }) {
+                Text("⚙", color = K.Muted, fontSize = 19.sp)
             }
         }
+
+        NowStrip(s?.now ?: Now(Activity.UNKNOWN), s)
         HorizontalDivider(color = K.Line)
+    }
+
+    /**
+     * What is happening, right now. Always on screen, above everything.
+     *
+     * The whole reason this exists is the difference between `Esperando cupo` and `Parado`.
+     * From a phone both look like "nothing is moving", and they are opposites: one comes back
+     * by itself at a time we can print, the other is never going to happen. Without the
+     * distinction you learn to read a still queue as "broken" — and then you shrug at it on
+     * the day it actually is.
+     */
+    @Composable
+    private fun NowStrip(now: Now, s: State?) {
+        val (colour, icon, label) = when (now.activity) {
+            Activity.RUNNING -> Triple(K.Accent, "●", "Ejecutando")
+            Activity.QUOTA -> Triple(K.Warn, "⏸", "Esperando cupo")
+            Activity.STALLED -> Triple(K.Err, "■", "Parado")
+            Activity.QUEUED -> Triple(K.Info, "◷", "En espera")
+            Activity.IDLE -> Triple(K.Ok, "✓", "Al día")
+            Activity.UNKNOWN -> Triple(K.Muted, "·", if (error != null) "Sin conexión" else "…")
+        }
+
+        // What each state owes you underneath — the thing you would otherwise have to walk to
+        // the PC to find out.
+        val detail = when (now.activity) {
+            Activity.RUNNING -> listOfNotNull(
+                now.preview?.take(60),
+                now.since?.let { "desde hace ${elapsed(it)}" },
+            ).joinToString("  ·  ")
+
+            // The time it comes back is the entire message. "Waiting" without a time is
+            // indistinguishable from "hung".
+            Activity.QUOTA -> listOfNotNull(
+                now.until?.let { "vuelve ${relative(it)}" },
+                if (now.pending > 0) "${now.pending} en cola" else null,
+            ).joinToString("  ·  ")
+
+            Activity.STALLED ->
+                "${now.pending} en cola y nadie que los lance. Arranca «kaip daemon start» en el PC."
+
+            Activity.QUEUED -> listOfNotNull(
+                "${now.pending} en cola",
+                now.next?.let { "el próximo, ${relative(it)}" },
+            ).joinToString("  ·  ")
+
+            Activity.IDLE -> "No hay nada pendiente."
+            Activity.UNKNOWN -> error?.takeIf { it.isNotBlank() }?.lines()?.firstOrNull() ?: ""
+        }
+
+        Column(
+            Modifier.fillMaxWidth()
+                .background(colour.copy(alpha = 0.10f))
+                .padding(20.dp, 11.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(icon, color = colour, fontSize = 13.sp)
+                Spacer(Modifier.width(8.dp))
+                Text(label, color = colour, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                if (now.activity == Activity.RUNNING) {
+                    Spacer(Modifier.width(8.dp))
+                    Blink()
+                }
+            }
+            if (detail.isNotBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    detail,
+                    color = K.Text.copy(alpha = 0.75f), fontSize = 12.sp, lineHeight = 16.sp,
+                    maxLines = 2,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                )
+            }
+        }
     }
 
     @Composable
@@ -457,6 +515,229 @@ class MainActivity : ComponentActivity() {
                 "/programar +2h | corre los tests",
                 color = K.Accent, fontSize = 12.sp, fontFamily = FontFamily.Monospace,
                 modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(K.Card).padding(10.dp, 6.dp),
+            )
+        }
+    }
+
+    // ============================== SETTINGS ======================================
+    /**
+     * Everything you want when something is not working, and nothing you want when it is.
+     *
+     * These facts used to be scattered: who was draining the queue shouted from a banner on
+     * the main screen every single launch; the tunnel URL and the connected IPs existed only
+     * on the PC, so answering "is my phone even reaching it?" meant walking to the PC — which
+     * is the exact thing this app is for not having to do.
+     *
+     * They are diagnosis. Diagnosis belongs somewhere you go on purpose.
+     */
+    @Composable
+    private fun SettingsScreen(onBack: () -> Unit) {
+        val s = state
+
+        Column(Modifier.fillMaxSize()) {
+            Row(Modifier.fillMaxWidth().padding(8.dp, 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = onBack) { Text("‹  volver", color = K.Muted, fontSize = 15.sp) }
+                Spacer(Modifier.weight(1f))
+                Text("Ajustes", color = K.Text, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.width(16.dp))
+            }
+            HorizontalDivider(color = K.Line)
+
+            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp)) {
+
+                // Nothing updates a sideloaded APK, so an old one can sit here for weeks
+                // quietly missing whatever got fixed. A notice, not an auto-update: replacing
+                // the app someone is looking at, over their data, is not ours to decide.
+                update?.let { u ->
+                    Column(
+                        Modifier.fillMaxWidth()
+                            .clip(RoundedCornerShape(11.dp))
+                            .background(K.Accent.copy(alpha = 0.12f))
+                            .clickable { Update.download(this@MainActivity) }
+                            .padding(15.dp),
+                    ) {
+                        Text(
+                            "✦  Hay una versión nueva: ${u.version}",
+                            color = K.Accent, fontSize = 13.sp, fontWeight = FontWeight.Bold,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text("Toca para descargarla.", color = K.Muted, fontSize = 12.sp)
+                    }
+                    Spacer(Modifier.height(22.dp))
+                }
+
+                // --- who is draining the queue -------------------------------------------
+                // The one silent way this tool can lie to you: work scheduled for 3am, and
+                // nobody to fire it. Worth knowing; not worth shouting on every screen.
+                Group("Quién está drenando la cola")
+                val d = s?.daemon
+                val who = when {
+                    d == null -> "—"
+                    !d.running -> "Nadie"
+                    d.kind == "daemon" -> "El daemon"
+                    else -> "Un «kaip run»"
+                }
+                val whoColour = when {
+                    d == null -> K.Muted
+                    !d.running -> K.Err
+                    d.durable -> K.Ok
+                    else -> K.Warn          // it fires today, and dies with its window
+                }
+                Fact("ahora mismo", who, whoColour)
+                d?.pid?.let { if (d.running) Fact("pid", "$it") }
+                // Uptime: how long whoever holds the queue has been holding it.
+                d?.since?.let { if (d.running) Fact("lleva corriendo", elapsed(it)) }
+
+                if (d != null && !d.running && s.hasScheduled) {
+                    Spacer(Modifier.height(10.dp))
+                    Note(
+                        "Tienes trabajo agendado que NO se va a lanzar. En el PC:",
+                        "kaip daemon start",
+                        K.Err,
+                    )
+                } else if (d != null && d.running && !d.durable && s.hasScheduled) {
+                    Spacer(Modifier.height(10.dp))
+                    Note(
+                        "Se lanzará — pero ese run muere si cierras su ventana. Para que sobreviva:",
+                        "kaip daemon start",
+                        K.Warn,
+                    )
+                }
+
+                Spacer(Modifier.height(26.dp))
+
+                // --- the connection ------------------------------------------------------
+                Group("La conexión")
+                Fact("PC", s?.host ?: "—")
+                Fact("túnel", s?.server?.tunnel ?: (if (pairing?.tunnel == true) "—" else "sin túnel (wifi)"))
+                Fact("esta app usa", pairing?.url ?: "—")
+
+                // Who has actually talked to the PC. The answer to "is my phone even getting
+                // through?" — which you cannot otherwise ask from the phone.
+                Spacer(Modifier.height(10.dp))
+                Text("IPS CONECTADAS", color = K.Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+                Spacer(Modifier.height(6.dp))
+                val ips = s?.server?.clients.orEmpty()
+                if (ips.isEmpty()) {
+                    Text("Nadie ha hablado con el PC en esta sesión.", color = K.Muted, fontSize = 12.sp)
+                } else {
+                    ips.forEach {
+                        Text("· $it", color = K.Text, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                    }
+                }
+
+                Spacer(Modifier.height(26.dp))
+
+                // --- versions ------------------------------------------------------------
+                Group("Versiones")
+                Fact("app", appVersion())
+                Fact("PC (kaip)", s?.server?.version ?: "—")
+                s?.server?.startedAt?.let { Fact("serve lleva", elapsed(it)) }
+
+                Spacer(Modifier.height(30.dp))
+
+                // --- the destructive half ------------------------------------------------
+                Group("Limpieza")
+                Text(
+                    "Borra los lanzamientos que ya han terminado (hechos, fallidos y perdidos). " +
+                        "Lo pendiente no se toca.",
+                    color = K.Muted, fontSize = 12.sp, lineHeight = 17.sp,
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedButton(
+                    onClick = { confirmClear = true },
+                    modifier = Modifier.fillMaxWidth().height(46.dp),
+                    shape = RoundedCornerShape(11.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = K.Err),
+                ) {
+                    Text("Borrar todos los terminados", fontSize = 14.sp)
+                }
+
+                Spacer(Modifier.height(14.dp))
+                TextButton(
+                    onClick = { unpair() },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Desemparejar este móvil", color = K.Muted, fontSize = 13.sp)
+                }
+
+                Spacer(Modifier.height(50.dp))
+            }
+        }
+
+        // Confirmation, because it is not undoable and there is no bin to fish it out of.
+        if (confirmClear) {
+            AlertDialog(
+                onDismissRequest = { confirmClear = false },
+                containerColor = K.Card,
+                title = { Text("¿Borrar los terminados?", color = K.Text, fontSize = 17.sp) },
+                text = {
+                    Text(
+                        "Desaparecen del historial, con su conversación. Esto no se puede deshacer. " +
+                            "Lo que está pendiente o corriendo se queda como está.",
+                        color = K.Muted, fontSize = 13.sp, lineHeight = 18.sp,
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = { confirmClear = false; clearFinished() }) {
+                        Text("Borrar", color = K.Err, fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { confirmClear = false }) {
+                        Text("Cancelar", color = K.Muted)
+                    }
+                },
+            )
+        }
+    }
+
+    private fun clearFinished() {
+        val p = pairing ?: return
+        lifecycleScope.launch {
+            val r = withContext(Dispatchers.IO) { runCatching { Api(p).clearFinished() } }
+            r.onSuccess { refresh() }
+                .onFailure { error = it.message ?: "No pude borrarlos." }
+        }
+    }
+
+    @Composable
+    private fun Group(title: String) {
+        Text(
+            title.uppercase(),
+            color = K.Accent, fontSize = 10.sp,
+            fontWeight = FontWeight.Bold, letterSpacing = 1.sp,
+        )
+        Spacer(Modifier.height(10.dp))
+    }
+
+    @Composable
+    private fun Fact(k: String, v: String, colour: Color = K.Text) {
+        Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+            Text(k, color = K.Muted, fontSize = 12.sp, modifier = Modifier.width(104.dp))
+            Text(
+                v,
+                color = colour, fontSize = 12.sp, fontFamily = FontFamily.Monospace,
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+
+    @Composable
+    private fun Note(body: String, cmd: String, colour: Color) {
+        Column(
+            Modifier.fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(colour.copy(alpha = 0.12f))
+                .padding(13.dp),
+        ) {
+            Text(body, color = K.Text.copy(alpha = 0.85f), fontSize = 12.sp, lineHeight = 17.sp)
+            Spacer(Modifier.height(7.dp))
+            Text(
+                cmd,
+                color = K.Accent, fontSize = 12.sp, fontFamily = FontFamily.Monospace,
+                modifier = Modifier.clip(RoundedCornerShape(6.dp))
+                    .background(K.Bg.copy(alpha = 0.5f)).padding(8.dp, 5.dp),
             )
         }
     }

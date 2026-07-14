@@ -44,3 +44,55 @@ test('una ruta con ESPACIOS se entrecomilla (cloudflared vive en "Program Files 
     },
   );
 });
+
+// --- BUG 2: el movil no conectaba a la primera, y al rato si -------------------
+//
+// cloudflared imprime la URL cuando Cloudflare se la ASIGNA, no cuando su edge ya sabe
+// enrutarla. Durante unos segundos ese dominio existe en DNS y contesta 502: la ruta todavia
+// no esta montada.
+//
+// El QR se pintaba justo ahi. Y tu estas delante con el movil en la mano, asi que la
+// PRIMERISIMA peticion que hace la app cae dentro de ese hueco. Falla, y parece un
+// emparejamiento roto en vez de un tunel que aun no estaba. Esperas, reintentas, y va.
+//
+// Por eso ahora se le pregunta al tunel ANTES de repartir el QR.
+test('waitForTunnel no da el visto bueno hasta que la URL contesta de verdad', async () => {
+  const { waitForTunnel } = await import('../lib/tunnel.mjs');
+
+  // Los dos primeros intentos: 502. El edge todavia no enruta. Justo el hueco del bug.
+  const respuestas = [
+    { ok: false, status: 502 },
+    { ok: false, status: 502 },
+    { ok: true, status: 200 },
+  ];
+  const pedidas = [];
+  const fetchFn = async (url) => { pedidas.push(url); return respuestas.shift(); };
+
+  const r = await waitForTunnel('https://algo.trycloudflare.com', {
+    fetchFn,
+    sleep: async () => {},
+    timeoutMs: 30_000,
+  });
+
+  assert.equal(r.ok, true);
+  assert.equal(r.attempts, 3, 'insiste hasta que contesta: no se cree el primer 502');
+  assert.ok(
+    pedidas.every((u) => u === 'https://algo.trycloudflare.com/api/ping'),
+    'sondea /api/ping, que es el unico endpoint sin token: prueba el camino entero',
+  );
+});
+
+test('waitForTunnel se rinde sin romper: mejor un QR con reintento que ningun QR', async () => {
+  const { waitForTunnel } = await import('../lib/tunnel.mjs');
+
+  let t = 0;
+  const r = await waitForTunnel('https://muerto.trycloudflare.com', {
+    fetchFn: async () => { throw new Error('getaddrinfo ENOTFOUND'); },
+    sleep: async () => { t += 1000; },
+    now: () => t,
+    timeoutMs: 3000,
+  });
+
+  assert.equal(r.ok, false);
+  assert.match(r.error, /ENOTFOUND/, 'dice POR QUE no contesta');
+});

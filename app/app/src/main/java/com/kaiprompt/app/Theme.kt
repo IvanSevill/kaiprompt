@@ -165,3 +165,20 @@ fun relative(ms: Long, now: Long = System.currentTimeMillis()): String {
 }
 
 fun clock(ms: Long): String = SimpleDateFormat("d MMM · HH:mm", Locale.getDefault()).format(Date(ms))
+
+/**
+ * How long something has been going: "3h 12m". A bare duration, with no "hace" on the front.
+ *
+ * `relative()` would say "hace 3h 12m", which reads as *when it started* rather than *how
+ * long it has been running* — and next to a label like "lleva corriendo" it comes out as
+ * "lleva corriendo hace 3h".
+ */
+fun elapsed(since: Long, now: Long = System.currentTimeMillis()): String {
+    val s = abs(now - since) / 1000
+    return when {
+        s < 60 -> "${s}s"
+        s < 3600 -> "${s / 60} min"
+        s < 86400 -> "${s / 3600}h ${(s % 3600) / 60}m"
+        else -> "${s / 86400}d ${(s % 86400) / 3600}h"
+    }
+}

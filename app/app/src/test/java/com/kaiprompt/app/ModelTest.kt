@@ -193,4 +193,131 @@ class ModelTest {
     fun `un QR sin clave se rechaza (media pareja no sirve de nada)`() {
         Pairing.parse("""{"v":1,"u":"https://x.com","t":"tok"}""")
     }
+
+    // --- BUG 3: el nombre que salia "?" ------------------------------------------
+    //
+    // El QR compacto dejo de llevar `host`, pero Pairing seguia teniendo un campo `host` que
+    // por defecto valia "?". Asi que el "?" no era un hueco gestionado: era un hueco PINTADO.
+    // Salia en la barra de arriba, y salia dentro del mensaje de error ("no llego a ?").
+    //
+    // Ya no existe el campo. El nombre del PC viene de /api/state, que siempre lo manda; el
+    // del movil lo manda el movil. Cada nombre, de la maquina que lo sabe.
+
+    @Test
+    fun `el emparejamiento ya no acarrea ningun nombre que pintar`() {
+        // Si `host` volviera a existir en Pairing, esto no compila. Ese es el punto.
+        val campos = Pairing::class.java.declaredFields.map { it.name }
+        assertFalse("Pairing no puede volver a tener un host que valga \"?\"", campos.contains("host"))
+    }
+
+    @Test
+    fun `el QR largo trae host y da igual, no se guarda ni se pinta`() {
+        // Compatibilidad: un PC viejo sigue mandando "host". Se ignora, no se rechaza.
+        val p = Pairing.parse("""{"v":1,"url":"http://192.168.1.5:7777","token":"t","key":"k","host":"MI-PC"}""")
+        assertEquals("http://192.168.1.5:7777", p.url)
+    }
+
+    @Test
+    fun `el nombre del PC sale de api-state, que siempre lo manda`() {
+        assertEquals("MI-PC", State.parse(estado).host)
+    }
+
+    @Test
+    fun `un job sin status no se queda en "?"`() {
+        // status caia a "?" por defecto y se pintaba tal cual en la tarjeta del job.
+        val j = State.parse("""{"host":"X","jobs":[{"id":"j1"}]}""").jobs[0]
+        assertEquals("pending", j.status)
+        assertTrue(j.pending)
+    }
+
+    // --- BUG 6: los cinco estados de la franja de arriba --------------------------
+    //
+    // Los derivamos en el PC y viajan ya hechos, para que el panel del terminal y esta
+    // pantalla no puedan contarte historias distintas. Aqui se comprueba que llegan enteros.
+    //
+    // La pareja que justifica todo esto es `quota` y `stalled`: desde el movil se ven IGUAL
+    // —no se mueve nada— y significan lo contrario.
+
+    private fun conActividad(a: String) =
+        State.parse("""{"host":"X","jobs":[],"activity":$a}""").now
+
+    @Test
+    fun `ejecutando - con que job y desde cuando`() {
+        val n = conActividad("""{"state":"running","jobId":"j1","preview":"los tests","since":1700000000000}""")
+        assertEquals(Activity.RUNNING, n.activity)
+        assertEquals("los tests", n.preview)
+        assertEquals(1700000000000L, n.since)
+    }
+
+    @Test
+    fun `esperando cupo - y CUANDO vuelve`() {
+        // El dato entero: sin la hora de vuelta, "esperando" es indistinguible de "colgado".
+        val n = conActividad("""{"state":"quota","jobId":"j1","until":1700003600000,"pending":3}""")
+        assertEquals(Activity.QUOTA, n.activity)
+        assertEquals(1700003600000L, n.until)
+        assertEquals(3, n.pending)
+    }
+
+    @Test
+    fun `parado - hay cola y NADIE que la drene`() {
+        val n = conActividad("""{"state":"stalled","pending":2,"scheduled":2}""")
+        assertEquals(Activity.STALLED, n.activity)
+        assertEquals(2, n.scheduled)
+    }
+
+    @Test
+    fun `en espera - hay cola y hay quien la drene`() {
+        val n = conActividad("""{"state":"queued","pending":1,"next":1700000600000}""")
+        assertEquals(Activity.QUEUED, n.activity)
+        assertEquals(1700000600000L, n.next)
+    }
+
+    @Test
+    fun `al dia - no hay nada pendiente`() {
+        assertEquals(Activity.IDLE, conActividad("""{"state":"idle","pending":0}""").activity)
+    }
+
+    @Test
+    fun `un PC viejo que no manda la franja no la inventa`() {
+        // UNKNOWN se pinta como "…", no como "Al día". Decir "todo en orden" cuando no lo
+        // sabemos es exactamente la mentira que este proyecto se dedica a no contar.
+        assertEquals(Activity.UNKNOWN, State.parse("""{"host":"X","jobs":[]}""").now.activity)
+    }
+
+    @Test
+    fun `un job cortado por el cupo lo dice el propio job`() {
+        val ahora = System.currentTimeMillis()
+        val j = State.parse(
+            """{"host":"X","jobs":[{"id":"j1","status":"pending","pausedUntil":${ahora + 3_600_000}}]}"""
+        ).jobs[0]
+        assertTrue(j.waitingForQuota(ahora))
+
+        // Y cuando el cupo ya volvio, deja de estarlo: no se queda clavado.
+        assertFalse(j.waitingForQuota(ahora + 7_200_000))
+    }
+
+    // --- Ajustes ------------------------------------------------------------------
+    @Test
+    fun `ajustes trae el tunel, las IPs conectadas y las versiones`() {
+        val s = State.parse(
+            """
+            {"host":"MI-PC","jobs":[],
+             "daemon":{"running":true,"kind":"daemon","durable":true,"pid":123,"since":1700000000000},
+             "server":{"version":"2.0.0","startedAt":1700000000000,
+                       "tunnel":"https://algo.trycloudflare.com",
+                       "clients":[{"ip":"192.168.1.44","calls":9},{"ip":"10.0.0.2","calls":1}]}}
+            """
+        )
+        assertEquals("https://algo.trycloudflare.com", s.server.tunnel)
+        assertEquals(listOf("192.168.1.44", "10.0.0.2"), s.server.clients)
+        assertEquals("2.0.0", s.server.version)
+        assertEquals(1700000000000L, s.daemon.since)   // cuanto lleva corriendo quien drena
+    }
+
+    @Test
+    fun `sin tunel (modo wifi) Ajustes no se inventa una direccion`() {
+        val s = State.parse("""{"host":"X","jobs":[],"server":{"version":"2.0.0","tunnel":null,"clients":[]}}""")
+        assertNull(s.server.tunnel)
+        assertTrue(s.server.clients.isEmpty())
+    }
 }

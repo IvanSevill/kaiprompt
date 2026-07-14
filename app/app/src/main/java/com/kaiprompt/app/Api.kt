@@ -34,9 +34,31 @@ class Api(private val pairing: Pairing) {
 
     fun chat(ref: String): Chat = Chat.parse(get("/api/job/$ref/chat"))
 
-    /** Tell the PC where to knock when a launch finishes. */
-    fun registerDevice(url: String, name: String) {
-        post("/api/device", """{"url":${quote(url)},"name":${quote(name)}}""")
+    /**
+     * Introduce this phone to the PC: its NAME, and — if we have one — where to knock.
+     *
+     * The name is the point, and it can only come from here. The PC has no way to know what
+     * your handset is called, which is why it used to render a `?` wherever a device name
+     * belonged.
+     *
+     * The url is nullable on purpose. It is built from this phone's own LAN address, and on
+     * mobile data with no wifi there simply is not one. The PC used to reject a registration
+     * with no url (400), so on 4G the phone paired, worked fine, and stayed anonymous — and
+     * the PC never even registered that it existed. Now the name goes up regardless; a phone
+     * with no callback still gets its news from the 15-minute catch-up poll.
+     */
+    fun registerDevice(url: String?, name: String) {
+        val u = if (url == null) "null" else quote(url)
+        post("/api/device", """{"url":$u,"name":${quote(name)}}""")
+    }
+
+    /** Wipe everything that has already run. The one destructive thing the phone can do. */
+    fun clearFinished() {
+        attempt { base ->
+            val c = open("$base/api/finished")
+            c.requestMethod = "DELETE"
+            readBody(c)
+        }
     }
 
     /** Is the PC even on? The only call that needs no token. */

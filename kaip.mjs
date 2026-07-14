@@ -59,6 +59,13 @@ async function cmdAdd({ flags, pos, engine }) {
       + '\n  the other says "at this time". Pick one.');
   }
 
+  const model = flags.model === undefined ? null : (() => {
+    if (typeof flags.model !== 'string' || !flags.model.trim()) {
+      throw new Error('--model needs a value (for example: --model sonnet)');
+    }
+    return flags.model.trim();
+  })();
+
   const job = addJob({
     prompt,
     from,
@@ -67,6 +74,7 @@ async function cmdAdd({ flags, pos, engine }) {
     dir: typeof flags.dir === 'string' ? flags.dir : null,
     perm: typeof flags.perm === 'string' ? flags.perm : null,       // null → bypass
     adapter: typeof flags.adapter === 'string' ? flags.adapter : (engine || 'claude'),
+    model,
     session: typeof flags.session === 'string' ? flags.session : null,
     priority: Boolean(flags.first),
   });
@@ -403,13 +411,28 @@ async function cmdServe({ flags }) {
     console.log(c.muted('\n  solo wifi: sin túnel, sin Cloudflare, sin terceros.'));
     console.log(c.muted('  el móvil tiene que estar en tu misma red.'));
   } else {
-    const { startTunnel, TunnelError } = await import('./lib/tunnel.mjs');
+    const { startTunnel, TunnelError, waitForTunnel } = await import('./lib/tunnel.mjs');
     process.stdout.write(c.muted('  abriendo el túnel de Cloudflare… '));
     try {
       const { url } = await startTunnel(port);
       await saveLastUrl(url);
       console.log(c.ok('listo'));
       console.log(c.muted('  fuera:    ') + c.accent(url) + c.muted('   ← funciona desde cualquier red'));
+
+      // cloudflared prints the URL when Cloudflare ASSIGNS it, not when its edge routes to
+      // it — and for the next few seconds that address answers 502. The QR used to go up
+      // right here, so the first thing the phone ever did was knock on a door that did not
+      // exist yet: it failed, you retried a minute later, and it worked. Ask the tunnel
+      // ourselves first, and hand out the code only once it has actually answered.
+      process.stdout.write(c.muted('  esperando a que el túnel responda… '));
+      const ready = await waitForTunnel(url);
+      if (ready.ok) {
+        console.log(c.ok('responde'));
+      } else {
+        console.log(c.warn('sin respuesta todavía'));
+        console.log(c.muted(`  (${ready.error}) — te doy el QR igual; si el móvil falla, reintenta en unos segundos.`));
+      }
+
       console.log(c.muted('\n  va cifrado extremo a extremo: Cloudflare mueve bytes que no puede leer.'));
       console.log(c.muted('  ¿lo quieres sin Cloudflare? → ') + c.accent('kaip serve --wifi'));
     } catch (e) {
@@ -430,19 +453,27 @@ async function cmdServe({ flags }) {
 }
 
 /**
- * The pairing QR: where to connect, the token, and the key that makes the tunnel safe.
+ * The pairing QR — and what replaces it the moment it has done its job.
  *
- * It takes the screen back the moment the phone actually pairs. A QR left up after it has
- * done its job is not neutral — it is a secret sitting on your monitor, and the natural
- * thing to do with a code you no longer need is to stop looking at it, not to keep it
- * displayed while you go and make coffee.
+ * There are exactly two things this screen can usefully be, and never both at once:
+ *
+ *   no phone   the QR is the only thing that matters. Nothing else on screen competes.
+ *   a phone    the QR is over. It is a secret sitting on your monitor with nothing left to
+ *              do, and the screen's job becomes telling you what the machine is doing.
+ *
+ * It used to get stuck on the first one forever. It watched for a device whose URL was not
+ * in the list at boot — but the device list persists across runs, the server dedupes by name,
+ * and a quick tunnel hands out a new URL every time, so you re-pair on EVERY `kaip serve`
+ * and your phone re-registers under the name and LAN address it already had. Nothing looked
+ * new, so the QR never came down. It only ever worked the very first time you paired, which
+ * is precisely the one time you would not notice it was broken.
+ *
+ * Now the signal is time, not identity: has anyone talked to THIS server since it started?
  */
 async function showPairing(port) {
-  const { pairingCompact, serverConfig } = await import('./lib/server.mjs');
+  const { pairingCompact, serverConfig, BOOTED_AT, pairedThisSession } = await import('./lib/server.mjs');
   const { render } = await import('./lib/qr.mjs');
   const { hardClear } = await import('./lib/ui.mjs');
-
-  const before = (serverConfig().devices ?? []).map((d) => d.url);
 
   // The COMPACT payload: a terminal draws each module as half a character cell, so the code
   // ends up a couple of centimetres across and the camera has to resolve every module out of
@@ -463,23 +494,68 @@ async function showPairing(port) {
   console.log(c.muted('  la escaneas de tu propia pantalla, así que Cloudflare nunca la ve.'));
   console.log(c.muted('\n  ¿aún no tienes la app? → ') + c.accent('kaip mobile'));
 
-  if (before.length) console.log(c.muted('\n  ya emparejados: ') + before.length);
-
-  // Watch for the phone announcing itself. It registers a callback URL the instant it
-  // pairs, so a new device in the config IS the handshake completing.
-  const timer = setInterval(() => {
-    const now = serverConfig().devices ?? [];
-    const fresh = now.find((d) => !before.includes(d.url));
-    if (!fresh) return;
+  const timer = setInterval(async () => {
+    const paired = pairedThisSession(BOOTED_AT);
+    if (!paired) return;
 
     clearInterval(timer);
-    hardClear();
-    console.log(c.bold(c.accent('  ✦ kaip')) + c.muted('  ·  servidor en marcha\n'));
-    console.log(c.ok(`  ✓ ${fresh.name} emparejado`) + c.muted('  — el QR ya no hace falta.\n'));
-    console.log(c.muted('  te avisará al móvil cuando termine un lanzamiento.'));
-    console.log(c.muted('  Ctrl+C para parar.'));
+    await livePanel(port, paired);
   }, 1000);
   timer.unref?.();
+}
+
+/**
+ * What the screen becomes once a phone is on the other end: not a code to scan, but the
+ * answer to "what is happening?" — the same five states the phone shows, from the same
+ * derivation, so the two screens cannot tell you different stories.
+ */
+async function livePanel(port, paired) {
+  const { stateDTO } = await import('./lib/server.mjs');
+  const { hardClear } = await import('./lib/ui.mjs');
+  const { fmt, humanDur } = await import('./lib/time.mjs');
+
+  const LABEL = {
+    running: () => c.accent('● ejecutando'),
+    quota: () => c.warn('⏸ esperando cupo'),
+    stalled: () => c.err('■ parado'),
+    queued: () => c.info('◷ en espera'),
+    idle: () => c.ok('✓ al día'),
+  };
+
+  const draw = () => {
+    const s = stateDTO();
+    const a = s.activity;
+
+    hardClear();
+    console.log(c.bold(c.accent('  ✦ kaip')) + c.muted('  ·  servidor en marcha\n'));
+    console.log(c.ok(`  ✓ ${paired.name ?? 'un móvil'} emparejado`) + c.muted('  — el QR ya no hace falta.\n'));
+
+    console.log('  ' + (LABEL[a.state] ?? LABEL.idle)());
+
+    // The detail under each state is the thing you would have to go and look up otherwise.
+    if (a.state === 'running') {
+      console.log(c.muted(`     ${a.preview ?? a.jobId}`));
+      if (a.since) console.log(c.muted(`     desde hace ${humanDur(Date.now() - a.since)}`));
+    } else if (a.state === 'quota') {
+      // The whole point of telling these two apart: this one is NOT broken. It comes back.
+      console.log(c.muted(`     vuelve ${fmt(a.until)}`) + c.muted(`  ·  ${a.pending} en cola`));
+    } else if (a.state === 'stalled') {
+      console.log(c.err(`     ${a.pending} en cola y nadie que los lance.`));
+      console.log(c.muted('     arráncalo:  ') + c.accent('kaip daemon start'));
+    } else if (a.state === 'queued') {
+      console.log(c.muted(`     ${a.pending} en cola`) + (a.next ? c.muted(`  ·  el próximo, ${fmt(a.next)}`) : ''));
+    }
+
+    if (s.server.tunnel) console.log(c.muted(`\n  túnel:  ${s.server.tunnel}`));
+    const ips = s.server.clients.map((x) => x.ip).join(', ');
+    if (ips) console.log(c.muted(`  desde:  ${ips}`));
+
+    console.log(c.muted('\n  te avisará al móvil cuando termine un lanzamiento.'));
+    console.log(c.muted('  Ctrl+C para parar.'));
+  };
+
+  draw();
+  setInterval(draw, 2000).unref?.();
 }
 
 
@@ -523,18 +599,18 @@ const HELP = `kaip — portable prompt queue for Claude Code (and opencode later
 Usage:
   kaip                       open the guided GUI (needs a terminal)
   kaip <engine> <subcommand> [args]
-  <engine> = claude | opencode   (optional; defaults to claude)
+  <engine> = claude | codex | opencode   (optional; defaults to claude)
 
 Queue:
   add "<prompt>"              queue a launch  [--at <when>] [--target <n>] [--dir <project>]
-                              [--perm <mode>] [--session <id>] [--first]
+                              [--perm <mode>] [--model <name>] [--session <id>] [--first]
   add --from <path>           the prompt lives in a FILE, read at launch — keep editing it
                               until the second it goes out  (--file pastes it in NOW instead)
   add ... --first             jump the queue: runs before everything, as soon as there is
                               quota. Nobody else's time moves. Cannot be used with --at.
   list [--full|-f]            the queue, with status
   show <id>                   the job AND the whole conversation it had
-  edit <id>                   change a pending job (--prompt --from --at --target --dir --perm)
+  edit <id>                   change a pending job (--prompt --from --at --target --dir --perm --model)
   rm <id> [<id>...]           remove jobs
   clear                       clear finished/error entries
 
