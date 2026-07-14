@@ -564,27 +564,32 @@ async function showPairing(port, devices = 1) {
   // ends up a couple of centimetres across and the camera has to resolve every module out of
   // that. Sixty bytes off the payload is two QR versions off the grid, and that is the
   // difference between "scans" and "worked yesterday, doesn't today".
-  const p = pairingCompact(port, serverConfig().publicUrl || null);
+  const drawQR = () => {
+    const p = pairingCompact(port, serverConfig().publicUrl || null);
+    console.log('\n' + c.bold('  scan this FROM the app') + c.muted(`  — ${devices === 1 ? 'to pair it with this PC' : `waiting for ${devices} devices`}\n`));
+    console.log(render(JSON.stringify(p)).replace(/^/gm, '  '));
+    console.log(c.muted('\n  camera not picking it up? open it BIG in the browser:'));
+    console.log('  ' + c.accent(`http://localhost:${port}/pair`));
+    console.log(c.muted('\n  the encryption key travels INSIDE that code, not through the tunnel:'));
+    console.log(c.muted('  you scan it off your own screen, so Cloudflare never sees it.'));
+    console.log(c.muted('\n  no app yet? → ') + c.accent('kaip mobile'));
+    console.log(c.muted('\n  Ctrl+C to stop the server.'));
+  };
 
-  console.log('\n' + c.bold('  scan this FROM the app') + c.muted(`  — ${devices === 1 ? 'to pair it with this PC' : `waiting for ${devices} devices`}\n`));
-  console.log(render(JSON.stringify(p)).replace(/^/gm, '  '));
-
-  // And the escape hatch, because a terminal QR is always going to be the hard way to read
-  // one: the same code in a browser, ten times the size, scans every time.
-  console.log(c.muted('\n  camera not picking it up? open it BIG in the browser:'));
-  console.log('  ' + c.accent(`http://localhost:${port}/pair`));
-
-  // The key is why the tunnel is safe, and why it must go by QR and not down the wire.
-  console.log(c.muted('\n  the encryption key travels INSIDE that code, not through the tunnel:'));
-  console.log(c.muted('  you scan it off your own screen, so Cloudflare never sees it.'));
-  console.log(c.muted('\n  no app yet? → ') + c.accent('kaip mobile'));
-
-  const timer = setInterval(async () => {
+  let mode = 'pairing';
+  drawQR();
+  setInterval(() => {
     const paired = pairedThisSession(BOOTED_AT, devices);
-    if (!paired) return;
-
-    clearInterval(timer);
-    await livePanel(port, paired);
+    if (!paired) {
+      if (mode !== 'pairing') {
+        mode = 'pairing';
+        hardClear();
+        drawQR();
+      }
+      return;
+    }
+    mode = 'connected';
+    drawLivePanel(port, paired);
   }, 1000);
 }
 
@@ -593,7 +598,7 @@ async function showPairing(port, devices = 1) {
  * answer to "what is happening?" — the same five states the phone shows, from the same
  * derivation, so the two screens cannot tell you different stories.
  */
-async function livePanel(port, paired) {
+async function drawLivePanel(port, paired) {
   const { stateDTO } = await import('./lib/server.mjs');
   const { hardClear } = await import('./lib/ui.mjs');
   const { fmt, humanDur } = await import('./lib/time.mjs');
@@ -606,40 +611,35 @@ async function livePanel(port, paired) {
     idle: () => c.ok('✓ nothing pending'),
   };
 
-  const draw = () => {
-    const s = stateDTO();
-    const a = s.activity;
+  const s = stateDTO();
+  const a = s.activity;
 
-    hardClear();
-    console.log(c.bold(c.accent('  ✦ kaip')) + c.muted('  ·  server up\n'));
-    console.log(c.ok(`  ✓ ${paired.name ?? 'a phone'} paired`) + c.muted('  — the QR is done with.\n'));
+  hardClear();
+  console.log(c.bold(c.accent('  ✦ kaip')) + c.muted('  ·  server up\n'));
+  console.log(c.ok(`  ✓ ${paired.name ?? 'a phone'} paired`) + c.muted('  — the QR is done with.\n'));
 
-    console.log('  ' + (LABEL[a.state] ?? LABEL.idle)());
+  console.log('  ' + (LABEL[a.state] ?? LABEL.idle)());
 
     // The detail under each state is the thing you would have to go and look up otherwise.
-    if (a.state === 'running') {
+  if (a.state === 'running') {
       console.log(c.muted(`     ${a.preview ?? a.jobId}`));
       if (a.since) console.log(c.muted(`     for ${humanDur(Date.now() - a.since)}`));
-    } else if (a.state === 'quota') {
+  } else if (a.state === 'quota') {
       // The whole point of telling these two apart: this one is NOT broken. It comes back.
       console.log(c.muted(`     back at ${fmt(a.until)}`) + c.muted(`  ·  ${a.pending} queued`));
-    } else if (a.state === 'stalled') {
+  } else if (a.state === 'stalled') {
       console.log(c.err(`     ${a.pending} in the queue and nothing to launch them.`));
       console.log(c.muted('     start it:  ') + c.accent('kaip daemon start'));
-    } else if (a.state === 'queued') {
+  } else if (a.state === 'queued') {
       console.log(c.muted(`     ${a.pending} queued`) + (a.next ? c.muted(`  ·  next at ${fmt(a.next)}`) : ''));
-    }
+  }
 
-    if (s.server.tunnel) console.log(c.muted(`\n  tunnel:  ${s.server.tunnel}`));
-    const ips = s.server.clients.map((x) => x.ip).join(', ');
-    if (ips) console.log(c.muted(`  from:    ${ips}`));
+  if (s.server.tunnel) console.log(c.muted(`\n  tunnel:  ${s.server.tunnel}`));
+  const ips = s.server.clients.map((x) => x.ip).join(', ');
+  if (ips) console.log(c.muted(`  from:    ${ips}`));
 
-    console.log(c.muted('\n  it will notify your phone when a launch ends.'));
-    console.log(c.muted('  Ctrl+C to stop.'));
-  };
-
-  draw();
-  setInterval(draw, 2000);
+  console.log(c.muted('\n  unpairing returns to the QR; the server stays up.'));
+  console.log(c.muted('  Ctrl+C to stop.'));
 }
 
 

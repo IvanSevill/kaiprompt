@@ -8,6 +8,11 @@ import { fileURLToPath } from 'node:url';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-tui-'));
 process.env.KAIP_HOME = TMP;
+process.env.CODEX_HOME = path.join(TMP, 'codex');
+fs.mkdirSync(process.env.CODEX_HOME, { recursive: true });
+fs.writeFileSync(path.join(process.env.CODEX_HOME, 'models_cache.json'), JSON.stringify({
+  models: [{ slug: 'gpt-test-codex', priority: 1, visibility: 'list' }],
+}));
 // Adding a job with a time arms the daemon (that is the whole point). Not here: a test
 // cannot leave background processes alive. That it really does arm it is proved in
 // daemon.test.mjs.
@@ -262,8 +267,8 @@ test('a: the wizard edits fields with ↑↓ and validates the complete form wit
   s = press(s, ['down']).state;                        // empty folder → the current one
   assert.equal(s.wizard.step, 4, 'engine step');
   assert.equal(s.wizard.values.engine, 'claude');
-  s = press(s, ['down', 'down', 'down']).state;        // provider and model are optional for Claude
-  assert.equal(s.wizard.step, 7, 'last step: permissions');
+  s = press(s, ['down', 'down']).state;                // provider is absent; model is optional
+  assert.equal(s.wizard.step, 6, 'last step: permissions');
 
   // permissions are chosen with ← →, not typed
   assert.equal(s.wizard.values.perm, 'bypass');
@@ -297,6 +302,21 @@ test('engine selection uses ←→ and OpenAI offers Terra first', () => {
   assert.equal(s.wizard.values.engine, 'opencode');
   assert.equal(s.wizard.values.provider, 'openai');
   assert.equal(s.wizard.buffer, 'gpt-5.6-terra');
+});
+
+test('Claude and Codex omit provider and autocomplete their own models', () => {
+  saveLaunchDefaults();
+  let s = press(fresh(), ['a', 'down', 'down', 'down', 'down', 'down']).state;
+  assert.equal(s.wizard.values.engine, 'claude');
+  assert.doesNotMatch(view(s), /Provider:/);
+  s = press(s, ['right']).state;
+  assert.equal(s.wizard.buffer, 'sonnet');
+
+  s = press(s, ['up', 'right']).state;
+  assert.equal(s.wizard.values.engine, 'codex');
+  assert.doesNotMatch(view(s), /Provider:/);
+  s = press(s, ['down', 'right']).state;
+  assert.equal(s.wizard.buffer, 'gpt-test-codex');
 });
 
 test('wizard: backspace deletes and esc cancels without touching the queue', () => {
@@ -599,7 +619,8 @@ test('render: with more jobs than rows, the selection stays on screen', () => {
 test('render: the wizard is painted with its steps and the help hint', () => {
   const s = press(fresh(), ['a', ...'hello']).state;
   const out = view(s);
-  assert.match(out, /new launch · step 1\/8/);
+  assert.match(out, /new launch · step 1\/7/);
+  assert.doesNotMatch(out, /Provider:/, 'Claude has no provider field');
   assert.match(out, /Prompt:/);
   assert.match(out, /hello/);
   assert.match(out, /↑\/↓: field · ←\/→: choose/);

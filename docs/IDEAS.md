@@ -1,5 +1,18 @@
 # Ideas
 
+## Follow-ups after v1.3.5
+
+These are non-blocking improvements. The automated Node and Android suites cover the release,
+including a real `kaip serve` process going from QR to connected and back to QR.
+
+- Run the notification and unpair flows on physical Android devices from at least two vendors.
+  This environment has no device attached through ADB, so OEM battery restrictions and channel
+  settings cannot be reproduced here.
+- Add a multi-device screen to show exactly which phone is connected. The server already keeps
+  independent installation IDs, but the terminal panel intentionally remains a compact summary.
+- Exercise the final usage screen in a small pseudo-terminal matrix (Windows Terminal, conhost,
+  and a narrow SSH terminal). Width behavior is unit-tested, but visual rendering varies by font.
+
 ## Implemented Since This Note
 
 This is a historical product note, not a current backlog. These items are now implemented and

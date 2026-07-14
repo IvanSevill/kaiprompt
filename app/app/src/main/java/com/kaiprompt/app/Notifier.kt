@@ -38,9 +38,17 @@ class Notifier(private val context: Context) {
                 }
             )
         }
+
+        fun canNotify(context: Context): Boolean {
+            if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return false
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return true
+            val channel = context.getSystemService(NotificationManager::class.java).getNotificationChannel(CHANNEL_DONE)
+            return channel == null || channel.importance != NotificationManager.IMPORTANCE_NONE
+        }
     }
 
-    fun jobFinished(id: String, ok: Boolean, what: String, detail: String?) {
+    fun jobFinished(id: String, ok: Boolean, what: String, detail: String?): Boolean {
+        if (!canNotify(context)) return false
         val strings = Store(context).language.localizedContext(context)
         val open = PendingIntent.getActivity(
             context,
@@ -62,17 +70,18 @@ class Notifier(private val context: Context) {
             .setPriority(if (ok) NotificationCompat.PRIORITY_DEFAULT else NotificationCompat.PRIORITY_HIGH)
             .build()
 
-        runCatching { NotificationManagerCompat.from(context).notify(id.hashCode(), n) }
+        return runCatching {
+            NotificationManagerCompat.from(context).notify(id.hashCode(), n)
+            true
+        }.getOrDefault(false)
     }
 
-    fun jobsFinished(jobs: List<Job>) {
-        for (j in jobs) {
-            jobFinished(
+    fun jobsFinished(jobs: List<Job>): Set<String> = jobs.mapNotNullTo(mutableSetOf()) { j ->
+        if (jobFinished(
                 id = j.id,
                 ok = j.status == "done",
                 what = j.preview.ifBlank { j.prompt?.lineSequence()?.firstOrNull() ?: j.id },
                 detail = j.error,
-            )
-        }
+            )) j.id else null
     }
 }

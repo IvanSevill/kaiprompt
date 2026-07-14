@@ -106,9 +106,8 @@ class ListenerService : Service() {
         val store = Store(this)
         val id = event.optString("id")
         if (id.isBlank() || id in store.announced) return   // never say the same thing twice
-        store.announced = store.announced + id
 
-        Notifier(this).jobFinished(
+        val delivered = Notifier(this).jobFinished(
             id = id,
             ok = event.optString("status") == "done",
             what = event.optString("preview").ifBlank {
@@ -116,6 +115,7 @@ class ListenerService : Service() {
             },
             detail = event.optStringOrNull("error"),
         )
+        if (delivered) store.announced = store.announced + id
     }
 
     private fun ongoing(): Notification =

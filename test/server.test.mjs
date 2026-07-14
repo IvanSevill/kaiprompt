@@ -7,10 +7,12 @@
 
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
+import { fileURLToPath } from 'node:url';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-server-'));
 process.env.KAIP_HOME = TMP;
@@ -19,7 +21,7 @@ const { historyPath, outPath, patchJob, saveQueue, saveSessions } = await import
 const { addJob } = await import('../lib/queue.mjs');
 const { executeJob } = await import('../lib/runner.mjs');
 const {
-  addresses, createServer, pairingPayload, publish, resetToken, serverConfig, saveServerConfig,
+  addresses, createServer, noteClient, pairingPayload, publish, resetToken, serverConfig, saveServerConfig,
   BOOTED_AT, clientList, forgetClients, pairedThisSession, stateDTO,
 } = await import('../lib/server.mjs');
 
@@ -521,6 +523,90 @@ test('our own requests do not count: a curl from the PC is not a phone', async (
   await get('/api/state');                       // from 127.0.0.1
   assert.equal(clientList().length, 0, 'loopback is not a connected device');
   assert.equal(pairedThisSession(BOOTED_AT), null, 'and the QR does not come down');
+});
+
+test('explicit mobile unpair returns pairing state to QR while the server stays up', async () => {
+  forgetClients();
+  const since = Date.now() - 100;
+  const conf = serverConfig();
+  conf.devices = [{ id: 'leaving-phone', name: 'pixel', url: null, pairedAt: Date.now() }];
+  delete conf.pairingResetAt;
+  saveServerConfig(conf);
+  noteClient({ socket: { remoteAddress: '192.168.1.77' } });
+  assert.ok(pairedThisSession(since), 'the connected panel is showing');
+
+  const response = await fetch(`http://127.0.0.1:${PORT}/api/device/leaving-phone`, {
+    method: 'DELETE', headers: { authorization: `Bearer ${token}` },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(pairedThisSession(since), null, 'the explicit farewell puts the UI back on its QR');
+  assert.equal((await fetch(`http://127.0.0.1:${PORT}/api/ping`)).status, 200, 'serve itself remains alive');
+
+  await new Promise((resolve) => setTimeout(resolve, 2));
+  noteClient({ socket: { remoteAddress: '192.168.1.88' } });
+  assert.ok(pairedThisSession(since), 'another authorized phone can still make the panel current');
+});
+
+test('an authenticated unpair resets pairing even when that device record was already lost', async () => {
+  forgetClients();
+  const since = Date.now() - 100;
+  const conf = serverConfig();
+  conf.devices = [];
+  delete conf.pairingResetAt;
+  saveServerConfig(conf);
+  noteClient({ socket: { remoteAddress: '192.168.1.99' } });
+  assert.ok(pairedThisSession(since));
+
+  const response = await fetch(`http://127.0.0.1:${PORT}/api/device/missing-phone`, {
+    method: 'DELETE', headers: { authorization: `Bearer ${token}` },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(pairedThisSession(since), null);
+});
+
+test('real serve process transitions QR → connected → QR and only stops explicitly', { timeout: 15_000 }, async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kaip-serve-cycle-'));
+  const port = await new Promise((resolve, reject) => {
+    const probe = http.createServer();
+    probe.once('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const chosen = probe.address().port;
+      probe.close((error) => error ? reject(error) : resolve(chosen));
+    });
+  });
+  const cli = fileURLToPath(new URL('../kaip.mjs', import.meta.url));
+  const child = spawn(process.execPath, [cli, 'serve', '--wifi', '--port', String(port)], {
+    cwd: path.dirname(cli), env: { ...process.env, KAIP_HOME: home }, windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let output = '';
+  child.stdout.on('data', (chunk) => { output += chunk; });
+  child.stderr.on('data', (chunk) => { output += chunk; });
+  const waitFor = async (predicate, message) => {
+    const until = Date.now() + 8_000;
+    while (Date.now() < until) {
+      if (predicate()) return;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert.fail(`${message}\n${output.slice(-2000)}`);
+  };
+
+  try {
+    await waitFor(() => output.includes('scan this FROM the app'), 'serve never showed its QR');
+    const conf = JSON.parse(fs.readFileSync(path.join(home, 'data', 'server.json'), 'utf8'));
+    const headers = { authorization: `Bearer ${conf.token}`, 'content-type': 'application/json' };
+    await fetch(`http://127.0.0.1:${port}/api/device`, {
+      method: 'POST', headers, body: JSON.stringify({ id: 'phone-e2e', name: 'test phone', url: null }),
+    });
+    await waitFor(() => output.includes('test phone paired'), 'serve never switched to its connected panel');
+
+    await fetch(`http://127.0.0.1:${port}/api/device/phone-e2e`, { method: 'DELETE', headers });
+    await waitFor(() => output.split('scan this FROM the app').length >= 3, 'serve never returned to the QR');
+    assert.equal((await fetch(`http://127.0.0.1:${port}/api/ping`)).status, 200, 'the HTTP server must still be alive');
+    assert.equal(child.exitCode, null, 'only an explicit stop may end serve');
+  } finally {
+    child.kill();
+  }
 });
 
 // --- BUG 6: "waiting for quota" vs "stalled", and the other three -----------------

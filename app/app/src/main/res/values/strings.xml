@@ -39,7 +39,7 @@
     <string name="update_download">Toca para descargarla.</string>
     <string name="whats_new_title">Novedades de Kaiprompt</string>
     <string name="version">Versión %1$s</string>
-    <string name="whats_new_body">• Las conversaciones muestran ahora su motor real: Claude, Codex u OpenCode.\n\n• Puedes elegir español, inglés o el idioma del sistema desde Ajustes.\n\n• Nueva vista de uso histórico por motor y proveedor.\n\n• El QR desaparece al emparejar, pero «kaip serve» permanece abierto.</string>
+    <string name="whats_new_body">• Desemparejar devuelve el PC al QR sin detener «kaip serve».\n\n• Los avisos solo se marcan entregados cuando Android acepta la notificación.\n\n• El formulario oculta Provider para Claude y Codex y ofrece sus modelos.\n\n• La pantalla final de «kaip run» permite comparar tokens por motor.</string>
     <string name="understood">Entendido</string>
     <string name="status_done">terminado</string>
     <string name="status_running">corriendo</string>

@@ -1,12 +1,28 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import * as claude from '../adapters/claude.mjs';
 import * as codex from '../adapters/codex.mjs';
 import * as mock from '../adapters/mock.mjs';
 import * as opencode from '../adapters/opencode.mjs';
+import { claudeModels, discoverCodexModels } from '../lib/engines.mjs';
 
 const dry = (over = {}) => claude.run({ prompt: 'p', dryRun: true, ...over });
+
+test('engine model autocomplete reads Claude aliases and Codex account cache', () => {
+  assert.ok(claudeModels().includes('sonnet'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kaip-codex-models-'));
+  const file = path.join(dir, 'models_cache.json');
+  fs.writeFileSync(file, JSON.stringify({ models: [
+    { slug: 'hidden', visibility: 'hide', priority: 0 },
+    { slug: 'gpt-second', visibility: 'list', priority: 2 },
+    { slug: 'gpt-first', visibility: 'list', priority: 1 },
+  ] }));
+  assert.deepEqual(discoverCodexModels(file), ['gpt-first', 'gpt-second']);
+});
 
 test('claude: BYPASS by default (full autonomy for unattended launches)', async () => {
   const { output } = await dry();

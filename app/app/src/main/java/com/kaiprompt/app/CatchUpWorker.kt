@@ -59,11 +59,10 @@ class CatchUpWorker(context: Context, params: WorkerParameters) : CoroutineWorke
         val unseen = finished.filter { it.id !in store.announced }
         if (unseen.isEmpty()) return Result.success()
 
-        // Mark them all first. If the notification itself fails we would rather lose one
-        // than announce the same job on every wake-up from now until the end of time.
-        store.announced = store.announced + unseen.map { it.id }
-
-        Notifier(applicationContext).jobsFinished(unseen)
+        // Only suppress an alert after Android accepted it. A denied permission or disabled
+        // channel must remain recoverable on the next wake-up rather than losing the event.
+        val delivered = Notifier(applicationContext).jobsFinished(unseen)
+        store.announced = store.announced + delivered
         return Result.success()
     }
 }

@@ -1,7 +1,6 @@
 package com.kaiprompt.app
 
 import android.Manifest
-import android.app.NotificationManager
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
@@ -35,7 +34,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
-import androidx.core.app.NotificationManagerCompat
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.Dispatchers
@@ -147,10 +145,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun notificationsAreEnabled(): Boolean {
-        if (!NotificationManagerCompat.from(this).areNotificationsEnabled()) return false
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return true
-        val channel = getSystemService(NotificationManager::class.java).getNotificationChannel(Notifier.CHANNEL_DONE)
-        return channel == null || channel.importance != NotificationManager.IMPORTANCE_NONE
+        return Notifier.canNotify(this)
     }
 
     private fun openNotificationSettings() {
