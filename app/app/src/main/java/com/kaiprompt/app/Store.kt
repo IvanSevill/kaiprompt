@@ -28,6 +28,7 @@ class Store(context: Context) {
                 tunnel = prefs.getBoolean("tunnel", false),
             )
         }
+
         set(p) {
             prefs.edit().apply {
                 if (p == null) {
@@ -46,6 +47,12 @@ class Store(context: Context) {
                     putBoolean("tunnel", p.tunnel)
                 }
             }.apply()
+        }
+
+    /** Kept separately from pairing credentials so explicit unpairing does not change identity. */
+    val deviceId: String
+        get() = prefs.getString("device_id", null) ?: DeviceId.new().also {
+            prefs.edit().putString("device_id", it).apply()
         }
 
     /**

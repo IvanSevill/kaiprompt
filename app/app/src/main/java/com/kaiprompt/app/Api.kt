@@ -48,9 +48,14 @@ class Api(private val pairing: Pairing, private val context: Context) {
      * the PC never even registered that it existed. Now the name goes up regardless; a phone
      * with no callback still gets its news from the 15-minute catch-up poll.
      */
-    fun registerDevice(url: String?, name: String) {
+    fun registerDevice(url: String?, name: String, id: String) {
         val u = if (url == null) "null" else quote(url)
-        post("/api/device", """{"url":$u,"name":${quote(name)}}""")
+        post("/api/device", """{"url":$u,"name":${quote(name)},"id":${quote(id)}}""")
+    }
+
+    /** Best-effort farewell used only by the explicit Unpair action. */
+    fun deleteDevice(id: String) {
+        delete("/api/device/${java.net.URLEncoder.encode(id, "UTF-8")}")
     }
 
     /** Wipe everything that has already run. The one destructive thing the phone can do. */
@@ -87,6 +92,12 @@ class Api(private val pairing: Pairing, private val context: Context) {
         c.doOutput = true
         c.setRequestProperty("content-type", "application/json")
         c.outputStream.use { it.write(body.toByteArray()) }
+        readBody(c)
+    }
+
+    private fun delete(path: String): String = attempt { base ->
+        val c = open("$base$path")
+        c.requestMethod = "DELETE"
         readBody(c)
     }
 

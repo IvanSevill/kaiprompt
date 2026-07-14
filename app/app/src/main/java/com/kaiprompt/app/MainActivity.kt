@@ -151,7 +151,7 @@ class MainActivity : ComponentActivity() {
      */
     private fun announceSelf(p: Pairing) = lifecycleScope.launch(Dispatchers.IO) {
         val callback = localAddress()?.let { ListenerService.callbackUrl(it) }
-        runCatching { Api(p, language.localizedContext(this@MainActivity)).registerDevice(callback, deviceName()) }
+        runCatching { Api(p, language.localizedContext(this@MainActivity)).registerDevice(callback, deviceName(), store.deviceId) }
     }
 
     /** What this phone is called. Never blank, and never "?" — the PC cannot work this out. */
@@ -199,6 +199,18 @@ class MainActivity : ComponentActivity() {
         language.localizedContext(this).getString(id, *formatArgs)
 
     private fun unpair() {
+        val p = pairing ?: return
+        lifecycleScope.launch {
+            // The server is told while credentials still exist, but an unreachable PC must
+            // never trap somebody in a pairing they chose to remove.
+            withContext(Dispatchers.IO) {
+                runCatching { Api(p, language.localizedContext(this@MainActivity)).deleteDevice(store.deviceId) }
+            }
+            clearPairing()
+        }
+    }
+
+    private fun clearPairing() {
         store.pairing = null
         pairing = null
         state = null

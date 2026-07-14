@@ -216,6 +216,48 @@ test('POST /api/device: the phone says where to knock (the PC → phone webhook)
   assert.ok(serverConfig().devices.some((d) => d.name === 'pixel'));
 });
 
+test('POST /api/device: a persistent id replaces only its own prior record', async () => {
+  const post = (body) => fetch(`http://127.0.0.1:${PORT}/api/device`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  const id = '4f86ce8f-a65f-4061-9c9a-022a18cf2a2a';
+  await post({ id, name: 'Pixel', url: 'http://10.0.0.1:8899/job-done' });
+  await post({ id, name: 'Renamed Pixel', url: 'http://10.0.0.2:8899/job-done' });
+
+  const own = serverConfig().devices.filter((d) => d.id === id);
+  assert.equal(own.length, 1);
+  assert.equal(own[0].name, 'Renamed Pixel');
+  assert.equal(own[0].url, 'http://10.0.0.2:8899/job-done');
+});
+
+test('DELETE /api/device/:id removes only that identified device and preserves legacy records', async () => {
+  const conf = serverConfig();
+  conf.devices = [
+    { id: 'device-a', name: 'first', url: null, pairedAt: Date.now() },
+    { id: 'device-b', name: 'second', url: null, pairedAt: Date.now() },
+    { name: 'old-client', url: null, pairedAt: Date.now() },
+  ];
+  saveServerConfig(conf);
+
+  const r = await fetch(`http://127.0.0.1:${PORT}/api/device/device-a`, {
+    method: 'DELETE', headers: { authorization: `Bearer ${token}` },
+  });
+  assert.equal(r.status, 200);
+  assert.deepEqual(await r.json(), { ok: true, removed: 1, devices: 2 });
+  assert.deepEqual(serverConfig().devices.map((d) => d.id ?? d.name), ['device-b', 'old-client']);
+
+  const state = await (await get('/api/state')).json();
+  assert.equal(state.server.devices.length, 2, 'the state count reflects unpairing immediately');
+});
+
+test('DELETE /api/device/:id demands the pairing token', async () => {
+  const r = await fetch(`http://127.0.0.1:${PORT}/api/device/device-b`, { method: 'DELETE' });
+  assert.equal(r.status, 401);
+});
+
 // This used to be a 400: "with no address there is nobody to knock on". True — but it followed
 // from that that the phone was NOT registered, and with it went the one thing the PC cannot
 // work out on its own: ITS NAME. The phone can only build that url if it knows its own LAN

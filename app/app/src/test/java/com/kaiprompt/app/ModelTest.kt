@@ -230,6 +230,12 @@ class ModelTest {
     }
 
     @Test
+    fun `el identificador de instalación es un UUID no derivado del nombre del móvil`() {
+        val id = DeviceId.new()
+        assertTrue(Regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$").matches(id))
+    }
+
+    @Test
     fun `el nombre del PC sale de api-state, que siempre lo manda`() {
         assertEquals("MI-PC", State.parse(estado).host)
     }
