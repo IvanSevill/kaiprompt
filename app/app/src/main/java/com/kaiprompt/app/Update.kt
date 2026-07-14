@@ -38,7 +38,10 @@ object Update {
         val c = (URL(LATEST).openConnection() as HttpURLConnection).apply {
             connectTimeout = 6000
             readTimeout = 6000
+            useCaches = false
             setRequestProperty("accept", "application/vnd.github+json")
+            setRequestProperty("user-agent", "Kaiprompt-Android/${installedVersion(context)}")
+            setRequestProperty("cache-control", "no-cache")
         }
         if (c.responseCode != 200) return null
 
@@ -49,10 +52,7 @@ object Update {
         val tag = json.optString("tag_name").removePrefix("v").trim()
         if (tag.isBlank()) return null
 
-        val mine = context.packageManager
-            .getPackageInfo(context.packageName, 0).versionName
-            ?.trim()
-            .orEmpty()
+        val mine = installedVersion(context)
 
         // Opening the release page is more reliable than handing Android's browser the asset
         // redirect directly. Some mobile browsers lose GitHub's signed redirect and show 404.
@@ -60,6 +60,11 @@ object Update {
 
         if (isNewer(tag, mine)) Available(tag, json.optStringOrNull("body"), downloadUrl) else null
     }.getOrNull()
+
+    private fun installedVersion(context: Context): String = context.packageManager
+        .getPackageInfo(context.packageName, 0).versionName
+        ?.trim()
+        .orEmpty()
 
     /**
      * Is `remote` newer than `local`? Compared segment by segment as numbers — "1.10" is

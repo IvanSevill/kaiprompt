@@ -61,6 +61,7 @@ class MainActivity : ComponentActivity() {
     private var language by mutableStateOf(AppLanguage.SYSTEM)
     private var usage by mutableStateOf<Usage?>(null)
     private var notificationsEnabled by mutableStateOf(true)
+    private var updateCheckRunning = false
 
     private val scanner = registerForActivityResult(ScanContract()) { result ->
         val text = result.contents ?: return@registerForActivityResult
@@ -124,18 +125,25 @@ class MainActivity : ComponentActivity() {
         }
         if (pairing != null) refresh()
 
-        // One request to GitHub, off the main thread, and never fatal: failing to reach it
-        // must NOT be shown as "you are out of date". A false alarm is worse than no alarm.
-        lifecycleScope.launch(Dispatchers.IO) {
-            val found = Update.check(this@MainActivity)
-            withContext(Dispatchers.Main) { update = found }
-        }
     }
 
     override fun onResume() {
         super.onResume()
         notificationsEnabled = notificationsAreEnabled()
+        checkForUpdate()
         if (pairing != null) refresh()
+    }
+
+    private fun checkForUpdate() {
+        if (updateCheckRunning) return
+        updateCheckRunning = true
+        lifecycleScope.launch(Dispatchers.IO) {
+            val found = Update.check(this@MainActivity)
+            withContext(Dispatchers.Main) {
+                update = found
+                updateCheckRunning = false
+            }
+        }
     }
 
     private fun notificationsAreEnabled(): Boolean {
