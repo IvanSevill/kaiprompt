@@ -39,6 +39,20 @@ test('edit: --at none lo devuelve a secuencial', () => {
   assert.equal(n.when, null);
 });
 
+test('edit: --model cambia el modelo de un job que aún no ha salido', () => {
+  const j = only({ model: 'haiku' });
+  const { job: n, changes } = editJob(j.id, { model: 'opus' });
+  assert.deepEqual(changes, ['model']);
+  assert.equal(n.model, 'opus');
+  assert.equal(loadQueue()[0].model, 'opus');
+});
+
+test('edit: --model none lo devuelve al default del motor', () => {
+  const j = only({ model: 'opus' });
+  const { job: n } = editJob(j.id, { model: 'none' });
+  assert.equal(n.model, null);
+});
+
 test('edit: --dir resuelve alias/proyecto igual que add', () => {
   saveProjects({ mialias: 'C:/algun/sitio/MiApp' });
   const j = only({});

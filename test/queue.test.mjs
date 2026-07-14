@@ -116,6 +116,29 @@ test('addJob: hora que no se entiende → error de parseWhen, y la cola intacta'
   assert.equal(loadQueue().length, 0);
 });
 
+// --- el modelo se GUARDA en el job -------------------------------------------
+// Aquí es donde se caía: la CLI parseaba --model, lo validaba y se lo pasaba a addJob, que
+// no lo guardaba. El job salía sin modelo y el lanzamiento usaba el de por defecto. Aceptar
+// una bandera y no hacer nada con ella es peor que no tenerla: te crees que elegiste.
+
+test('addJob: guarda el modelo elegido', () => {
+  saveQueue([]);
+  const j = addJob({ prompt: 'x', model: 'sonnet', adapter: 'mock' });
+  assert.equal(j.model, 'sonnet');
+  assert.equal(loadQueue()[0].model, 'sonnet', 'y sobrevive al disco');
+});
+
+test('addJob: sin --model el job no fija ninguno (manda el default del motor)', () => {
+  saveQueue([]);
+  assert.equal(addJob({ prompt: 'x', adapter: 'mock' }).model, null);
+});
+
+test('addJob: --model vacío se rechaza, no se traga en silencio', () => {
+  saveQueue([]);
+  assert.throws(() => addJob({ prompt: 'x', model: '  ' }), /model cannot be empty/);
+  assert.equal(loadQueue().length, 0);
+});
+
 test('removeJobs: quita los pedidos y devuelve cuántos', () => {
   saveQueue([]);
   const a = addJob({ prompt: 'a' }), b = addJob({ prompt: 'b' }), cc = addJob({ prompt: 'c' });

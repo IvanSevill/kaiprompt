@@ -14,7 +14,7 @@ import fs from 'node:fs';
 export const name = 'claude';
 const BIN = process.platform === 'win32' ? 'claude.exe' : 'claude';
 
-function buildArgs({ sessionId, permMode, streaming }) {
+function buildArgs({ sessionId, permMode, streaming, model }) {
   // Permission mode for UNATTENDED launches: without this, `claude -p` asks for
   // permissions nobody answers at 3am and the launch does nothing.
   // Default "bypass" (full autonomy) — deliberate choice for scheduled runs.
@@ -25,13 +25,16 @@ function buildArgs({ sessionId, permMode, streaming }) {
   if (streaming) args.push('--verbose');            // stream-json requires --verbose
   if (mode === 'bypass' || mode === 'bypassPermissions') args.push('--dangerously-skip-permissions');
   else args.push('--permission-mode', mode);
+  // Omit this when no model was selected: that deliberately preserves Claude Code's own
+  // configured default for older jobs and existing workflows.
+  if (model) args.push('--model', model);
   if (sessionId) args.push('--resume', sessionId);
   return args;
 }
 
-export async function run({ prompt, sessionId, dryRun, dir, permMode, onEvent }) {
+export async function run({ prompt, sessionId, dryRun, dir, permMode, model, onEvent }) {
   const streaming = typeof onEvent === 'function';
-  const args = buildArgs({ sessionId, permMode, streaming });
+  const args = buildArgs({ sessionId, permMode, streaming, model });
   const cwd = dir && fs.existsSync(dir) ? dir : null;    // run claude inside the target project
   const shown = `${BIN} ${args.join(' ')}` +
     `  (prompt on stdin${sessionId ? ', resumes ' + String(sessionId).slice(0, 8) + '…' : ', new session'}` +

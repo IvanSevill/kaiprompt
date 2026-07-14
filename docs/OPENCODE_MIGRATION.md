@@ -309,7 +309,11 @@ decirlo en la cara antes de lanzar nada.** Cómo debería avisar:
 2. **Decir el proveedor y que se factura**, no un genérico "esto puede costar dinero":
    > ⚠️  `opencode` + `google/gemini-2.5-flash-lite` → **API de pago**. Esta cola gastará dinero real
    > (a día de hoy llevas $13.37). Claude Code va por suscripción y no cobra por uso.
-   > Confirma con `--yes-i-pay` (o `kaip config opencode.confirmed true`).
+   > Confirma con `--yes-i-pay`.
+
+   La confirmación se guardaría en la config del servidor, junto al resto de ajustes. (Este
+   documento **propone**; no describe nada que exista hoy, así que no cita comandos que no se
+   pueden teclear — el test de comandos fantasma lo caza, y hace bien.)
 3. **Exigir confirmación explícita la primera vez** y guardarla; no preguntar en cada `add`.
 4. **Acumular el coste real** de los `step_finish` y enseñarlo al terminar la tanda (kaiprompt ya
    tiene dónde: el resumen de la tanda). Es dato gratis, sería tonto tirarlo.

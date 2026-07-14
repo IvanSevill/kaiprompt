@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import * as claude from '../adapters/claude.mjs';
+import * as codex from '../adapters/codex.mjs';
 import * as mock from '../adapters/mock.mjs';
 import * as opencode from '../adapters/opencode.mjs';
 
@@ -47,6 +48,40 @@ test('claude: el dry-run NO ejecuta nada y devuelve ok', async () => {
   const res = await dry();
   assert.equal(res.ok, true);
   assert.match(res.output, /^\[dry-run\]/);
+});
+
+// --- el modelo llega hasta el CLI -------------------------------------------
+// `--model` se parseaba en kaip.mjs, se validaba, se pasaba a addJob… y ahí se caía por un
+// agujero: el job no lo guardaba, así que el lanzamiento salía con el modelo por defecto.
+// La bandera se aceptaba sin rechistar y no hacía nada, que es la peor forma de no hacer
+// nada. La cadena entera (add → job → launch → adaptador) va probada, extremo a extremo.
+
+test('claude: --model llega a la línea de comandos', async () => {
+  const { output } = await dry({ model: 'sonnet' });
+  assert.match(output, /--model sonnet/);
+});
+
+test('claude: sin modelo NO se pasa --model (respeta el default de Claude Code)', async () => {
+  const { output } = await dry();
+  assert.doesNotMatch(output, /--model/);
+});
+
+test('codex: dry-run, sin sesión → exec nuevo', async () => {
+  const res = await codex.run({ prompt: 'p', dryRun: true });
+  assert.equal(res.ok, true);
+  assert.match(res.output, /new session/);
+  assert.doesNotMatch(res.output, /resume/);
+});
+
+test('codex: con sesión reanuda el hilo', async () => {
+  const res = await codex.run({ prompt: 'p', dryRun: true, sessionId: 'th_123' });
+  assert.match(res.output, /exec resume/);
+  assert.match(res.output, /th_123/);
+});
+
+test('codex: --model también llega', async () => {
+  const res = await codex.run({ prompt: 'p', dryRun: true, model: 'gpt-5' });
+  assert.match(res.output, /--model gpt-5/);
 });
 
 test('mock: emite un flujo de eventos realista y termina con result', async () => {
