@@ -6,7 +6,7 @@ import path from 'node:path';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-run-'));
 process.env.KAIP_HOME = TMP;
-const { loadQueue, loadSessions, nid, outPath, saveQueue, saveSessions } = await import('../lib/store.mjs');
+const { loadQueue, loadSessions, nid, outPath, rememberSession, saveQueue, saveSessions } = await import('../lib/store.mjs');
 const { executeJob, requeue, runQueue, settle } = await import('../lib/runner.mjs');
 
 const job = (over = {}) => ({
@@ -93,6 +93,47 @@ test('executeJob: adaptador inexistente → error controlado', async () => {
   await assert.rejects(() => executeJob(j), /unknown adapter/);
 });
 
+// --- sessions.json: la escritura perdida --------------------------------------
+// executeJob cargaba sessions.json al EMPEZAR y lo guardaba al TERMINAR, con un lanzamiento
+// entero en medio. Todo lo que se escribiera en ese hueco desaparecía al salir. Y `--parallel`
+// vive dentro de ese hueco por diseño: los carriles arrancan juntos, cada uno con el fichero
+// tal y como estaba ANTES de que corriera ninguno, y gana el último en terminar.
+//
+// Coste real: el target que perdió su sessionId abre una conversación nueva la próxima vez y
+// vuelve a pagar el contexto que ya tenía. Es exactamente el ahorro que `--target` promete.
+
+test('sessions.json: dos carriles a la vez NO se borran la sesión el uno al otro', async () => {
+  saveSessions({});
+  const a = job({ target: 'alpha' });
+  const b = job({ target: 'beta' });
+  saveQueue([a, b]);
+
+  // Esto es lo que hace `kaip run --parallel 2`: dos carriles, a la vez.
+  await Promise.all([executeJob(a), executeJob(b)]);
+
+  const s = loadSessions();
+  assert.ok(s.alpha?.sessionId, 'alpha guardó su sesión');
+  assert.ok(s.beta?.sessionId, 'beta también — antes el último en terminar borraba al otro');
+  assert.notEqual(s.alpha.sessionId, s.beta.sessionId, 'y son conversaciones distintas');
+});
+
+test('sessions.json: lo que se escribe DURANTE el lanzamiento sobrevive', async () => {
+  saveSessions({ viejo: { sessionId: 'ya-estaba', adapter: 'mock', updatedAt: 1 } });
+
+  const j = job({ target: 'nuevo' });
+  const corriendo = executeJob(j);
+
+  // Alguien más escribe mientras el lanzamiento está en vuelo: otro carril, la GUI,
+  // un `kaip sessions set`. El lanzamiento no puede llevarse eso por delante al terminar.
+  rememberSession('de-en-medio', 'escrita-a-mitad', 'mock');
+  await corriendo;
+
+  const s = loadSessions();
+  assert.equal(s['de-en-medio']?.sessionId, 'escrita-a-mitad', 'la escritura de en medio, que se perdía');
+  assert.equal(s.viejo?.sessionId, 'ya-estaba', 'y lo que ya había sigue ahí');
+  assert.ok(s.nuevo?.sessionId, 'junto con la sesión del propio job');
+});
+
 test('executeJob: emite eventos en vivo cuando se pasa onEvent', async () => {
   const vistos = [];
   const j = job();
@@ -152,8 +193,11 @@ test('cerrojo: un segundo runner no hace nada mientras hay otro activo', async (
   const { lockIsHeld } = await import('../lib/runner.mjs');
   const lock = path.join(TMP, 'data', 'runner.lock');
 
-  fs.writeFileSync(lock, JSON.stringify({ pid: 999999, at: Date.now() }));
-  assert.equal(lockIsHeld(), true, 'cerrojo fresco = hay runner vivo');
+  // Un runner VIVO. Este test fingía uno con el pid 999999, que no existe: el cerrojo solo
+  // miraba el reloj, así que colaba. Un runner activo es un proceso que está ahí, y el único
+  // que este test puede garantizar que lo está es él mismo.
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now() }));
+  assert.equal(lockIsHeld(), true, 'proceso vivo + latido fresco = hay runner');
 
   const j = job();
   saveQueue([j]);
@@ -163,12 +207,27 @@ test('cerrojo: un segundo runner no hace nada mientras hay otro activo', async (
   fs.rmSync(lock, { force: true });
 });
 
-test('cerrojo caducado (runner muerto) se ignora y se puede volver a lanzar', async () => {
+test('cerrojo de un runner MUERTO se ignora: se puede lanzar YA, sin esperar al latido', async () => {
+  // Lo que se sentía: cierras un `kaip run` y durante dos minutos el daemon se niega a
+  // arrancar porque "ya hay alguien". No había nadie — solo su cerrojo, todavía calentito.
   const { lockIsHeld } = await import('../lib/runner.mjs');
   const lock = path.join(TMP, 'data', 'runner.lock');
 
-  fs.writeFileSync(lock, JSON.stringify({ pid: 1, at: Date.now() - 10 * 60_000 }));  // 10 min
-  assert.equal(lockIsHeld(), false, 'cerrojo viejo = el runner murió');
+  fs.writeFileSync(lock, JSON.stringify({ pid: 999999, at: Date.now() }));   // latido RECIÉN escrito
+  assert.equal(lockIsHeld(), false, 'el proceso no existe: da igual lo fresco que sea el latido');
+
+  saveQueue([job()]);
+  await runQueue({ once: true });
+  assert.equal(loadQueue()[0].status, 'done', 'debe poder ejecutar al instante');
+});
+
+test('cerrojo caducado (runner vivo pero colgado) también se ignora', async () => {
+  // El latido sigue haciendo falta: cubre al runner que existe pero ya no procesa nada.
+  const { lockIsHeld } = await import('../lib/runner.mjs');
+  const lock = path.join(TMP, 'data', 'runner.lock');
+
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now() - 10 * 60_000 }));
+  assert.equal(lockIsHeld(), false, 'lleva 10 min sin latir: ese runner no está procesando nada');
 
   saveQueue([job()]);
   await runQueue({ once: true });

@@ -12,8 +12,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import {
-  loadProjects, loadQueue, loadSessions, nowMs,
-  outPath, preview, saveProjects, saveSessions,
+  loadProjects, loadQueue, loadSessions,
+  outPath, preview, rememberSession, saveProjects,
 } from './lib/store.mjs';
 import { fmt } from './lib/time.mjs';
 import { reapStale, runQueue } from './lib/runner.mjs';
@@ -580,9 +580,7 @@ function cmdSessions({ pos } = { pos: [] }) {
   if (pos[0] === 'set') {                          // sessions set <target> <session-id>
     const [, target, sid] = pos;
     if (!target || !sid) throw new Error('usage: kaip sessions set <target> <session-id>');
-    const s = loadSessions();
-    s[target] = { sessionId: sid, adapter: 'claude', updatedAt: nowMs() };
-    saveSessions(s);
+    rememberSession(target, sid);
     return console.log(`set ${target} → ${sid}`);
   }
   const s = loadSessions(); const keys = Object.keys(s);

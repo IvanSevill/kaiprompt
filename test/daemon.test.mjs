@@ -284,7 +284,11 @@ test('dos runners MANUALES si se respetan: el segundo se retira', () => {
   // el mismo job. Lo que ya no bloquea es al humano frente al daemon.
   seed([mockJob({ when: Date.now() + 60_000 })]);
   const lock = path.join(TMP, 'data', 'runner.lock');
-  fs.writeFileSync(lock, JSON.stringify({ pid: 999999, at: Date.now() }));   // otro run vivo
+  // Un runner vivo de verdad. Vale este mismo proceso: el `run` que arrancamos abajo es OTRO
+  // (un hijo), así que ve un cerrojo de un pid que existe y no es el suyo — que es justo el
+  // caso. Fingirlo con el pid 999999 dejó de colar cuando el cerrojo empezó a comprobar si
+  // el proceso está realmente ahí.
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now() }));
 
   const second = cli('run', '--once');
   fs.rmSync(lock, { force: true });
