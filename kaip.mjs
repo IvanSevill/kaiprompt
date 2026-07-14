@@ -13,7 +13,7 @@ import path from 'node:path';
 
 import {
   loadProjects, loadQueue, loadSessions,
-  outPath, preview, rememberSession, saveProjects,
+  historyPath, outPath, preview, rememberSession, saveProjects,
 } from './lib/store.mjs';
 import { fmt } from './lib/time.mjs';
 import { reapStale, runQueue } from './lib/runner.mjs';
@@ -22,6 +22,8 @@ import { editJob } from './lib/edit.mjs';
 import { addJob, clearFinished, jobDetails, removeJobs } from './lib/queue.mjs';
 import { jobPreview } from './lib/prompt.mjs';
 import { COMMANDS, ENGINES } from './lib/commands.mjs';
+import { discoverOpenCodeModels, engineNames } from './lib/engines.mjs';
+import { applyEngineMigration, inspectEngineMigration } from './lib/migrate.mjs';
 import { c, isTTY } from './lib/ui.mjs';
 
 // --- argument parsing --------------------------------------------------------
@@ -66,6 +68,8 @@ async function cmdAdd({ flags, pos, engine }) {
     return flags.model.trim();
   })();
 
+  const chosenEngine = engine || (typeof flags.engine === 'string' ? flags.engine : (typeof flags.adapter === 'string' ? flags.adapter : null));
+  if (!chosenEngine) throw new Error('choose an engine: --engine claude | codex | opencode');
   const job = addJob({
     prompt,
     from,
@@ -73,7 +77,8 @@ async function cmdAdd({ flags, pos, engine }) {
     at: typeof flags.at === 'string' ? flags.at : null,
     dir: typeof flags.dir === 'string' ? flags.dir : null,
     perm: typeof flags.perm === 'string' ? flags.perm : null,       // null → bypass
-    adapter: typeof flags.adapter === 'string' ? flags.adapter : (engine || 'claude'),
+    adapter: chosenEngine,
+    provider: typeof flags.provider === 'string' ? flags.provider : null,
     model,
     session: typeof flags.session === 'string' ? flags.session : null,
     priority: Boolean(flags.first),
@@ -114,6 +119,28 @@ async function cmdAdd({ flags, pos, engine }) {
   if (line.hint) console.log(c.muted('    ') + c.accent(line.hint));
 }
 
+function cmdEngines({ pos, flags }) {
+  const sub = pos[0] || 'list';
+  if (sub === 'list') return console.log(engineNames().map((name) => `  ${name}${name === 'opencode' ? '  (provider + model required)' : ''}`).join('\n'));
+  if (sub === 'models') {
+    const provider = typeof flags.provider === 'string' ? flags.provider : null;
+    if (!provider) throw new Error('usage: kaip engines models --provider <provider>');
+    const models = discoverOpenCodeModels(provider);
+    if (!models.length) return console.log(`no OpenCode models found for ${provider}`);
+    return console.log(models.map((m) => m.id).join('\n'));
+  }
+  throw new Error('usage: kaip engines [list|models --provider <provider>]');
+}
+
+function cmdMigrate({ pos }) {
+  if (pos[0] !== 'engines') throw new Error('usage: kaip migrate engines [--apply]');
+  const report = process.argv.includes('--apply') ? applyEngineMigration() : inspectEngineMigration();
+  console.log(`${report.jobs} jobs · ${report.sessions} targets`);
+  for (const issue of report.issues) console.log(`  ${issue.type}: ${issue.id || issue.target} — ${issue.message}`);
+  if (!process.argv.includes('--apply')) console.log('  inspect only; run: kaip migrate engines --apply');
+  else console.log(`  migrated; backups stamped ${report.backup}`);
+}
+
 function cmdList({ flags, pos }) {
   // A job whose runner died still says "running" until someone closes it out, and this
   // is the screen you actually read — a status that lies here is the worst place for it.
@@ -142,6 +169,11 @@ function cmdShow({ flags, pos }) {
   if (!job) return console.log(`no job found with id "${pos[0]}"`);
 
   console.log(jobDetails(job));
+  if (fs.existsSync(historyPath(job.id))) {
+    const attempts = fs.readFileSync(historyPath(job.id), 'utf8').trim().split('\n').filter(Boolean).map((line) => { try { return JSON.parse(line); } catch { return null; } }).filter(Boolean);
+    const latest = attempts.filter((entry) => entry.type === 'attempt-end').at(-1);
+    if (latest) console.log(`\n  last attempt: ${latest.engine}${latest.provider ? '/' + latest.provider : ''}${latest.model ? '/' + latest.model : ''} · ${latest.durationMs}ms${latest.cost != null ? ' · $' + latest.cost : ''}`);
+  }
 
   // The details are only half the story. Once a launch has run, what you actually want
   // to see is the CONVERSATION it had — not the prompt you already know you wrote.
@@ -596,8 +628,8 @@ Usage:
   <engine> = claude | codex | opencode   (optional; defaults to claude)
 
 Queue:
-  add "<prompt>"              queue a launch  [--at <when>] [--target <n>] [--dir <project>]
-                              [--perm <mode>] [--model <name>] [--session <id>] [--first]
+   add "<prompt>"              queue a launch  --engine <claude|codex|opencode>
+                               [--provider <name>] [--model <name>] [--at <when>] [--target <n>]
   add --from <path>           the prompt lives in a FILE, read at launch — keep editing it
                               until the second it goes out  (--file pastes it in NOW instead)
   add ... --first             jump the queue: runs before everything, as soon as there is
@@ -635,7 +667,9 @@ Setup:
   sessions                    saved sessions (name → session-id)
   sessions set <t> <id>       assign a session-id to a target by hand
   projects                    folders/projects available for --dir
-  projects <alias> <path>     register a folder alias
+   projects <alias> <path>     register a folder alias
+   engines [list|models]       list engines or OpenCode models for a provider
+   migrate engines [--apply]    inspect or migrate persisted engine/session data
   help
 
 Scheduling vs running — the one thing to understand:
@@ -717,6 +751,8 @@ try {
     case 'chat': cmdChat(parsed); break;
     case 'edit': cmdEdit(parsed); break;
     case 'projects': case 'project': cmdProjects(parsed); break;
+    case 'engines': cmdEngines(parsed); break;
+    case 'migrate': cmdMigrate(parsed); break;
     case 'sessions': cmdSessions(parsed); break;
     case 'daemon': await cmdDaemon(parsed); break;
     case 'app': await cmdApp(parsed); break;
