@@ -12,7 +12,7 @@ process.env.KAIP_HOME = TMP;
 // cannot leave background processes alive. That it really does arm it is proved in
 // daemon.test.mjs.
 process.env.KAIP_NO_DAEMON = '1';
-const { loadQueue, saveQueue, saveProjects, saveSessions } = await import('../lib/store.mjs');
+const { historyPath, loadQueue, saveQueue, saveProjects, saveSessions } = await import('../lib/store.mjs');
 const { addJob } = await import('../lib/queue.mjs');
 const { strip } = await import('../lib/ui.mjs');
 const {
@@ -124,7 +124,7 @@ test('outside the wizard a paste presses no keys (it could carry a "d" inside)',
 });
 
 // --- navigation --------------------------------------------------------------
-test('views: tab and 1-4 switch view, and wrap around', () => {
+test('views: tab and 1-5 switch view, and wrap around', () => {
   saveQueue([]);
   let s = fresh();
   assert.equal(s.view, 'queue');
@@ -425,7 +425,7 @@ test('render: tabs, jobs, the shortcut bar and the selection marker', () => {
   const out = view(fresh());
 
   assert.match(out, /kaip/);
-  assert.match(out, /Queue \(1\).*Chats.*Projects.*Help/s, 'the four views');
+  assert.match(out, /Queue \(1\).*Chats.*Projects.*Usage.*Help/s, 'the five views');
   assert.match(out, new RegExp(j.id));
   assert.match(out, /review the PR/);
   assert.match(out, /▸/, 'the selected row is marked');
@@ -578,8 +578,37 @@ test('refresh: if the queue shrinks, the selection is not left dangling', () => 
   assert.ok(selected(s), 'and it still points at something');
 });
 
-test('VIEWS: the four views, in order', () => {
-  assert.deepEqual(VIEWS, ['queue', 'sessions', 'projects', 'help']);
+test('VIEWS: the five views, in order', () => {
+  assert.deepEqual(VIEWS, ['queue', 'sessions', 'projects', 'usage', 'help']);
+});
+
+test('usage view switches Claude, Codex, and OpenCode providers through shared reports', () => {
+  const jobs = [
+    { id: 'usage-claude', adapter: 'claude', target: 'alpha', sessionId: 'claude-session' },
+    { id: 'usage-codex', adapter: 'codex', target: 'beta', sessionId: 'codex-session' },
+    { id: 'usage-openai', adapter: 'opencode', provider: 'openai', target: 'gamma', sessionId: 'openai-session' },
+  ];
+  saveQueue(jobs);
+  fs.writeFileSync(historyPath('usage-claude'), JSON.stringify({ type: 'attempt-end', engine: 'claude', sessionId: 'claude-session', usage: { input_tokens: 10, output_tokens: 4 } }) + '\n');
+  fs.writeFileSync(historyPath('usage-codex'), JSON.stringify({ type: 'attempt-end', engine: 'codex', sessionId: 'codex-session' }) + '\n');
+  fs.writeFileSync(historyPath('usage-openai'), JSON.stringify({ type: 'attempt-end', engine: 'opencode', provider: 'openai', sessionId: 'openai-session', usage: { input: 8, output: 2, total: 10 }, cost: 0.01 }) + '\n');
+
+  let state = reduce(fresh(), 'u').state;
+  assert.equal(state.view, 'usage');
+  assert.match(view(state), /scope: Claude/);
+  assert.match(view(state), /claude-session.*input 10.*output 4.*total 14/s);
+
+  state = reduce(state, 'right').state;
+  assert.match(view(state), /scope: Codex/);
+  assert.match(view(state), /codex-session.*input unavailable.*total unavailable/s);
+
+  state = reduce(state, 'right').state;
+  const narrow = render(state, { cols: 52, rows: 18 }).map(strip);
+  assert.match(narrow.join('\n'), /scope: OpenCode \/ openai/);
+  assert.match(narrow.join('\n'), /openai-session/);
+  assert.match(narrow.join('\n'), /cost \$0.01/);
+  assert.match(narrow.join('\n'), /totals/);
+  assert.ok(narrow.every((line) => line.length <= 52), 'narrow usage rows stay within the terminal');
 });
 
 // --- the unattended path cannot be broken --------------------------------------
