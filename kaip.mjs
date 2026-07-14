@@ -26,6 +26,7 @@ import { discoverOpenCodeModels, engineNames } from './lib/engines.mjs';
 import { applyEngineMigration, inspectEngineMigration } from './lib/migrate.mjs';
 import { c, isTTY } from './lib/ui.mjs';
 import { checkVersion } from './lib/update.mjs';
+import { aggregateUsage } from './lib/usage.mjs';
 
 // --- argument parsing --------------------------------------------------------
 function parseArgs(argv) {
@@ -224,6 +225,31 @@ function cmdRetry({ pos }) {
 
 function cmdClear() {
   console.log(`cleared ${clearFinished()} finished entries`);
+}
+
+function usageValue(value, label = '') {
+  if (!value) return label ? `${label} unknown` : 'unknown';
+  return `${label}${value.value}${value.partial ? ' (partial)' : ''}`;
+}
+
+function cmdUsage({ flags }) {
+  const filters = {};
+  for (const key of ['engine', 'provider', 'target', 'session']) {
+    if (flags[key] !== undefined) {
+      if (typeof flags[key] !== 'string' || !flags[key].trim()) throw new Error(`--${key} needs a value`);
+      filters[key] = flags[key].trim();
+    }
+  }
+  const report = aggregateUsage(filters);
+  if (!report.sessions.length) return console.log('(no usage data)');
+  for (const row of report.sessions) {
+    const scope = [row.engine, row.provider, row.target && `target ${row.target}`].filter(Boolean).join(' / ');
+    console.log(`${row.session ?? `unknown session (${row.jobId})`}  [${scope}]`);
+    console.log(`  tokens: ${usageValue(row.usage.input, 'input ')} · ${usageValue(row.usage.output, 'output ')} · ${usageValue(row.usage.total, 'total ')}`);
+    if (row.usage.cost) console.log(`  cost: $${usageValue(row.usage.cost)}`);
+  }
+  console.log(`totals\n  tokens: ${usageValue(report.totals.input, 'input ')} · ${usageValue(report.totals.output, 'output ')} · ${usageValue(report.totals.total, 'total ')}`);
+  if (report.totals.cost) console.log(`  cost: $${usageValue(report.totals.cost)}`);
 }
 
 function cmdOut({ pos }) {
@@ -685,6 +711,7 @@ Running:
 Seeing what happened:
   out [<id>]                  the ANSWER — just the last thing Claude said
   chat <id|target|session>    the CONVERSATION — every turn  [--last N] [--full] [--raw]
+   usage                       tokens by session and totals [--engine E] [--provider P] [--target T] [--session S]
 
 The phone:
   serve                       the API + a Cloudflare tunnel, and the pairing QR.
@@ -789,6 +816,7 @@ try {
     case 'out': cmdOut(parsed); break;
     case 'chat': cmdChat(parsed); break;
     case 'edit': cmdEdit(parsed); break;
+    case 'usage': cmdUsage(parsed); break;
     case 'projects': case 'project': cmdProjects(parsed); break;
     case 'engines': cmdEngines(parsed); break;
     case 'migrate': cmdMigrate(parsed); break;

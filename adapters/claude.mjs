@@ -64,6 +64,7 @@ export async function run({ prompt, sessionId, dryRun, dir, permMode, model, onE
     let buf = '';          // partial NDJSON line carried across chunks
     let sid = sessionId;
     let result = null;
+    let usage = null;
     let isError = false;
 
     const handleEvent = (evt) => {
@@ -71,6 +72,7 @@ export async function run({ prompt, sessionId, dryRun, dir, permMode, model, onE
       if (evt.type === 'result') {
         result = evt.result ?? '';
         isError = Boolean(evt.is_error);
+        usage = evt.usage ?? usage;
       }
       try { onEvent(evt); } catch { /* the view must never break the run */ }
     };
@@ -100,6 +102,7 @@ export async function run({ prompt, sessionId, dryRun, dir, permMode, model, onE
         return resolve({
           ok, sessionId: sid, output: result ?? '',
           error: ok ? null : (err || `claude exited with code ${code}`),
+          usage,
         });
       }
       let out = raw, ok = code === 0;
@@ -108,8 +111,9 @@ export async function run({ prompt, sessionId, dryRun, dir, permMode, model, onE
         sid = j.session_id || sid;
         out = j.result ?? raw;
         if (j.is_error) ok = false;
+        usage = j.usage ?? usage;
       } catch { /* non-JSON output: leave it raw */ }
-      resolve({ ok, sessionId: sid, output: out, error: ok ? null : (err || `claude exited with code ${code}`) });
+      resolve({ ok, sessionId: sid, output: out, error: ok ? null : (err || `claude exited with code ${code}`), usage });
     });
 
     child.stdin.write(prompt);
