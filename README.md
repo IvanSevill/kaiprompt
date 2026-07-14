@@ -1,6 +1,6 @@
 # Kaiprompt
 
-**Claude Code stops when the quota runs out. Your work doesn't.**
+**Your coding agent stops when the quota runs out. Your work doesn't.**
 
 Kaiprompt puts your prompts in a queue and launches them for you — at 3am, or the moment
 your quota comes back. And when the quota dies in the middle of a job, it puts that job
@@ -9,11 +9,11 @@ your quota comes back. And when the quota dies in the middle of a job, it puts t
 You queue the work and walk away.
 
 ```
-kaip add "run the tests and fix whatever breaks" --at 03:00 --dir myapp
+kaip claude add "run the tests and fix whatever breaks" --at 03:00 --dir myapp
 ```
 
-Zero dependencies — just Node. It runs on your **Claude Code subscription**, never the paid
-API.
+Zero npm dependencies — just Node. Claude Code, Codex and OpenCode are first-class engines;
+each launch records the engine, provider and model it actually used.
 
 ---
 
@@ -137,7 +137,9 @@ alias kaip='node "$HOME/.claude/tools/kaiprompt/kaip.mjs"'
 
 ### The GUI
 
-`kaip` with no arguments. Views: **Queue · Chats · Projects · Help**.
+`kaip` with no arguments. Views: **Queue · Chats · Projects · Usage · Help**. Use `←/→`,
+`tab`, or `1-5` to switch sections. Inside Usage, `↑/↓` switches between Claude, Codex and
+each OpenCode provider without stealing the section-navigation keys.
 
 | key | |
 |---|---|
@@ -147,15 +149,19 @@ alias kaip='node "$HOME/.claude/tools/kaiprompt/kaip.mjs"'
 | `c` | the **conversation** — every turn it took to get there |
 | `t` | retry the selected failed job, preserving its session |
 | `y` | **join** it — drops you into a real, interactive Claude Code on that session |
+| `u` | historical token/cost usage, retained even after finished jobs are cleared |
 | `R` `q` | redraw · quit |
 
-The add wizard suggests the conversations and folders you already have.
+The add wizard is one navigable form: `↑/↓` moves between fields, `←/→` chooses prompt mode,
+engine, provider, model and permissions, and `Enter` validates and queues the job. Existing
+conversations and folders are suggested in place. New jobs remember only the last engine,
+provider, model and permission mode; prompts, times, targets and folders always start empty.
 
 ### The terminal
 
 ```bash
-kaip add "<prompt>" --at 03:00 --target fixes --dir myapp
-kaip add --from ./prompts/refactor.md --at 03:00      # the prompt lives in a file
+kaip claude add "<prompt>" --at 03:00 --target fixes --dir myapp
+kaip opencode add --from ./prompts/refactor.md --provider openai --model gpt-5.6-terra
 kaip list                          # the queue, with status
 kaip run                           # process it: full-screen countdown + live view
 kaip out <id>                      # the final answer
@@ -163,6 +169,7 @@ kaip show <id>                     # the job AND the whole conversation it had
 kaip chat <target>                 # the conversation, by name
 kaip edit <id> --at +1h            # change a pending job
 kaip retry <id>                    # retry an error job in its existing session
+kaip usage --engine opencode --provider openai
 kaip opencode add --provider openai # list available OpenCode models
 kaip daemon start                  # fire scheduled jobs with no terminal open
 kaip serve                         # the API + tunnel + pairing QR, for the phone
@@ -194,7 +201,9 @@ kaip serve      # the API, the tunnel, and the pairing QR
 ```
 
 `serve` shows the pairing QR itself, and takes it off the screen when the requested phones pair
-(`kaip serve --device 2` waits for two).
+(`kaip serve --device 2` waits for two). Pairing replaces the QR with a live status panel;
+it does **not** stop the HTTP server or tunnel. Running `kaip serve` while one is already active
+restores that pairing screen and stays open until you press `Ctrl+C`.
 A code that has done its job is not neutral sitting there — it is a secret on your monitor.
 
 **No cloud, no Firebase, no account.** The PC opens an outbound Cloudflare tunnel (no ports
@@ -221,6 +230,13 @@ signal) is caught by a poll every 15 minutes — the webhook is the fast path, n
 The first poll after installing or updating is silent, so old completed jobs are never replayed as
 new notifications. The app can be switched between Spanish, English, and the system language in
 Settings.
+
+The app labels assistant turns with their real engine (`CLAUDE`, `CODEX`, or
+`OPENCODE · <provider>`), not a hard-coded name. Settings also contains historical Usage,
+notification status and a test-notification button; when Android has blocked the channel it
+links directly to the system settings. Update checks run whenever the app returns to the
+foreground, bypass stale caches, and open the latest GitHub release. Available UI text and
+release notes follow the selected Spanish, English, or system language.
 
 Build it yourself: `kaip app build` (needs the Android SDK). `kaip app test` runs its unit
 tests on the JVM, no emulator.
@@ -259,6 +275,20 @@ configured base), an alias, or a path.
 Default is **bypass**: full autonomy (edits, Bash, installs) with no prompts. It has to be
 that way — if a launch stops to ask permission at 3am, there is nobody to grant it and the job
 just hangs, having done nothing. `--perm acceptEdits` restricts it to edits only.
+
+### Engines, providers and models
+
+Every job pins its engine. OpenCode additionally requires a provider and model:
+
+```bash
+kaip engines list
+kaip engines models --provider openai
+kaip opencode add "review this repository" --provider openai --model gpt-5.6-terra
+```
+
+OpenCode streams text and Read/Edit/Write tool activity into the same live view as the other
+engines. Provider errors are preserved verbatim, so an unsupported account/model combination
+is reported instead of being reduced to a generic `Bad Request`.
 
 ### `--first` — jump the queue without lying about the time
 
@@ -341,13 +371,14 @@ logs stay readable and nothing tries to paint a full-screen interface into them.
 kaip.mjs            CLI dispatch
 install.mjs         slash commands + the note + alias
 lib/
-  store.mjs         queue · sessions · projects
+  store.mjs         queue · sessions · projects · remembered launch defaults
   queue.mjs         add/remove/clear, and the suggestions
   prompt.mjs        the prompt: inline, or linked to a file
   runner.mjs        takes the lock, cleans up, and picks one of the three loops
   lock.mjs          one runner at a time
   schedule.mjs      what runs now, the lanes, and closing out what never ran
   launch.mjs        one job end to end: execute → settle → requeue or finish
+  usage.mjs         historical tokens/cost, independent from queue cleanup
   frames.mjs        everything that gets painted
   run-plain.mjs     the unattended loop (daemon, Task Scheduler, pipes)
   run-tui.mjs       the full-screen loop: the clock and the live view
