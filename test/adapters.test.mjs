@@ -135,3 +135,11 @@ test('opencode: tool parts reach the live renderer with file and diff fields', (
     } }] },
   });
 });
+
+test('opencode: normalizes punctuated TodoWrite tool names', () => {
+  const event = opencode.toolEvent({
+    part: { type: 'tool', tool: 'todo_write', state: { input: { todos: [{ content: 'test it', status: 'pending' }] } } },
+  }, 'ses-2');
+  assert.equal(event.message.content[0].name, 'TodoWrite');
+  assert.equal(event.message.content[0].input.todos[0].content, 'test it');
+});

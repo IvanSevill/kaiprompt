@@ -8,6 +8,7 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-run-'));
 process.env.KAIP_HOME = TMP;
 const { loadQueue, loadSessions, nid, outPath, rememberSession, saveQueue, saveSessions } = await import('../lib/store.mjs');
 const { executeJob, requeue, runQueue, settle } = await import('../lib/runner.mjs');
+const { liveEvents } = await import('../lib/live-events.mjs');
 
 const job = (over = {}) => ({
   id: nid(), prompt: 'do something', target: null, adapter: 'mock', when: null,
@@ -165,10 +166,11 @@ test('executeJob: emits live events when onEvent is passed', async () => {
   assert.ok(seen.includes('result'), 'the final event');
 });
 
-test('executeJob: with no onEvent there is NO streaming (the one-shot mode)', async () => {
+test('executeJob: persists live events even when no terminal renderer is attached', async () => {
   const j = job();
-  const res = await executeJob(j);          // it must neither break nor hang
+  const res = await executeJob(j);
   assert.equal(res.ok, true);
+  assert.ok(liveEvents(j.id).some((event) => event.kind === 'text'));
 });
 
 test('runQueue (with no TTY): processes the sequential ones in order', async () => {
@@ -260,6 +262,22 @@ test('lock: it is released on the way out', async () => {
   saveQueue([]);
   await runQueue({ once: true });
   assert.equal(fs.existsSync(path.join(TMP, 'data', 'runner.lock')), false, 'it must not be left hanging');
+});
+
+test('lock: acquisition is exclusive and release cannot delete another owner', async () => {
+  const { acquireLock } = await import('../lib/lock.mjs');
+  const lock = path.join(TMP, 'data', 'runner.lock');
+  fs.rmSync(lock, { force: true });
+
+  const release = acquireLock();
+  assert.equal(typeof release, 'function');
+  assert.equal(acquireLock(), null, 'exclusive creation permits only one owner');
+
+  const replacement = { pid: process.pid, at: Date.now(), owner: 'replacement' };
+  fs.writeFileSync(lock, JSON.stringify(replacement));
+  release();
+  assert.equal(fs.existsSync(lock), true, 'the old owner must not remove a replacement lock');
+  fs.rmSync(lock, { force: true });
 });
 
 // --- jobs left hanging in "running" ------------------------------------------

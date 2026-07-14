@@ -32,9 +32,12 @@ class Store(context: Context) {
         set(p) {
             prefs.edit().apply {
                 if (p == null) {
-                    val language = prefs.getString("language", null)
-                    clear()
-                    putString("language", language)
+                    remove("url")
+                    remove("lan")
+                    remove("token")
+                    remove("key")
+                    remove("tunnel")
+                    remove("host")
                 } else {
                     putString("url", p.url)
                     putString("lan", p.lan)

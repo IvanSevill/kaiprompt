@@ -25,6 +25,8 @@ const TOOL_NAMES = {
   bash: 'Bash', glob: 'Glob', grep: 'Grep', task: 'Task', todowrite: 'TodoWrite',
 };
 
+const toolKey = (value) => String(value ?? '').toLowerCase().replace(/[^a-z]/g, '');
+
 /** Translate OpenCode's tool part into the Claude-shaped event the live renderer consumes. */
 export function toolEvent(evt, sessionId) {
   const part = evt?.part;
@@ -38,7 +40,7 @@ export function toolEvent(evt, sessionId) {
   input.new_string ??= input.newString ?? input.newText ?? input.new;
   return {
     type: 'assistant', session_id: sessionId,
-    message: { content: [{ type: 'tool_use', name: TOOL_NAMES[String(raw).toLowerCase()] ?? String(raw), input }] },
+     message: { content: [{ type: 'tool_use', name: TOOL_NAMES[toolKey(raw)] ?? String(raw), input }] },
   };
 }
 
@@ -59,6 +61,7 @@ export async function run({ prompt, sessionId, dryRun, dir, provider, model, onE
     catch (e) { resolve({ ok: false, sessionId, output: '', error: `could not launch ${BIN}: ${e.message}` }); return; }
     let stderr = '', buffer = '', sid = sessionId, output = '';
     let usage = null, cost = null, sawError = false, eventError = null;
+    const seenTools = new Set();
     const handle = (evt) => {
       if (evt.sessionID) sid = evt.sessionID;
       if (evt.type === 'error') {
@@ -70,7 +73,13 @@ export async function run({ prompt, sessionId, dryRun, dir, provider, model, onE
         try { onEvent?.({ type: 'assistant', session_id: sid, message: { content: [{ type: 'text', text: evt.part.text }] } }); } catch { /* rendering cannot stop a launch */ }
       }
       const tool = toolEvent(evt, sid);
-      if (tool) { try { onEvent?.(tool); } catch { /* rendering cannot stop a launch */ } }
+      if (tool) {
+        const signature = `${evt.part?.id ?? ''}:${JSON.stringify(tool.message.content[0])}`;
+        if (!seenTools.has(signature)) {
+          seenTools.add(signature);
+          try { onEvent?.(tool); } catch { /* rendering cannot stop a launch */ }
+        }
+      }
       if (evt.type === 'step_finish') {
         const t = evt.part?.tokens;
         if (t) usage = { input: t.input ?? null, output: t.output ?? null, reasoning: t.reasoning ?? null, total: t.total ?? null, cacheRead: t.cache?.read ?? null, cacheWrite: t.cache?.write ?? null };

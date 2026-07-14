@@ -463,16 +463,22 @@ async function cmdServe({ flags }) {
   // live in the shared config. Reuse it and print its QR again instead of making the person
   // hunt down a terminal just to recover an already-working phone connection.
   const existing = await fetch(`http://127.0.0.1:${port}/api/ping`, { signal: AbortSignal.timeout(500) })
-    .then((r) => r.ok)
+    .then(async (r) => r.ok ? await r.json() : null)
     .catch(() => false);
   if (existing) {
     console.log(c.ok(`kaip serve already running on port ${port}`));
+    if ((existing.protocol ?? 0) < 2) {
+      console.log(c.err('  that process is an older Kaiprompt server and cannot restore pairing reliably.'));
+      console.log(c.muted('  close its original window with Ctrl+C, then run kaip serve again.'));
+      return;
+    }
     console.log(c.muted('  restored the existing pairing session; showing its QR again.'));
-    await showPairing(port, devices);
+    await showPairing(port, devices, { attached: true });
     return;
   }
 
-  createServer({ port });
+  const server = createServer({ port });
+  await server.ready;
   console.log(c.bold('kaip serve') + c.muted(`  ·  port ${port}`));
 
   // The window title says whether the phone is actually on the other end — the one thing you
@@ -555,7 +561,7 @@ async function cmdServe({ flags }) {
  *
  * Now the signal is time, not identity: has anyone talked to THIS server since it started?
  */
-async function showPairing(port, devices = 1) {
+async function showPairing(port, devices = 1, { attached = false } = {}) {
   const { pairingCompact, serverConfig, BOOTED_AT, pairedThisSession } = await import('./lib/server.mjs');
   const { render } = await import('./lib/qr.mjs');
   const { hardClear } = await import('./lib/ui.mjs');
@@ -578,8 +584,12 @@ async function showPairing(port, devices = 1) {
 
   let mode = 'pairing';
   drawQR();
-  setInterval(() => {
-    const paired = pairedThisSession(BOOTED_AT, devices);
+  setInterval(async () => {
+    const paired = attached
+      ? await fetch(`http://127.0.0.1:${port}/api/pairing`, {
+          headers: { authorization: `Bearer ${serverConfig().token}` }, signal: AbortSignal.timeout(800),
+        }).then((r) => r.json()).then((state) => state.mode === 'connected' ? { name: null } : null).catch(() => null)
+      : pairedThisSession(BOOTED_AT, devices);
     if (!paired) {
       if (mode !== 'pairing') {
         mode = 'pairing';

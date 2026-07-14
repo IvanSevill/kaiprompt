@@ -80,6 +80,19 @@ test('the full order: priority → due → sequential', () => {
   );
 });
 
+test('quota-paused jobs remain ineligible in every scheduling mode until reset', () => {
+  const paused = [
+    job({ id: 'prio', priority: true, pausedUntil: T + MIN }),
+    job({ id: 'due', when: T - MIN, pausedUntil: T + MIN }),
+    job({ id: 'seq', pausedUntil: T + MIN }),
+  ];
+
+  assert.equal(nextUp(paused, T).job, undefined);
+  assert.equal(nextUp(paused, T, { scheduledOnly: true }).job, undefined);
+  assert.deepEqual(startable(paused, [], 3, T), []);
+  assert.deepEqual(startable(paused, [], 3, T + MIN).map((j) => j.id), ['prio', 'due', 'seq']);
+});
+
 // --- the daemon ---------------------------------------------------------------
 test('the daemon DOES take a priority job, even with no time on it', () => {
   // A sequential job waits for a run by hand: if the daemon took them, adding one would fire

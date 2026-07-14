@@ -341,4 +341,29 @@ class ModelTest {
         assertNull(s.server.tunnel)
         assertTrue(s.server.clients.isEmpty())
     }
+
+    @Test
+    fun `chat conserva todos los turnos y los todos estructurados`() {
+        val chat = Chat.parse(
+            """{"sessionId":"s","cursor":"a:2","turns":[
+              {"role":"user","blocks":[{"type":"text","text":"uno"}]},
+              {"role":"assistant","live":true,"blocks":[
+                {"type":"text","text":"dos","eventId":"a:1"},
+                {"type":"todos","eventId":"a:2","todos":[{"content":"probar","status":"in_progress"}]}
+              ]}
+            ]}"""
+        )
+        assertEquals(2, chat.turns.size)
+        assertEquals("a:2", chat.cursor)
+        assertTrue("a:1" in chat.eventIds)
+        assertEquals("probar", chat.turns[1].blocks.filterIsInstance<Block.Todos>().single().items.single().content)
+    }
+
+    @Test
+    fun `evento live y estado de pairing se parsean sin inventar campos`() {
+        val event = LiveEvent.parse("""{"id":"x:1","jobId":"j","kind":"tool","name":"Read","input":{"file_path":"a.kt"}}""")
+        assertEquals("x:1", event.id)
+        assertEquals("a.kt", event.arg)
+        assertEquals(PairingState("pairing", false, 2), PairingState.parse("""{"mode":"pairing","registered":false,"protocol":2}"""))
+    }
 }

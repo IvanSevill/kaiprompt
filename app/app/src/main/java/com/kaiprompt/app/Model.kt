@@ -83,6 +83,9 @@ data class Job(
     val preview: String,
     val target: String?,
     val sessionId: String?,
+    val adapter: String? = null,
+    val provider: String? = null,
+    val model: String? = null,
     val dir: String?,
     val whenAt: Long?,
     val startedAt: Long?,
@@ -108,6 +111,9 @@ data class Job(
             preview = j.optString("preview", ""),
             target = j.optStringOrNull("target"),
             sessionId = j.optStringOrNull("sessionId"),
+            adapter = j.optStringOrNull("adapter"),
+            provider = j.optStringOrNull("provider"),
+            model = j.optStringOrNull("model"),
             dir = j.optStringOrNull("dir"),
             whenAt = j.optLongOrNull("when"),
             startedAt = j.optLongOrNull("startedAt"),
@@ -349,12 +355,15 @@ data class State(
 /** One turn of a conversation, flattened into what a phone screen can actually show. */
 data class Diff(val file: String, val added: Int, val removed: Int, val diff: String)
 
-data class Turn(val role: String, val at: String?, val blocks: List<Block>, val diffs: List<Diff>)
+data class Turn(val role: String, val at: String?, val blocks: List<Block>, val diffs: List<Diff>, val live: Boolean = false)
+
+data class TodoItem(val content: String, val activeForm: String?, val status: String)
 
 sealed class Block {
-    data class Text(val text: String) : Block()
-    data class Tool(val name: String, val arg: String) : Block()
+    data class Text(val text: String, val eventId: String? = null) : Block()
+    data class Tool(val name: String, val arg: String, val eventId: String? = null) : Block()
     data class Thinking(val text: String) : Block()
+    data class Todos(val items: List<TodoItem>, val eventId: String? = null) : Block()
 }
 
 data class Chat(
@@ -365,6 +374,8 @@ data class Chat(
     val model: String?,
     val dir: String?,
     val turns: List<Turn>,
+    val cursor: String? = null,
+    val eventIds: Set<String> = emptySet(),
 ) {
     val assistantLabel: String?
         get() = when (adapter?.lowercase()) {
@@ -392,12 +403,19 @@ data class Chat(
                 val blocks = (0 until bs.length()).mapNotNull { k ->
                     val b = bs.getJSONObject(k)
                     when (b.optString("type")) {
-                        "text" -> b.optStringOrNull("text")?.takeIf { it.isNotBlank() }?.let { Block.Text(it) }
+                        "text" -> b.optStringOrNull("text")?.takeIf { it.isNotBlank() }?.let { Block.Text(it, b.optStringOrNull("eventId")) }
                         "thinking" -> b.optStringOrNull("text")?.let { Block.Thinking(it) }
                         "tool" -> {
                             val input = b.optJSONObject("input")
                             val arg = ARG_KEYS.firstNotNullOfOrNull { key -> input?.optStringOrNull(key) } ?: ""
-                            Block.Tool(b.optString("name", "tool"), arg)
+                            Block.Tool(b.optString("name", "tool"), arg, b.optStringOrNull("eventId"))
+                        }
+                        "todos" -> {
+                            val todos = b.optJSONArray("todos") ?: JSONArray()
+                            Block.Todos((0 until todos.length()).map { n ->
+                                val todo = todos.getJSONObject(n)
+                                TodoItem(todo.optString("content"), todo.optStringOrNull("activeForm"), todo.optString("status", "pending"))
+                            }, b.optStringOrNull("eventId"))
                         }
                         else -> null
                     }
@@ -409,7 +427,7 @@ data class Chat(
                         Diff(file, d.optInt("added"), d.optInt("removed"), d.optString("diff", ""))
                     }
                 }
-                if (blocks.isEmpty()) null else Turn(t.optString("role"), t.optStringOrNull("at"), blocks, parsedDiffs)
+                if (blocks.isEmpty()) null else Turn(t.optString("role"), t.optStringOrNull("at"), blocks, parsedDiffs, t.optBoolean("live"))
             }
 
             return Chat(
@@ -419,8 +437,53 @@ data class Chat(
                 provider = j.optStringOrNull("provider"),
                 model = j.optStringOrNull("model"),
                 dir = j.optStringOrNull("dir"),
+                cursor = j.optStringOrNull("cursor"),
+                eventIds = turns.flatMap { turn -> turn.blocks.mapNotNull { block ->
+                    when (block) {
+                        is Block.Text -> block.eventId
+                        is Block.Tool -> block.eventId
+                        is Block.Todos -> block.eventId
+                        is Block.Thinking -> null
+                    }
+                } }.toSet(),
                 turns = turns,
             )
+        }
+    }
+}
+
+data class LiveEvent(
+    val id: String?, val jobId: String?, val kind: String, val text: String? = null,
+    val name: String? = null, val arg: String = "", val todos: List<TodoItem> = emptyList(),
+    val status: String? = null,
+) {
+    companion object {
+        private val ARG_KEYS = listOf("file_path", "command", "pattern", "path", "url", "query")
+
+        fun parse(body: String): LiveEvent {
+            val j = JSONObject(body)
+            val input = j.optJSONObject("input")
+            val todos = j.optJSONArray("todos") ?: JSONArray()
+            return LiveEvent(
+                id = j.optStringOrNull("id"), jobId = j.optStringOrNull("jobId"),
+                kind = j.optString("kind", j.optString("type")), text = j.optStringOrNull("text"),
+                name = j.optStringOrNull("name"),
+                arg = ARG_KEYS.firstNotNullOfOrNull { input?.optStringOrNull(it) } ?: "",
+                todos = (0 until todos.length()).map { i ->
+                    val todo = todos.getJSONObject(i)
+                    TodoItem(todo.optString("content"), todo.optStringOrNull("activeForm"), todo.optString("status", "pending"))
+                },
+                status = j.optStringOrNull("status"),
+            )
+        }
+    }
+}
+
+data class PairingState(val mode: String, val registered: Boolean, val protocol: Int) {
+    companion object {
+        fun parse(body: String): PairingState {
+            val j = JSONObject(body)
+            return PairingState(j.optString("mode"), j.optBoolean("registered"), j.optInt("protocol"))
         }
     }
 }

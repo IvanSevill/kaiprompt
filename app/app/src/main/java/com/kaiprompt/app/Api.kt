@@ -4,6 +4,7 @@ import android.content.Context
 import java.io.BufferedReader
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 
 /**
  * Talking to your PC.
@@ -57,9 +58,9 @@ class Api(private val pairing: Pairing, private val context: Context) {
     }
 
     /** Best-effort farewell used only by the explicit Unpair action. */
-    fun deleteDevice(id: String) {
-        delete("/api/device/${java.net.URLEncoder.encode(id, "UTF-8")}")
-    }
+    fun deleteDevice(id: String): PairingState = PairingState.parse(delete("/api/device/${URLEncoder.encode(id, "UTF-8")}"))
+
+    fun pairingState(id: String): PairingState = PairingState.parse(get("/api/pairing/${URLEncoder.encode(id, "UTF-8")}"))
 
     /** Wipe everything that has already run. The one destructive thing the phone can do. */
     fun clearFinished() {
@@ -167,18 +168,30 @@ class Api(private val pairing: Pairing, private val context: Context) {
      * The live feed. One line at a time, blocking — the caller runs it off the main thread
      * and closes it by cancelling the coroutine.
      */
-    fun events(onEvent: (String) -> Unit) {
-        val base = bases.first()
-        val c = open("$base/api/events?token=${pairing.token}&enc=1")
-        c.readTimeout = 0                                // an SSE stream is meant to go quiet
-
-        c.inputStream.bufferedReader().use { reader ->
-            while (true) {
-                val line = reader.readLine() ?: break
-                if (!line.startsWith("data:")) continue  // ':' comments are keep-alives
-                val payload = line.removePrefix("data:").trim()
-                if (payload.isEmpty()) continue
-                onEvent(if (Crypto.isSealed(payload)) Crypto.open(payload, pairing.key) else payload)
+    fun events(jobId: String, since: String?, onEvent: (LiveEvent) -> Unit) {
+        attempt { base ->
+            val query = buildString {
+                append("?job=").append(URLEncoder.encode(jobId, "UTF-8"))
+                if (since != null) append("&since=").append(URLEncoder.encode(since, "UTF-8"))
+            }
+            val c = open("$base/api/events$query")
+            c.readTimeout = 0
+            try {
+                var eventId: String? = null
+                c.inputStream.bufferedReader().use { reader ->
+                    while (true) {
+                        val line = reader.readLine() ?: break
+                        if (line.startsWith("id:")) eventId = line.removePrefix("id:").trim()
+                        if (!line.startsWith("data:")) continue
+                        val payload = line.removePrefix("data:").trim()
+                        if (payload.isEmpty()) continue
+                        val opened = if (Crypto.isSealed(payload)) Crypto.open(payload, pairing.key) else payload
+                        val parsed = LiveEvent.parse(opened)
+                        onEvent(if (parsed.id == null && eventId != null) parsed.copy(id = eventId) else parsed)
+                    }
+                }
+            } finally {
+                c.disconnect()
             }
         }
     }

@@ -110,6 +110,26 @@ test('addJob: with session + target, the target points at that session', () => {
   assert.equal(loadSessions().fixes.sessionId, 'session-123');
 });
 
+test('addJob: attaching one engine session preserves the target other engines', () => {
+  saveQueue([]);
+  saveSessions({
+    fixes: {
+      sessionId: 'claude-1', adapter: 'claude', updatedAt: 1,
+      engines: {
+        claude: { sessionId: 'claude-1', adapter: 'claude', updatedAt: 1 },
+        opencode: { sessionId: 'open-1', adapter: 'opencode', provider: 'openai', updatedAt: 2 },
+      },
+    },
+  });
+
+  addJob({ prompt: 'x', target: 'fixes', session: 'mock-1', adapter: 'mock' });
+  const sessions = loadSessions().fixes;
+  assert.equal(sessions.engines.claude.sessionId, 'claude-1');
+  assert.equal(sessions.engines.opencode.sessionId, 'open-1');
+  assert.equal(sessions.engines.mock.sessionId, 'mock-1');
+  assert.equal(sessions.sessionId, 'mock-1', 'the compatibility top level tracks the newest session');
+});
+
 test('addJob: a time it cannot make sense of → a parseWhen error, and the queue untouched', () => {
   saveQueue([]);
   assert.throws(() => addJob({ prompt: 'x', at: 'whenever' }), /can't parse time/);

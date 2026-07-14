@@ -6,27 +6,41 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.annotation.StringRes
 import androidx.compose.ui.text.font.FontFamily
@@ -37,6 +51,8 @@ import androidx.lifecycle.lifecycleScope
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job as CoroutineJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.net.NetworkInterface
@@ -52,13 +68,21 @@ class MainActivity : ComponentActivity() {
     private var openJob by mutableStateOf<Job?>(null)
     private var chat by mutableStateOf<Chat?>(null)
     private var chatLoading by mutableStateOf(false)
+    private var chatError by mutableStateOf<String?>(null)
     private var update by mutableStateOf<Update.Available?>(null)
     private var settings by mutableStateOf(false)
     private var confirmClear by mutableStateOf(false)
     private var showWhatsNew by mutableStateOf(false)
     private var language by mutableStateOf(AppLanguage.SYSTEM)
     private var usage by mutableStateOf<Usage?>(null)
+    private var usageLoading by mutableStateOf(false)
+    private var usageError by mutableStateOf(false)
     private var notificationsEnabled by mutableStateOf(true)
+    private var chatLiveState by mutableStateOf("idle")
+    private var chatStream: CoroutineJob? = null
+    private var unpairDialog by mutableStateOf(false)
+    private var unpairing by mutableStateOf(false)
+    private var unpairError by mutableStateOf<String?>(null)
     private var updateCheckRunning = false
 
     private val scanner = registerForActivityResult(ScanContract()) { result ->
@@ -108,14 +132,22 @@ class MainActivity : ComponentActivity() {
                     // behind the camera cutout. Nothing about that is obvious until you
                     // hold a phone that has one.
                     Box(Modifier.fillMaxSize().systemBarsPadding()) {
+                        BackHandler(enabled = settings || chat != null || openJob != null) {
+                            when {
+                                chat != null -> closeChat()
+                                openJob != null -> openJob = null
+                                settings -> settings = false
+                            }
+                        }
                         when {
                             pairing == null -> PairScreen()
                             settings -> SettingsScreen { settings = false }
-                            chat != null -> ChatScreen(chat!!) { chat = null }
+                            chat != null -> ChatScreen(chat!!) { closeChat() }
                             openJob != null -> JobScreen(openJob!!) { openJob = null }
                             else -> QueueScreen()
                         }
                         if (showWhatsNew) WhatsNewDialog()
+                        if (unpairDialog) UnpairDialog()
                     }
                 }
             }
@@ -200,13 +232,19 @@ class MainActivity : ComponentActivity() {
 
     private fun openChat(job: Job) {
         val p = pairing ?: return
+        if (chatLoading) return
         chatLoading = true
+        chatError = null
         lifecycleScope.launch {
             val r = withContext(Dispatchers.IO) { runCatching { Api(p, language.localizedContext(this@MainActivity)).chat(job.id) } }
             chatLoading = false
-            r.onSuccess { chat = it }
+            r.onSuccess {
+                chat = it
+                chatError = null
+                startLiveChat(job)
+            }
                 .onFailure { cause ->
-                    error = when {
+                    chatError = when {
                         cause is Api.Down && cause.statusCode == 404 ->
                             localizedString(R.string.error_chat_unavailable)
                         cause is Api.Down -> cause.message ?: localizedString(R.string.error_pc_unreachable)
@@ -216,13 +254,74 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun closeChat() {
+        chatStream?.cancel()
+        chatStream = null
+        chatLiveState = "idle"
+        chat = null
+        refresh()
+    }
+
+    private fun startLiveChat(job: Job) {
+        chatStream?.cancel()
+        if (!job.running) {
+            chatLiveState = "finished"
+            return
+        }
+        val p = pairing ?: return
+        chatLiveState = "connecting"
+        chatStream = lifecycleScope.launch(Dispatchers.IO) {
+            var waitMs = 500L
+            while (pairing == p && chat != null) {
+                try {
+                    runOnUiThread { chatLiveState = "live" }
+                    Api(p, language.localizedContext(this@MainActivity)).events(job.id, chat?.cursor) { event ->
+                        runOnUiThread {
+                            if (event.kind == "reset") {
+                                reloadChat(job)
+                            } else {
+                                chat = chat?.let { mergeLiveEvent(it, event) }
+                                if (event.kind == "status" && event.status in listOf("done", "error")) {
+                                    chatLiveState = "finished"
+                                    reloadChat(job)
+                                }
+                            }
+                        }
+                    }
+                    waitMs = 500L
+                } catch (_: Exception) {
+                    runOnUiThread { if (chat != null) chatLiveState = "reconnecting" }
+                    delay(waitMs)
+                    waitMs = (waitMs * 2).coerceAtMost(8_000L)
+                }
+            }
+        }
+    }
+
+    private fun reloadChat(job: Job) {
+        val p = pairing ?: return
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { Api(p, language.localizedContext(this@MainActivity)).chat(job.id) }
+            }
+            result.onSuccess { fresh ->
+                val oldIds = chat?.eventIds.orEmpty()
+                chat = fresh.copy(eventIds = fresh.eventIds + oldIds)
+            }
+        }
+    }
+
     private fun refreshUsage() {
         val p = pairing ?: return
+        usageLoading = true
+        usageError = false
         lifecycleScope.launch {
             val found = withContext(Dispatchers.IO) {
                 runCatching { Api(p, language.localizedContext(this@MainActivity)).usage() }
             }
-            usage = found.getOrNull()
+            usageLoading = false
+            found.onSuccess { usage = it; usageError = false }
+                .onFailure { usageError = true }
         }
     }
 
@@ -234,13 +333,30 @@ class MainActivity : ComponentActivity() {
 
     private fun unpair() {
         val p = pairing ?: return
+        if (unpairing) return
+        unpairDialog = true
+        unpairing = true
+        unpairError = null
         lifecycleScope.launch {
-            // The server is told while credentials still exist, but an unreachable PC must
-            // never trap somebody in a pairing they chose to remove.
-            withContext(Dispatchers.IO) {
-                runCatching { Api(p, language.localizedContext(this@MainActivity)).deleteDevice(store.deviceId) }
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val api = Api(p, language.localizedContext(this@MainActivity))
+                    var remote = api.deleteDevice(store.deviceId)
+                    repeat(40) {
+                        if (remote.mode == "pairing" && !remote.registered) return@runCatching remote
+                        Thread.sleep(500)
+                        remote = api.pairingState(store.deviceId)
+                    }
+                    throw Api.Down(localizedString(R.string.unpair_wait_timeout))
+                }
             }
-            clearPairing()
+            unpairing = false
+            result.onSuccess {
+                unpairDialog = false
+                clearPairing()
+            }.onFailure {
+                unpairError = it.message ?: localizedString(R.string.error_pc_unreachable)
+            }
         }
     }
 
@@ -263,63 +379,62 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun PairScreen() {
         Column(
-            Modifier.fillMaxSize().padding(30.dp),
-            verticalArrangement = Arrangement.Center,
+            Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+                .padding(horizontal = 24.dp, vertical = 36.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text("✦", color = K.Accent, fontSize = 44.sp)
-            Spacer(Modifier.height(14.dp))
-            Text("Kaiprompt", color = K.Text, fontSize = 30.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(8.dp))
-            Text(
-                stringResource(R.string.pair_tagline),
-                color = K.Muted, fontSize = 14.sp,
-            )
-
-            Spacer(Modifier.height(44.dp))
-
-            // The three steps, numbered, because pairing is the one moment where a person is
-            // following instructions rather than using an app.
             Column(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(K.Card).padding(20.dp),
+                Modifier.fillMaxWidth().widthIn(max = 560.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                // Two steps, not three: `kaip serve` prints the pairing QR itself. There used
-                // to be a separate command for it, and this screen went on telling people to
-                // type it long after it stopped existing.
-                Step(1, stringResource(R.string.pair_step_start), "kaip serve")
-                Spacer(Modifier.height(16.dp))
-                Step(2, stringResource(R.string.pair_step_scan), null)
-            }
+                Sparkle(52.dp)
+                Spacer(Modifier.height(18.dp))
+                Text("Kaiprompt", color = K.Text, style = MaterialTheme.typography.headlineLarge)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    stringResource(R.string.pair_tagline), color = K.Muted,
+                    style = MaterialTheme.typography.bodyLarge,
+                )
 
-            Spacer(Modifier.height(30.dp))
-            Button(
-                onClick = {
-                    scanner.launch(
-                        ScanOptions()
-                            .setBeepEnabled(false)
-                            .setOrientationLocked(false)
-                            .setPrompt(localizedString(R.string.pair_scan_prompt))
+                Spacer(Modifier.height(40.dp))
+                Panel {
+                    Step(1, stringResource(R.string.pair_step_start), "kaip serve")
+                    Spacer(Modifier.height(20.dp))
+                    Step(2, stringResource(R.string.pair_step_scan), null)
+                }
+
+                Spacer(Modifier.height(24.dp))
+                Button(
+                    onClick = {
+                        scanner.launch(
+                            ScanOptions().setBeepEnabled(false).setOrientationLocked(false)
+                                .setPrompt(localizedString(R.string.pair_scan_prompt))
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 54.dp),
+                ) {
+                    Icon(Icons.Default.QrCodeScanner, contentDescription = null)
+                    Spacer(Modifier.width(10.dp))
+                    Text(stringResource(R.string.pair_scan_button), style = MaterialTheme.typography.labelLarge)
+                }
+
+                AnimatedVisibility(error != null) {
+                    Alarm(stringResource(R.string.pair_error_title), error ?: "", null)
+                }
+
+                Spacer(Modifier.height(28.dp))
+                Row(verticalAlignment = Alignment.Top) {
+                    Icon(
+                        Icons.Default.Security, contentDescription = null, tint = K.Ok,
+                        modifier = Modifier.size(18.dp),
                     )
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = K.Accent, contentColor = K.Bg),
-                modifier = Modifier.fillMaxWidth().height(52.dp),
-                shape = RoundedCornerShape(12.dp),
-            ) {
-                Text(stringResource(R.string.pair_scan_button), fontSize = 16.sp, fontWeight = FontWeight.Bold)
-            }
-
-            AnimatedVisibility(error != null) {
-                Column {
-                    Spacer(Modifier.height(18.dp))
-                    Text(error ?: "", color = K.Err, fontSize = 13.sp)
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        stringResource(R.string.pair_security), color = K.Muted,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                 }
             }
-
-            Spacer(Modifier.height(36.dp))
-            Text(
-                stringResource(R.string.pair_security),
-                color = K.Muted, fontSize = 11.sp,
-            )
         }
     }
 
@@ -334,7 +449,7 @@ class MainActivity : ComponentActivity() {
             }
             Spacer(Modifier.width(12.dp))
             Column {
-                Text(text, color = K.Text, fontSize = 14.sp)
+                Text(text, color = K.Text, style = MaterialTheme.typography.bodyMedium)
                 cmd?.let {
                     Spacer(Modifier.height(5.dp))
                     Text(
@@ -365,18 +480,30 @@ class MainActivity : ComponentActivity() {
             // they are diagnosis, so they moved into Settings. What survives at the top is the
             // one line that answers "what is happening", which now includes `Parado`: the
             // same alarm, said in one word, and visible from across the room.
-            AnimatedVisibility(error != null) {
+            AnimatedVisibility(error != null && s != null) {
                 Alarm(stringResource(R.string.connection_alarm_title), error ?: "", stringResource(R.string.connection_alarm_hint))
             }
 
             s?.quota?.let { QuotaStrip(it) }
 
             when {
-                s == null && loading -> Center { Pulse(stringResource(R.string.connecting)) }
-                s == null -> Center { Text(stringResource(R.string.no_data), color = K.Muted) }
+                s == null && loading -> Center { StateMessage(stringResource(R.string.connecting), loading = true) }
+                s == null -> Center {
+                    StateMessage(
+                        title = stringResource(R.string.no_data),
+                        body = error ?: stringResource(R.string.no_data_detail),
+                        actionLabel = stringResource(R.string.retry),
+                        onAction = { refresh() },
+                    )
+                }
                 s.jobs.isEmpty() -> EmptyQueue()
-                else -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(14.dp, 4.dp, 14.dp, 28.dp)) {
-                    items(s.jobs.reversed()) { JobCard(it) { openJob = it } }
+                else -> LazyColumn(
+                    Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(14.dp, 8.dp, 14.dp, 28.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    item(key = "queue-heading") { QueueHeading(s) }
+                    items(s.jobs.reversed(), key = { it.id }) { JobCard(it) { openJob = it } }
                 }
             }
         }
@@ -390,7 +517,8 @@ class MainActivity : ComponentActivity() {
         ) {
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("✦ ", color = K.Accent, fontSize = 17.sp)
+                    Sparkle(18.dp)
+                    Spacer(Modifier.width(8.dp))
                     Text("Kaiprompt", color = K.Text, fontSize = 20.sp, fontWeight = FontWeight.Bold)
                 }
                 Spacer(Modifier.height(3.dp))
@@ -411,8 +539,18 @@ class MainActivity : ComponentActivity() {
             // One button. The reload was doing what onResume already does, and the unpair —
             // the single most destructive thing here — sat one mis-tap from everything else.
             // Both are now inside Settings, where you go on purpose.
+            if (loading && s != null) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp), color = K.Accent, strokeWidth = 2.dp,
+                )
+                Spacer(Modifier.width(8.dp))
+            }
             IconButton(onClick = { settings = true }) {
-                Text("⚙", color = K.Muted, fontSize = 19.sp)
+                Icon(
+                    Icons.Default.Settings,
+                    contentDescription = stringResource(R.string.open_settings),
+                    tint = K.Muted,
+                )
             }
         }
 
@@ -452,14 +590,14 @@ class MainActivity : ComponentActivity() {
             // indistinguishable from "hung".
             Activity.QUOTA -> listOfNotNull(
                 now.until?.let { stringResource(R.string.returns_relative, relative(LocalContext.current, it)) },
-                if (now.pending > 0) stringResource(R.string.items_in_queue, now.pending) else null,
+                if (now.pending > 0) pluralStringResource(R.plurals.items_in_queue_count, now.pending, now.pending) else null,
             ).joinToString("  ·  ")
 
             Activity.STALLED ->
                 stringResource(R.string.stalled_detail, now.pending)
 
             Activity.QUEUED -> listOfNotNull(
-                stringResource(R.string.items_in_queue, now.pending),
+                pluralStringResource(R.plurals.items_in_queue_count, now.pending, now.pending),
                 now.next?.let { stringResource(R.string.next_relative, relative(LocalContext.current, it)) },
             ).joinToString("  ·  ")
 
@@ -518,6 +656,7 @@ class MainActivity : ComponentActivity() {
                 .clip(RoundedCornerShape(11.dp))
                 .background(K.Accent.copy(alpha = 0.12f))
                 .clickable { Update.download(this@MainActivity, u.downloadUrl) }
+                .semantics { role = Role.Button }
                 .padding(15.dp),
         ) {
             Text(
@@ -588,17 +727,18 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun JobCard(job: Job, onClick: () -> Unit) {
         val colour = K.statusColour(job.status)
-        val prompt = job.prompt ?: job.preview.ifBlank { job.id }
-        // Newlines alone miss a long paragraph that wraps to several phone lines.
-        val promptLines = maxOf(prompt.lines().size, (prompt.length + 55) / 56)
-        val canExpand = promptLines > 3
+        val prompt = displayPrompt(job)
+        val promptLines = estimatedPromptLines(prompt)
+        val canExpand = canExpandPrompt(prompt)
         var expanded by remember(job.id) { mutableStateOf(false) }
 
         Row(
-            Modifier.fillMaxWidth().padding(vertical = 5.dp)
-                .clip(RoundedCornerShape(12.dp))
+            Modifier.fillMaxWidth().widthIn(max = 760.dp).padding(vertical = 5.dp)
+                .clip(RoundedCornerShape(16.dp))
                 .background(K.Card)
-                .clickable(onClick = onClick),
+                .border(1.dp, K.Line.copy(alpha = 0.7f), RoundedCornerShape(16.dp))
+                .clickable(onClick = onClick)
+                .semantics { role = Role.Button },
         ) {
             // A stripe of the status colour down the edge: you can read the queue at a glance,
             // from across the room, without reading a word of it.
@@ -606,9 +746,12 @@ class MainActivity : ComponentActivity() {
 
             Column(Modifier.padding(14.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(K.statusIcon(job.status), color = colour, fontSize = 13.sp)
-                    Spacer(Modifier.width(7.dp))
                     Chip(K.statusLabel(LocalContext.current, job.status), colour)
+                    val engine = engineLabel(job)
+                    if (engine.isNotBlank()) {
+                        Spacer(Modifier.width(6.dp))
+                        Chip(engine, K.Muted)
+                    }
                     job.target?.let {
                         Spacer(Modifier.width(6.dp))
                         Chip(it, K.Info)
@@ -622,7 +765,8 @@ class MainActivity : ComponentActivity() {
                 Spacer(Modifier.height(9.dp))
                 Text(
                     prompt,
-                    color = K.Text, fontSize = 14.sp, maxLines = 3, lineHeight = 19.sp,
+                    color = K.Text, fontSize = 15.sp,
+                    maxLines = if (expanded) Int.MAX_VALUE else 3, lineHeight = 21.sp,
                     overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                 )
 
@@ -635,22 +779,6 @@ class MainActivity : ComponentActivity() {
                             color = K.Accent, fontSize = 12.sp,
                         )
                     }
-                    if (expanded) {
-                        Text(
-                            prompt,
-                            color = K.Text, fontSize = 13.sp, lineHeight = 18.sp,
-                            fontFamily = FontFamily.Monospace,
-                            modifier = Modifier.fillMaxWidth().padding(top = 2.dp)
-                                .clip(RoundedCornerShape(8.dp)).background(K.CardHi).padding(10.dp),
-                        )
-                    }
-                }
-
-                if (job.running && job.prompt != null && !canExpand) {
-                    TextButton(onClick = { expanded = !expanded }, contentPadding = PaddingValues(0.dp)) {
-                        Text(stringResource(R.string.show_prompt), color = K.Accent, fontSize = 12.sp)
-                    }
-                    if (expanded) Text(job.prompt, color = K.Text, fontSize = 13.sp, lineHeight = 18.sp)
                 }
 
                 val foot = listOfNotNull(
@@ -667,9 +795,28 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
+    private fun QueueHeading(s: State) {
+        Row(
+            Modifier.fillMaxWidth().widthIn(max = 760.dp).padding(4.dp, 10.dp, 4.dp, 6.dp),
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            Text(stringResource(R.string.launches), color = K.Text, style = MaterialTheme.typography.titleLarge)
+            Spacer(Modifier.weight(1f))
+            Text(
+                pluralStringResource(R.plurals.items_in_queue_count, s.pending, s.pending),
+                color = if (s.pending > 0) K.Info else K.Muted,
+                style = MaterialTheme.typography.labelMedium,
+            )
+        }
+    }
+
+    @Composable
     private fun EmptyQueue() = Center {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("·", color = K.Muted, fontSize = 40.sp)
+        Column(
+            Modifier.padding(28.dp).widthIn(max = 420.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Sparkle(34.dp, colour = K.Muted)
             Spacer(Modifier.height(10.dp))
             Text(stringResource(R.string.empty_queue), color = K.Text, fontSize = 16.sp)
             Spacer(Modifier.height(8.dp))
@@ -679,7 +826,7 @@ class MainActivity : ComponentActivity() {
             )
             Spacer(Modifier.height(10.dp))
             Text(
-                "kaip add \"corre los tests\" --at +2h",
+                "kaip opencode add \"corre los tests\" --provider openai --model gpt-5.6-sol",
                 color = K.Accent, fontSize = 12.sp, fontFamily = FontFamily.Monospace,
                 modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(K.Card).padding(10.dp, 6.dp),
             )
@@ -703,15 +850,12 @@ class MainActivity : ComponentActivity() {
         LaunchedEffect(Unit) { refreshUsage() }
 
         Column(Modifier.fillMaxSize()) {
-            Row(Modifier.fillMaxWidth().padding(8.dp, 14.dp), verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = onBack) { Text(stringResource(R.string.back), color = K.Muted, fontSize = 15.sp) }
-                Spacer(Modifier.weight(1f))
-                Text(stringResource(R.string.settings), color = K.Text, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.width(16.dp))
-            }
-            HorizontalDivider(color = K.Line)
+            ScreenHeader(stringResource(R.string.settings), onBack)
 
-            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp)) {
+            Column(
+                Modifier.align(Alignment.CenterHorizontally).widthIn(max = 760.dp).fillMaxSize()
+                    .verticalScroll(rememberScrollState()).padding(20.dp),
+            ) {
 
                 Group(stringResource(R.string.language))
                 LanguageSelector()
@@ -741,7 +885,7 @@ class MainActivity : ComponentActivity() {
                 }
                 Spacer(Modifier.height(26.dp))
 
-                UsagePanel(usage)
+                UsagePanel(usage, usageLoading, usageError)
                 Spacer(Modifier.height(26.dp))
 
                 // --- who is draining the queue -------------------------------------------
@@ -878,11 +1022,64 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun UsagePanel(data: Usage?) {
+    private fun UnpairDialog() {
+        AlertDialog(
+            onDismissRequest = { if (!unpairing) unpairDialog = false },
+            containerColor = K.Card,
+            title = { Text(stringResource(R.string.unpairing_title), color = K.Text) },
+            text = {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    if (unpairing) CircularProgressIndicator(color = K.Accent, modifier = Modifier.size(28.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        if (unpairing) stringResource(R.string.unpairing_waiting) else unpairError.orEmpty(),
+                        color = if (unpairing) K.Muted else K.Err,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            },
+            confirmButton = {
+                if (!unpairing) TextButton(onClick = { unpair() }) {
+                    Text(stringResource(R.string.retry), color = K.Accent)
+                }
+            },
+            dismissButton = {
+                if (!unpairing) TextButton(onClick = { unpairDialog = false; unpairError = null }) {
+                    Text(stringResource(R.string.cancel), color = K.Muted)
+                }
+            },
+        )
+    }
+
+    @Composable
+    private fun UsagePanel(data: Usage?, loading: Boolean, failed: Boolean) {
         Group(stringResource(R.string.usage))
         if (data == null) {
-            Text(stringResource(R.string.usage_unavailable), color = K.Muted, fontSize = 12.sp)
+            StateMessage(
+                title = stringResource(if (loading) R.string.usage_loading else R.string.usage_unavailable),
+                loading = loading,
+                actionLabel = if (failed) stringResource(R.string.retry) else null,
+                onAction = if (failed) ({ refreshUsage() }) else null,
+                compact = true,
+            )
             return
+        }
+        if (failed) {
+            StateMessage(
+                title = stringResource(R.string.usage_unavailable),
+                actionLabel = stringResource(R.string.retry),
+                onAction = { refreshUsage() },
+                compact = true,
+            )
+            Spacer(Modifier.height(10.dp))
+        }
+        if (loading) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(Modifier.size(14.dp), color = K.Accent, strokeWidth = 2.dp)
+                Spacer(Modifier.width(8.dp))
+                Text(stringResource(R.string.refreshing), color = K.Muted, style = MaterialTheme.typography.bodySmall)
+            }
+            Spacer(Modifier.height(10.dp))
         }
         if (data.scopes.isEmpty()) {
             Text(stringResource(R.string.usage_empty), color = K.Muted, fontSize = 12.sp)
@@ -891,7 +1088,10 @@ class MainActivity : ComponentActivity() {
         var selected by remember { mutableIntStateOf(0) }
         val selectedIndex = selected.coerceIn(0, data.scopes.lastIndex)
         val scope = data.scopes[selectedIndex]
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
             data.scopes.forEachIndexed { index, item ->
                 FilterChip(
                     selected = index == selectedIndex,
@@ -916,10 +1116,24 @@ class MainActivity : ComponentActivity() {
         val total = totals.total?.let { stringResource(R.string.usage_total, it.value) }
         val cost = totals.cost?.let { stringResource(R.string.usage_cost, it.value) }
         val values = listOfNotNull(input, output, total, cost)
-        Text(
-            if (values.isEmpty()) stringResource(R.string.usage_unavailable) else values.joinToString("  ·  "),
-            color = if (compact) K.Muted else K.Accent, fontSize = if (compact) 11.sp else 12.sp,
-        )
+        if (values.isEmpty()) {
+            Text(stringResource(R.string.usage_unavailable), color = K.Muted, fontSize = 12.sp)
+        } else if (compact) {
+            Text(values.joinToString("  ·  "), color = K.Muted, fontSize = 11.sp)
+        } else {
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                values.forEach { value ->
+                    Text(
+                        value, color = K.Accent, style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.clip(RoundedCornerShape(8.dp))
+                            .background(K.CardHi).padding(horizontal = 10.dp, vertical = 8.dp),
+                    )
+                }
+            }
+        }
     }
 
     @Composable
@@ -960,22 +1174,18 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun Group(title: String) {
-        Text(
-            title.uppercase(),
-            color = K.Accent, fontSize = 10.sp,
-            fontWeight = FontWeight.Bold, letterSpacing = 1.sp,
-        )
+        Rule(title)
         Spacer(Modifier.height(10.dp))
     }
 
     @Composable
     private fun Fact(k: String, v: String, colour: Color = K.Text) {
-        Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-            Text(k, color = K.Muted, fontSize = 12.sp, modifier = Modifier.width(104.dp))
+        Column(Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
+            Text(k, color = K.Muted, fontSize = 11.sp)
+            Spacer(Modifier.height(2.dp))
             Text(
                 v,
                 color = colour, fontSize = 12.sp, fontFamily = FontFamily.Monospace,
-                modifier = Modifier.weight(1f),
             )
         }
     }
@@ -1005,16 +1215,16 @@ class MainActivity : ComponentActivity() {
         val colour = K.statusColour(job.status)
 
         Column(Modifier.fillMaxSize()) {
-            Row(Modifier.fillMaxWidth().padding(8.dp, 14.dp), verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = onBack) { Text(stringResource(R.string.back), color = K.Muted, fontSize = 15.sp) }
-            }
-            HorizontalDivider(color = K.Line)
+            ScreenHeader(stringResource(R.string.kaip_job), onBack)
 
-            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp)) {
+            Column(
+                Modifier.align(Alignment.CenterHorizontally).widthIn(max = 760.dp).fillMaxSize()
+                    .verticalScroll(rememberScrollState()).padding(20.dp),
+            ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(K.statusIcon(job.status), color = colour, fontSize = 20.sp)
-                    Spacer(Modifier.width(9.dp))
                     Chip(K.statusLabel(LocalContext.current, job.status), colour, solid = true)
+                    val engine = engineLabel(job)
+                    if (engine.isNotBlank()) { Spacer(Modifier.width(7.dp)); Chip(engine, K.Info) }
                     job.target?.let { Spacer(Modifier.width(7.dp)); Chip(it, K.Info) }
                 }
 
@@ -1031,18 +1241,29 @@ class MainActivity : ComponentActivity() {
                     Section(stringResource(R.string.prompt_file), it, K.Warn)
                 }
 
-                if (job.sessionId != null) {
+                if (job.sessionId != null || job.running) {
                     Spacer(Modifier.height(20.dp))
                     Button(
                         onClick = { openChat(job) },
+                        enabled = !chatLoading,
                         colors = ButtonDefaults.buttonColors(containerColor = K.Accent, contentColor = K.Bg),
-                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
                         shape = RoundedCornerShape(11.dp),
                     ) {
+                        if (chatLoading) {
+                            CircularProgressIndicator(
+                                Modifier.size(18.dp), color = K.Bg, strokeWidth = 2.dp,
+                            )
+                            Spacer(Modifier.width(10.dp))
+                        }
                         Text(
                             if (chatLoading) stringResource(R.string.chat_loading) else stringResource(R.string.view_full_chat),
                             fontWeight = FontWeight.Bold,
                         )
+                    }
+                    chatError?.let {
+                        Spacer(Modifier.height(10.dp))
+                        Alarm(stringResource(R.string.connection_alarm_title), it, null)
                     }
                 }
 
@@ -1063,17 +1284,21 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun Facts(job: Job) {
         val rows = listOfNotNull(
+            engineLabel(job).takeIf { it.isNotBlank() }?.let { stringResource(R.string.engine) to it + (job.model?.let { model -> "/$model" } ?: "") },
             job.dir?.let { stringResource(R.string.job_folder) to it },
             job.whenAt?.let { stringResource(R.string.job_scheduled_label) to clock(LocalContext.current, it) },
             job.startedAt?.let { stringResource(R.string.job_started) to clock(LocalContext.current, it) },
             job.finishedAt?.let { stringResource(R.string.job_finished_label) to clock(LocalContext.current, it) },
+            if (job.startedAt != null) stringResource(R.string.duration) to elapsed(job.startedAt, job.finishedAt ?: System.currentTimeMillis()) else null,
             job.sessionId?.let { stringResource(R.string.session) to it.take(8) + "…" },
         )
+        if (rows.isEmpty()) return
         Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(K.Card).padding(14.dp)) {
             rows.forEachIndexed { i, (k, v) ->
                 if (i > 0) Spacer(Modifier.height(9.dp))
-                Row {
-                    Text(k, color = K.Muted, fontSize = 12.sp, modifier = Modifier.width(78.dp))
+                Column {
+                    Text(k, color = K.Muted, fontSize = 11.sp)
+                    Spacer(Modifier.height(2.dp))
                     Text(v, color = K.Text, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
                 }
             }
@@ -1093,39 +1318,39 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun ChatScreen(c: Chat, onBack: () -> Unit) {
         val assistantLabel = c.assistantLabel ?: stringResource(R.string.role_assistant)
+        val turns = pluralStringResource(R.plurals.turn_count_plural, c.turns.size, c.turns.size)
+        val liveLabel = when (chatLiveState) {
+            "live" -> stringResource(R.string.chat_live)
+            "connecting" -> stringResource(R.string.chat_connecting)
+            "reconnecting" -> stringResource(R.string.chat_reconnecting)
+            "finished" -> stringResource(R.string.chat_finished)
+            else -> null
+        }
         Column(Modifier.fillMaxSize()) {
-            Row(
-                Modifier.fillMaxWidth().padding(8.dp, 12.dp, 20.dp, 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                TextButton(onClick = onBack) { Text(stringResource(R.string.back), color = K.Muted, fontSize = 15.sp) }
-                Spacer(Modifier.weight(1f))
-                Text(stringResource(R.string.turn_count, c.turns.size), color = K.Muted, fontSize = 12.sp)
-            }
+            ScreenHeader(
+                c.target ?: stringResource(R.string.conversation), onBack,
+                listOfNotNull(liveLabel, turns).joinToString(" · "),
+            )
 
-            Column(Modifier.padding(20.dp, 0.dp, 20.dp, 12.dp)) {
-                Text(
-                    c.target ?: c.sessionId.take(8),
-                    color = K.Text, fontSize = 20.sp, fontWeight = FontWeight.Bold,
-                )
-                c.dir?.let {
-                    Spacer(Modifier.height(3.dp))
-                    Text(
-                        it.substringAfterLast('/').substringAfterLast('\\'),
-                        color = K.Muted, fontSize = 12.sp, fontFamily = FontFamily.Monospace,
-                    )
+            Column(
+                Modifier.align(Alignment.CenterHorizontally).widthIn(max = 840.dp)
+                    .fillMaxWidth().padding(20.dp, 12.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Chip(assistantLabel, K.Info)
+                    c.model?.let { Spacer(Modifier.width(6.dp)); Chip(it, K.Muted) }
                 }
             }
             HorizontalDivider(color = K.Line)
 
             if (c.turns.isEmpty()) {
-                Center { Text(stringResource(R.string.empty_chat), color = K.Muted, fontSize = 14.sp) }
+                Center { StateMessage(stringResource(R.string.empty_chat)) }
                 return@Column
             }
 
             LazyColumn(
-                Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(0.dp, 14.dp, 16.dp, 44.dp),
+                Modifier.align(Alignment.CenterHorizontally).widthIn(max = 840.dp).fillMaxSize(),
+                contentPadding = PaddingValues(16.dp, 18.dp, 20.dp, 44.dp),
             ) {
                 items(c.turns) { turn -> Turn(turn, assistantLabel) }
             }
@@ -1136,13 +1361,20 @@ class MainActivity : ComponentActivity() {
     private fun Turn(turn: Turn, assistantLabel: String) {
         val you = turn.role == "user"
         val edge = if (you) K.Accent else K.Ok
+        val shape = RoundedCornerShape(16.dp)
 
-        Row(Modifier.fillMaxWidth().padding(bottom = 18.dp)) {
-            // The coloured rail down the left: whose turn this is, readable without a label.
-            Box(Modifier.width(2.dp).fillMaxHeight().background(edge.copy(alpha = 0.45f)))
-            Spacer(Modifier.width(12.dp))
-
-            Column(Modifier.weight(1f)) {
+        Row(Modifier.fillMaxWidth().padding(bottom = 14.dp)) {
+            Box(
+                Modifier.width(3.dp).heightIn(min = 48.dp).align(Alignment.Top)
+                    .clip(RoundedCornerShape(3.dp)).background(edge),
+            )
+            Spacer(Modifier.width(10.dp))
+            Column(
+                Modifier.weight(1f).clip(shape)
+                    .background(if (you) K.CardHi.copy(alpha = 0.65f) else K.Card)
+                    .border(1.dp, edge.copy(alpha = 0.22f), shape)
+                    .padding(horizontal = 15.dp, vertical = 13.dp),
+            ) {
                 Text(
                     if (you) stringResource(R.string.role_you) else assistantLabel,
                     color = edge, fontSize = 10.sp,
@@ -1157,21 +1389,60 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier.padding(bottom = 8.dp),
                     )
 
-                    // Thinking is not the answer. It is available, but it does not compete.
-                    is Block.Thinking -> Text(
-                        b.text.trim(),
-                        color = K.Muted, fontSize = 12.sp, lineHeight = 17.sp,
-                        modifier = Modifier.fillMaxWidth()
-                            .padding(bottom = 8.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(K.Card)
-                            .padding(10.dp),
-                    )
+                    is Block.Thinking -> ThinkingBlock(b.text)
 
                     is Block.Tool -> ToolLine(b)
+                    is Block.Todos -> TodoBlock(b)
                 }
                 if (turn.diffs.isNotEmpty()) DiffToggle(turn.diffs)
             }
+        }
+    }
+
+    @Composable
+    private fun TodoBlock(block: Block.Todos) {
+        if (block.items.isEmpty()) return
+        Column(
+            Modifier.fillMaxWidth().padding(vertical = 7.dp)
+                .clip(RoundedCornerShape(10.dp)).background(K.Bg.copy(alpha = 0.55f)).padding(11.dp),
+        ) {
+            Text("TODO", color = K.Muted, style = MaterialTheme.typography.labelMedium)
+            Spacer(Modifier.height(6.dp))
+            block.items.forEach { todo ->
+                val colour = when (todo.status) { "completed" -> K.Muted; "in_progress" -> K.Accent; else -> K.Text }
+                val icon = when (todo.status) { "completed" -> "✓"; "in_progress" -> "▶"; else -> "·" }
+                Text("$icon ${todo.activeForm ?: todo.content}", color = colour, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+
+    @Composable
+    private fun ThinkingBlock(text: String) {
+        var expanded by remember(text) { mutableStateOf(false) }
+        Column(
+            Modifier.fillMaxWidth().padding(bottom = 8.dp)
+                .clip(RoundedCornerShape(10.dp)).background(K.Bg.copy(alpha = 0.55f))
+                .clickable { expanded = !expanded }
+                .semantics { role = Role.Button }
+                .padding(horizontal = 11.dp, vertical = 9.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    stringResource(R.string.thinking), color = K.Muted,
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.weight(1f),
+                )
+                Icon(
+                    if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                    contentDescription = stringResource(if (expanded) R.string.hide_thinking else R.string.show_thinking),
+                    tint = K.Muted, modifier = Modifier.size(20.dp),
+                )
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                if (expanded) text.trim() else thinkingPreview(text),
+                color = K.Muted, style = MaterialTheme.typography.bodySmall,
+            )
         }
     }
 
@@ -1182,14 +1453,15 @@ class MainActivity : ComponentActivity() {
         val removed = diffs.sumOf { it.removed }
         TextButton(onClick = { expanded = !expanded }, contentPadding = PaddingValues(0.dp)) {
             Text(
-                if (expanded) "▼  +$added -$removed" else stringResource(R.string.diff_files, added, removed, diffs.size),
+                if (expanded) "▼  +$added -$removed" else "▶  +$added -$removed  ·  " +
+                    pluralStringResource(R.plurals.diff_files_count, diffs.size, added, removed, diffs.size),
                 color = K.Info, fontSize = 12.sp, fontFamily = FontFamily.Monospace,
             )
         }
         if (expanded) {
             Column(
                 Modifier.fillMaxWidth().heightIn(max = 260.dp).verticalScroll(rememberScrollState())
-                    .clip(RoundedCornerShape(8.dp)).background(K.Card).padding(10.dp),
+                    .clip(RoundedCornerShape(10.dp)).background(K.Bg.copy(alpha = 0.65f)).padding(11.dp),
             ) {
                 diffs.forEach { diff ->
                     Text(diff.file, color = K.Muted, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
@@ -1214,7 +1486,7 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun ToolLine(b: Block.Tool) {
         Row(
-            Modifier.fillMaxWidth().padding(bottom = 3.dp),
+            Modifier.fillMaxWidth().padding(bottom = 3.dp).heightIn(min = 24.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text("⎿", color = K.Line, fontSize = 11.sp)
@@ -1238,6 +1510,77 @@ class MainActivity : ComponentActivity() {
     }
 
     // ============================== bits ==========================================
+    @Composable
+    private fun ScreenHeader(title: String, onBack: () -> Unit, detail: String? = null) {
+        Row(
+            Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = stringResource(R.string.back_accessibility),
+                    tint = K.Text,
+                )
+            }
+            Text(title, color = K.Text, style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.weight(1f))
+            detail?.let {
+                Text(it, color = K.Muted, style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.width(12.dp))
+            }
+        }
+        HorizontalDivider(color = K.Line)
+    }
+
+    @Composable
+    private fun Panel(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
+        Column(
+            modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp))
+                .background(K.Card).padding(18.dp),
+            content = content,
+        )
+    }
+
+    @Composable
+    private fun StateMessage(
+        title: String,
+        body: String? = null,
+        loading: Boolean = false,
+        actionLabel: String? = null,
+        onAction: (() -> Unit)? = null,
+        compact: Boolean = false,
+    ) {
+        Column(
+            Modifier.padding(if (compact) 10.dp else 28.dp).widthIn(max = 360.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            if (loading) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(if (compact) 20.dp else 26.dp), color = K.Accent, strokeWidth = 2.dp,
+                )
+                Spacer(Modifier.height(if (compact) 9.dp else 14.dp))
+            } else {
+                Sparkle(if (compact) 22.dp else 30.dp, colour = K.Muted)
+                Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
+            }
+            Text(title, color = K.Text, style = MaterialTheme.typography.bodyMedium)
+            body?.let {
+                Spacer(Modifier.height(5.dp))
+                Text(
+                    it, color = K.Muted, style = MaterialTheme.typography.bodySmall,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                )
+            }
+            if (actionLabel != null && onAction != null) {
+                Spacer(Modifier.height(10.dp))
+                OutlinedButton(onClick = onAction, modifier = Modifier.heightIn(min = 48.dp)) {
+                    Text(actionLabel)
+                }
+            }
+        }
+    }
+
     @Composable
     private fun Alarm(title: String, body: String, cmd: String?, colour: Color = K.Err) {
         Column(
@@ -1278,18 +1621,6 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun Center(content: @Composable () -> Unit) =
         Box(Modifier.fillMaxSize(), Alignment.Center) { content() }
-
-    /** A slow pulse — something is happening, without a spinner shouting about it. */
-    @Composable
-    private fun Pulse(text: String) {
-        val t = rememberInfiniteTransition(label = "pulse")
-        val a by t.animateFloat(
-            0.35f, 1f,
-            infiniteRepeatable(tween(900, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-            label = "alpha",
-        )
-        Text(text, color = K.Muted, fontSize = 14.sp, modifier = Modifier.alpha(a))
-    }
 
     /** The dot that says "this one is running right now". */
     @Composable

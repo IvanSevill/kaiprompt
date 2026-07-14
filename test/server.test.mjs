@@ -20,6 +20,7 @@ process.env.KAIP_HOME = TMP;
 const { historyPath, outPath, patchJob, saveQueue, saveSessions } = await import('../lib/store.mjs');
 const { addJob } = await import('../lib/queue.mjs');
 const { executeJob } = await import('../lib/runner.mjs');
+const { emitLive } = await import('../lib/live-events.mjs');
 const {
   addresses, createServer, noteClient, pairingPayload, publish, resetToken, serverConfig, saveServerConfig,
   BOOTED_AT, clientList, forgetClients, pairedThisSession, stateDTO,
@@ -51,7 +52,7 @@ const rawGet = (p, headers = {}) => new Promise((resolve, reject) => {
 before(async () => {
   token = serverConfig().token;
   server = createServer({ port: PORT });
-  await new Promise((r) => setTimeout(r, 200));
+  await server.ready;
 });
 
 after(() => server?.close());
@@ -195,6 +196,21 @@ test('/api/job/:id/chat falls back to the prompt and output for OpenCode', async
   assert.deepEqual(chat.turns.map((t) => t.blocks[0].text), ['ask OpenCode', 'OpenCode answer']);
 });
 
+test('/api/job/:id/chat returns every turn from the same OpenCode session', async () => {
+  saveQueue([]);
+  const a = addJob({ prompt: 'first question', target: 'shared', adapter: 'opencode', provider: 'openai', model: 'gpt-5.6-sol', session: 'ses-shared' });
+  const b = addJob({ prompt: 'second question', target: 'shared', adapter: 'opencode', provider: 'openai', model: 'gpt-5.6-sol', session: 'ses-shared' });
+  fs.writeFileSync(outPath(a.id), 'first answer');
+  fs.writeFileSync(outPath(b.id), 'second answer');
+  patchJob({ ...a, status: 'done', output: `out/${a.id}.txt`, finishedAt: Date.now() - 10 });
+  patchJob({ ...b, status: 'done', output: `out/${b.id}.txt`, finishedAt: Date.now() });
+
+  const chat = await (await get(`/api/job/${a.id}/chat`)).json();
+  assert.deepEqual(chat.turns.map((turn) => turn.blocks[0].text), [
+    'first question', 'first answer', 'second question', 'second answer',
+  ]);
+});
+
 // --- pairing --------------------------------------------------------------------
 test('pairingPayload: carries where to connect, and with what', () => {
   const p = pairingPayload(PORT);
@@ -267,11 +283,13 @@ test('DELETE /api/device/:id removes only that identified device and preserves l
     method: 'DELETE', headers: { authorization: `Bearer ${token}` },
   });
   assert.equal(r.status, 200);
-  assert.deepEqual(await r.json(), { ok: true, removed: 1, devices: 2 });
+  assert.deepEqual(await r.json(), { ok: true, removed: 1, devices: 2, mode: 'pairing' });
   assert.deepEqual(serverConfig().devices.map((d) => d.id ?? d.name), ['device-b', 'old-client']);
 
   const state = await (await get('/api/state')).json();
   assert.equal(state.server.devices.length, 2, 'the state count reflects unpairing immediately');
+  const pairing = await (await get('/api/pairing/device-a')).json();
+  assert.deepEqual(pairing, { ok: true, registered: false, mode: 'pairing', protocol: 2 });
 });
 
 test('DELETE /api/device/:id demands the pairing token', async () => {
@@ -356,6 +374,24 @@ test('/api/events: SSE, and whatever the runner publishes reaches the phone', as
 
   assert.match(got, /"type":"job"/);
   assert.match(got, /"status":"running"/);
+});
+
+test('/api/events replays missed live chat events after a cursor', async () => {
+  const job = { id: `live-${Date.now()}`, attemptId: 'attempt-1', target: 'chat' };
+  const first = emitLive(job, { kind: 'text', text: 'one' });
+  emitLive(job, { kind: 'text', text: 'two' });
+  const ctrl = new AbortController();
+  const r = await fetch(`http://127.0.0.1:${PORT}/api/events?token=${token}&job=${job.id}&since=${encodeURIComponent(first.id)}`, { signal: ctrl.signal });
+  const reader = r.body.getReader();
+  let got = '';
+  const deadline = Date.now() + 3000;
+  while (!got.includes('"text":"two"') && Date.now() < deadline) {
+    const { value } = await reader.read();
+    got += new TextDecoder().decode(value ?? new Uint8Array());
+  }
+  ctrl.abort();
+  assert.doesNotMatch(got, /"text":"one"/);
+  assert.match(got, /id: attempt-1:2/);
 });
 
 // --- what Cloudflare sees --------------------------------------------------------

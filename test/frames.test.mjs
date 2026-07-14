@@ -205,3 +205,27 @@ test('the completion screen switches token totals across every engine scope', ()
   assert.match(codex, /2\.0k tokens.*2\.0k in.*30 out/s);
   assert.match(codex, /←\/→ engine · Enter\/q close/);
 });
+
+test('running info keeps the kaip job box and TODO appears only when present', () => {
+  saveQueue([]);
+  const job = addJob({ prompt: 'ship it', adapter: 'mock' });
+  const plain = text(runningFrame(job, [], Date.now(), 0, { info: true }));
+  assert.match(plain, /kaip job/);
+  assert.match(plain, /[╭╰]/);
+  assert.doesNotMatch(plain, /TODO/);
+
+  const withTodos = text(runningFrame(job, [], Date.now(), 0, {
+    todos: [{ content: 'run tests', status: 'in_progress' }],
+  }));
+  assert.match(withTodos, /TODO/);
+  assert.match(withTodos, /run tests/);
+});
+
+test('running diff details obey the d toggle and empty mode explains itself', () => {
+  saveQueue([]);
+  const job = addJob({ prompt: 'change it', adapter: 'mock' });
+  const lines = ['Edit(file)', { diff: true, lines: ['- before', '+ after'] }];
+  assert.doesNotMatch(text(runningFrame(job, lines, Date.now(), 0)), /before/);
+  assert.match(text(runningFrame(job, lines, Date.now(), 0, { showDiff: true })), /before/);
+  assert.match(text(runningFrame(job, [], Date.now(), 0, { showDiff: true })), /no changes captured yet/);
+});
