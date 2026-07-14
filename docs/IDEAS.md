@@ -1,5 +1,12 @@
 # Ideas
 
+## Implemented Since This Note
+
+This is a historical product note, not a current backlog. These items are now implemented and
+should not be planned again: provider/model selection per job, OpenCode execution, quota details in
+the UI, saved usage/cost data, and manual retry of failed jobs (`kaip retry <id>` or `t` in the
+guided UI). Remaining sections are proposals only and may describe an older implementation.
+
 Nada de esto está implementado. Es una lista para decidir, no un backlog para ejecutar.
 
 La pregunta que la ordena no es "¿qué molaría?", sino **"¿qué sabe ya la herramienta y no está
@@ -225,7 +232,7 @@ la última vez cada `--target` y lo proponga por defecto. Cero adivinación, cer
 
 ---
 
-### 10. Reintento con criterio
+### 10. Reintento con criterio — implemented as a manual retry
 
 **Problema real:** un job falló porque los tests estaban en rojo. Reintentarlo tal cual es
 **repetir el error, y pagarlo otra vez**.
@@ -238,8 +245,8 @@ juzgarla**.
 vez, una llamada al modelo. Gastas cupo para decidir si gastar cupo. Y la respuesta correcta
 casi siempre es **no reintentar y enseñarte el error**, que es exactamente lo que ya hace.
 
-**No lo haría.** Lo que sí haría —gratis— es lo de la idea nº 3: que las estadísticas te enseñen
-**qué targets fallan siempre**. Ahí decides tú, que es lo que quieres.
+The tool now exposes the safe version: the user decides. `kaip retry <id>` and the guided UI's `t`
+put an error job back in the queue without discarding its existing session.
 
 ---
 

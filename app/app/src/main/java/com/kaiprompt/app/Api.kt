@@ -1,5 +1,6 @@
 package com.kaiprompt.app
 
+import android.content.Context
 import java.io.BufferedReader
 import java.net.HttpURLConnection
 import java.net.URL
@@ -13,10 +14,10 @@ import java.net.URL
  * Every call asks for a sealed answer (`x-kaip-enc: 1`), so what crosses Cloudflare is an
  * envelope they have no key to. The unsealing happens here, at the edge of the app.
  */
-class Api(private val pairing: Pairing) {
+class Api(private val pairing: Pairing, private val context: Context) {
 
-    class Down(message: String) : Exception(message)
-    class Unauthorized : Exception("el PC no reconoce este móvil. Vuelve a emparejar.")
+    class Down(message: String, val statusCode: Int? = null) : Exception(message)
+    class Unauthorized(context: Context) : Exception(context.getString(R.string.api_unauthorized))
 
     /**
      * The tunnel first, the home address as a fallback.
@@ -113,13 +114,12 @@ class Api(private val pairing: Pairing) {
         // likely reason a working app suddenly stops working is simply that: it is knocking
         // on a door that no longer exists.
         val hint = if (pairing.tunnel) {
-            "El túnel cambia de dirección cada vez que reinicias «kaip serve». " +
-                "Vuelve a escanear el QR."
+            context.getString(R.string.api_tunnel_hint)
         } else {
-            "Tienes que estar en la misma wifi que el PC."
+            context.getString(R.string.api_wifi_hint)
         }
 
-        throw Down("No llego al PC.\n\nProbé:\n$tried\n\n$hint\n\n$why".trim())
+        throw Down(context.getString(R.string.api_unreachable, tried, hint, why).trim())
     }
 
     private fun open(url: String, auth: Boolean = true): HttpURLConnection =
@@ -134,13 +134,15 @@ class Api(private val pairing: Pairing) {
 
     private fun readBody(c: HttpURLConnection): String {
         val code = c.responseCode
-        if (code == 401) throw Unauthorized()
+        if (code == 401) throw Unauthorized(context)
 
         val stream = if (code in 200..299) c.inputStream else c.errorStream
         val body = stream?.bufferedReader()?.use(BufferedReader::readText).orEmpty()
         c.disconnect()
 
-        if (code !in 200..299) throw Down("el PC respondió $code: ${body.take(200)}")
+        if (code !in 200..299) {
+            throw Down(context.getString(R.string.api_response_error, code, body.take(200)), code)
+        }
 
         // The 401 above is deliberately NOT sealed by the server, so the reason is readable.
         // Everything else is, and this is where it stops being Cloudflare's business.

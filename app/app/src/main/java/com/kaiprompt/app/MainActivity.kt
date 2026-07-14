@@ -24,6 +24,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.annotation.StringRes
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -50,6 +53,8 @@ class MainActivity : ComponentActivity() {
     private var update by mutableStateOf<Update.Available?>(null)
     private var settings by mutableStateOf(false)
     private var confirmClear by mutableStateOf(false)
+    private var showWhatsNew by mutableStateOf(false)
+    private var language by mutableStateOf(AppLanguage.SYSTEM)
 
     private val scanner = registerForActivityResult(ScanContract()) { result ->
         val text = result.contents ?: return@registerForActivityResult
@@ -63,7 +68,7 @@ class MainActivity : ComponentActivity() {
                 CatchUpWorker.schedule(this)
                 refresh()
             }
-            .onFailure { error = "Ese QR no es de Kaiprompt. Usa el que sale con «kaip serve»." }
+            .onFailure { error = localizedString(R.string.error_invalid_qr) }
     }
 
     private val askNotifications =
@@ -73,6 +78,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         store = Store(this)
         pairing = store.pairing
+        language = store.language
+        showWhatsNew = store.seenVersion != installedVersion()
         Notifier.ensureChannels(this)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -84,6 +91,8 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
+            val localizedContext = remember(language) { language.localizedContext(this@MainActivity) }
+            CompositionLocalProvider(LocalContext provides localizedContext) {
             KaipTheme {
                 Surface(Modifier.fillMaxSize(), color = K.Bg) {
                     // systemBarsPadding: without it the app draws UNDER the notch and the
@@ -98,9 +107,11 @@ class MainActivity : ComponentActivity() {
                             openJob != null -> JobScreen(openJob!!) { openJob = null }
                             else -> QueueScreen()
                         }
+                        if (showWhatsNew) WhatsNewDialog()
                     }
                 }
             }
+        }
         }
         if (pairing != null) refresh()
 
@@ -122,10 +133,10 @@ class MainActivity : ComponentActivity() {
         val p = pairing ?: return
         loading = true
         lifecycleScope.launch {
-            val r = withContext(Dispatchers.IO) { runCatching { Api(p).state() } }
+            val r = withContext(Dispatchers.IO) { runCatching { Api(p, language.localizedContext(this@MainActivity)).state() } }
             loading = false
             r.onSuccess { state = it; error = null }
-                .onFailure { error = it.message ?: "No llego al PC." }
+                .onFailure { error = it.message ?: localizedString(R.string.error_pc_unreachable) }
         }
     }
 
@@ -140,7 +151,7 @@ class MainActivity : ComponentActivity() {
      */
     private fun announceSelf(p: Pairing) = lifecycleScope.launch(Dispatchers.IO) {
         val callback = localAddress()?.let { ListenerService.callbackUrl(it) }
-        runCatching { Api(p).registerDevice(callback, deviceName()) }
+        runCatching { Api(p, language.localizedContext(this@MainActivity)).registerDevice(callback, deviceName()) }
     }
 
     /** What this phone is called. Never blank, and never "?" — the PC cannot work this out. */
@@ -148,7 +159,7 @@ class MainActivity : ComponentActivity() {
         val model = Build.MODEL?.trim().orEmpty()
         val brand = Build.MANUFACTURER?.trim().orEmpty()
         return when {
-            model.isBlank() && brand.isBlank() -> "móvil"
+            model.isBlank() && brand.isBlank() -> localizedString(R.string.device_default_name)
             model.isBlank() -> brand.replaceFirstChar(Char::uppercase)
             // "Pixel 7" already says Google; "SM-A536B" does not say Samsung.
             model.startsWith(brand, ignoreCase = true) || brand.isBlank() -> model
@@ -167,19 +178,25 @@ class MainActivity : ComponentActivity() {
         val p = pairing ?: return
         chatLoading = true
         lifecycleScope.launch {
-            val r = withContext(Dispatchers.IO) { runCatching { Api(p).chat(job.id) } }
+            val r = withContext(Dispatchers.IO) { runCatching { Api(p, language.localizedContext(this@MainActivity)).chat(job.id) } }
             chatLoading = false
             r.onSuccess { chat = it }
                 .onFailure { cause ->
                     error = when {
-                        cause is Api.Down && cause.message?.startsWith("el PC respondió 404") == true ->
-                            "El PC está conectado, pero esta conversación no está disponible todavía."
-                        cause is Api.Down -> cause.message ?: "No llego al PC."
-                        else -> "No pude abrir la conversación: ${cause.message ?: "error desconocido"}"
+                        cause is Api.Down && cause.statusCode == 404 ->
+                            localizedString(R.string.error_chat_unavailable)
+                        cause is Api.Down -> cause.message ?: localizedString(R.string.error_pc_unreachable)
+                        else -> localizedString(R.string.error_open_chat, cause.message ?: localizedString(R.string.error_unknown))
                     }
                 }
         }
     }
+
+    private fun installedVersion(): String = packageManager
+        .getPackageInfo(packageName, 0).versionName.orEmpty()
+
+    private fun localizedString(@StringRes id: Int, vararg formatArgs: Any): String =
+        language.localizedContext(this).getString(id, *formatArgs)
 
     private fun unpair() {
         store.pairing = null
@@ -209,7 +226,7 @@ class MainActivity : ComponentActivity() {
             Text("Kaiprompt", color = K.Text, fontSize = 30.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
             Text(
-                "Tus prompts, corriendo solos en tu PC.",
+                stringResource(R.string.pair_tagline),
                 color = K.Muted, fontSize = 14.sp,
             )
 
@@ -223,9 +240,9 @@ class MainActivity : ComponentActivity() {
                 // Two steps, not three: `kaip serve` prints the pairing QR itself. There used
                 // to be a separate command for it, and this screen went on telling people to
                 // type it long after it stopped existing.
-                Step(1, "En el PC, arranca el servidor", "kaip serve")
+                Step(1, stringResource(R.string.pair_step_start), "kaip serve")
                 Spacer(Modifier.height(16.dp))
-                Step(2, "Escanea aquí el QR que sale ahí mismo", null)
+                Step(2, stringResource(R.string.pair_step_scan), null)
             }
 
             Spacer(Modifier.height(30.dp))
@@ -235,14 +252,14 @@ class MainActivity : ComponentActivity() {
                         ScanOptions()
                             .setBeepEnabled(false)
                             .setOrientationLocked(false)
-                            .setPrompt("Apunta al QR de «kaip serve»")
+                            .setPrompt(localizedString(R.string.pair_scan_prompt))
                     )
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = K.Accent, contentColor = K.Bg),
                 modifier = Modifier.fillMaxWidth().height(52.dp),
                 shape = RoundedCornerShape(12.dp),
             ) {
-                Text("Escanear el QR", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Text(stringResource(R.string.pair_scan_button), fontSize = 16.sp, fontWeight = FontWeight.Bold)
             }
 
             AnimatedVisibility(error != null) {
@@ -254,8 +271,7 @@ class MainActivity : ComponentActivity() {
 
             Spacer(Modifier.height(36.dp))
             Text(
-                "La clave de cifrado viaja dentro de ese QR y nunca por internet. " +
-                    "Por eso lo que pasa por el túnel no lo puede leer nadie — ni siquiera quien lo transporta.",
+                stringResource(R.string.pair_security),
                 color = K.Muted, fontSize = 11.sp,
             )
         }
@@ -296,20 +312,22 @@ class MainActivity : ComponentActivity() {
         Column(Modifier.fillMaxSize()) {
             TopBar(s)
 
+            update?.let { UpdateNotice(it) }
+
             // The "nothing will fire" and "a run is draining it" banners used to live here.
             // They are worth knowing and they are NOT what you open this app to look at —
             // they are diagnosis, so they moved into Settings. What survives at the top is the
             // one line that answers "what is happening", which now includes `Parado`: the
             // same alarm, said in one word, and visible from across the room.
             AnimatedVisibility(error != null) {
-                Alarm("No llego al PC", error ?: "", "¿Está encendido y con «kaip serve» corriendo?")
+                Alarm(stringResource(R.string.connection_alarm_title), error ?: "", stringResource(R.string.connection_alarm_hint))
             }
 
             s?.quota?.let { QuotaStrip(it) }
 
             when {
-                s == null && loading -> Center { Pulse("conectando con tu PC…") }
-                s == null -> Center { Text("Sin datos.", color = K.Muted) }
+                s == null && loading -> Center { Pulse(stringResource(R.string.connecting)) }
+                s == null -> Center { Text(stringResource(R.string.no_data), color = K.Muted) }
                 s.jobs.isEmpty() -> EmptyQueue()
                 else -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(14.dp, 4.dp, 14.dp, 28.dp)) {
                     items(s.jobs.reversed()) { JobCard(it) { openJob = it } }
@@ -368,12 +386,12 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun NowStrip(now: Now, s: State?) {
         val (colour, icon, label) = when (now.activity) {
-            Activity.RUNNING -> Triple(K.Accent, "●", "Ejecutando")
-            Activity.QUOTA -> Triple(K.Warn, "⏸", "Esperando cupo")
-            Activity.STALLED -> Triple(K.Err, "■", "Parado")
-            Activity.QUEUED -> Triple(K.Info, "◷", "En espera")
-            Activity.IDLE -> Triple(K.Ok, "✓", "Al día")
-            Activity.UNKNOWN -> Triple(K.Muted, "·", if (error != null) "Sin conexión" else "…")
+            Activity.RUNNING -> Triple(K.Accent, "●", stringResource(R.string.activity_running))
+            Activity.QUOTA -> Triple(K.Warn, "⏸", stringResource(R.string.activity_quota))
+            Activity.STALLED -> Triple(K.Err, "■", stringResource(R.string.activity_stalled))
+            Activity.QUEUED -> Triple(K.Info, "◷", stringResource(R.string.activity_queued))
+            Activity.IDLE -> Triple(K.Ok, "✓", stringResource(R.string.activity_idle))
+            Activity.UNKNOWN -> Triple(K.Muted, "·", if (error != null) stringResource(R.string.activity_offline) else "…")
         }
 
         // What each state owes you underneath — the thing you would otherwise have to walk to
@@ -381,25 +399,25 @@ class MainActivity : ComponentActivity() {
         val detail = when (now.activity) {
             Activity.RUNNING -> listOfNotNull(
                 now.preview?.take(60),
-                now.since?.let { "desde hace ${elapsed(it)}" },
+                now.since?.let { stringResource(R.string.since_duration, elapsed(it)) },
             ).joinToString("  ·  ")
 
             // The time it comes back is the entire message. "Waiting" without a time is
             // indistinguishable from "hung".
             Activity.QUOTA -> listOfNotNull(
-                now.until?.let { "vuelve ${relative(it)}" },
-                if (now.pending > 0) "${now.pending} en cola" else null,
+                now.until?.let { stringResource(R.string.returns_relative, relative(LocalContext.current, it)) },
+                if (now.pending > 0) stringResource(R.string.items_in_queue, now.pending) else null,
             ).joinToString("  ·  ")
 
             Activity.STALLED ->
-                "${now.pending} en cola y nadie que los lance. Arranca «kaip daemon start» en el PC."
+                stringResource(R.string.stalled_detail, now.pending)
 
             Activity.QUEUED -> listOfNotNull(
-                "${now.pending} en cola",
-                now.next?.let { "el próximo, ${relative(it)}" },
+                stringResource(R.string.items_in_queue, now.pending),
+                now.next?.let { stringResource(R.string.next_relative, relative(LocalContext.current, it)) },
             ).joinToString("  ·  ")
 
-            Activity.IDLE -> "No hay nada pendiente."
+            Activity.IDLE -> stringResource(R.string.nothing_pending)
             Activity.UNKNOWN -> error?.takeIf { it.isNotBlank() }?.lines()?.firstOrNull() ?: ""
         }
 
@@ -434,16 +452,63 @@ class MainActivity : ComponentActivity() {
         val free = if (q.renewed) 100 else (q.freePct ?: return)
         Column(Modifier.fillMaxWidth().padding(20.dp, 12.dp, 20.dp, 6.dp)) {
             QuotaBar(
-                label = "cupo de sesión",
+                label = stringResource(R.string.quota_session),
                 free = free,
                 resetsAt = q.resetsAt,
                 renewed = q.renewed,
             )
             q.freePctWeek?.let {
                 Spacer(Modifier.height(10.dp))
-                QuotaBar(label = "cupo semanal", free = it, resetsAt = q.resetsAtWeek)
+                QuotaBar(label = stringResource(R.string.quota_weekly), free = it, resetsAt = q.resetsAtWeek)
             }
         }
+    }
+
+    @Composable
+    private fun UpdateNotice(u: Update.Available) {
+        Column(
+            Modifier.fillMaxWidth()
+                .padding(14.dp, 10.dp, 14.dp, 0.dp)
+                .clip(RoundedCornerShape(11.dp))
+                .background(K.Accent.copy(alpha = 0.12f))
+                .clickable { Update.download(this@MainActivity, u.downloadUrl) }
+                .padding(15.dp),
+        ) {
+            Text(
+                stringResource(R.string.update_available, u.version),
+                color = K.Accent, fontSize = 13.sp, fontWeight = FontWeight.Bold,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(stringResource(R.string.update_download), color = K.Muted, fontSize = 12.sp)
+        }
+    }
+
+    @Composable
+    private fun WhatsNewDialog() {
+        val version = installedVersion()
+        AlertDialog(
+            onDismissRequest = { },
+            containerColor = K.Card,
+            title = { Text(stringResource(R.string.whats_new_title), color = K.Text, fontSize = 18.sp) },
+            text = {
+                Column {
+                    Text(stringResource(R.string.version, version), color = K.Accent, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        stringResource(R.string.whats_new_body),
+                        color = K.Muted, fontSize = 13.sp, lineHeight = 19.sp,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    store.seenVersion = version
+                    showWhatsNew = false
+                }) {
+                    Text(stringResource(R.string.understood), color = K.Accent, fontWeight = FontWeight.Bold)
+                }
+            },
+        )
     }
 
     @Composable
@@ -457,8 +522,8 @@ class MainActivity : ComponentActivity() {
             Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
                 Text(label, color = K.Muted, fontSize = 11.sp)
                 Text(
-                    if (renewed) "renovado" else "$free% libre" +
-                        (resetsAt?.let { "  ·  vuelve ${relative(it)}" } ?: ""),
+                    if (renewed) stringResource(R.string.quota_renewed) else stringResource(R.string.quota_free, free) +
+                        (resetsAt?.let { "  ·  ${stringResource(R.string.returns_relative, relative(LocalContext.current, it))}" } ?: ""),
                     color = colour, fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
                 )
             }
@@ -497,7 +562,7 @@ class MainActivity : ComponentActivity() {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(K.statusIcon(job.status), color = colour, fontSize = 13.sp)
                     Spacer(Modifier.width(7.dp))
-                    Chip(K.statusLabel(job.status), colour)
+                    Chip(K.statusLabel(LocalContext.current, job.status), colour)
                     job.target?.let {
                         Spacer(Modifier.width(6.dp))
                         Chip(it, K.Info)
@@ -518,9 +583,9 @@ class MainActivity : ComponentActivity() {
                 if (canExpand) {
                     TextButton(onClick = { expanded = !expanded }, contentPadding = PaddingValues(0.dp)) {
                         Text(
-                            if (expanded) "▼  colapsar prompt"
-                            else if (job.running) "▶  Ver prompt (+${promptLines - 3} líneas)"
-                            else "▶  ver prompt completo (+${promptLines - 3} líneas)",
+                            if (expanded) stringResource(R.string.collapse_prompt)
+                            else if (job.running) stringResource(R.string.show_prompt_lines_running, promptLines - 3)
+                            else stringResource(R.string.show_prompt_lines, promptLines - 3),
                             color = K.Accent, fontSize = 12.sp,
                         )
                     }
@@ -537,15 +602,15 @@ class MainActivity : ComponentActivity() {
 
                 if (job.running && job.prompt != null && !canExpand) {
                     TextButton(onClick = { expanded = !expanded }, contentPadding = PaddingValues(0.dp)) {
-                        Text("▶  Ver prompt", color = K.Accent, fontSize = 12.sp)
+                        Text(stringResource(R.string.show_prompt), color = K.Accent, fontSize = 12.sp)
                     }
                     if (expanded) Text(job.prompt, color = K.Text, fontSize = 13.sp, lineHeight = 18.sp)
                 }
 
                 val foot = listOfNotNull(
-                    job.whenAt?.let { if (job.pending) "sale ${relative(it)}" else clock(it) },
-                    job.finishedAt?.let { "terminó ${relative(it)}" },
-                    if (job.whenAt == null && job.pending) "espera a un «run»" else null,
+                    job.whenAt?.let { if (job.pending) stringResource(R.string.job_scheduled, relative(LocalContext.current, it)) else clock(LocalContext.current, it) },
+                    job.finishedAt?.let { stringResource(R.string.job_finished, relative(LocalContext.current, it)) },
+                    if (job.whenAt == null && job.pending) stringResource(R.string.job_waits_for_run) else null,
                 )
                 if (foot.isNotEmpty()) {
                     Spacer(Modifier.height(8.dp))
@@ -560,10 +625,10 @@ class MainActivity : ComponentActivity() {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text("·", color = K.Muted, fontSize = 40.sp)
             Spacer(Modifier.height(10.dp))
-            Text("La cola está vacía", color = K.Text, fontSize = 16.sp)
+            Text(stringResource(R.string.empty_queue), color = K.Text, fontSize = 16.sp)
             Spacer(Modifier.height(8.dp))
             Text(
-                "Encola algo desde el PC:",
+                stringResource(R.string.empty_queue_hint),
                 color = K.Muted, fontSize = 13.sp,
             )
             Spacer(Modifier.height(10.dp))
@@ -592,46 +657,29 @@ class MainActivity : ComponentActivity() {
 
         Column(Modifier.fillMaxSize()) {
             Row(Modifier.fillMaxWidth().padding(8.dp, 14.dp), verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = onBack) { Text("‹  volver", color = K.Muted, fontSize = 15.sp) }
+                TextButton(onClick = onBack) { Text(stringResource(R.string.back), color = K.Muted, fontSize = 15.sp) }
                 Spacer(Modifier.weight(1f))
-                Text("Ajustes", color = K.Text, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                Text(stringResource(R.string.settings), color = K.Text, fontSize = 15.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.width(16.dp))
             }
             HorizontalDivider(color = K.Line)
 
             Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp)) {
 
-                // Nothing updates a sideloaded APK, so an old one can sit here for weeks
-                // quietly missing whatever got fixed. A notice, not an auto-update: replacing
-                // the app someone is looking at, over their data, is not ours to decide.
-                update?.let { u ->
-                    Column(
-                        Modifier.fillMaxWidth()
-                            .clip(RoundedCornerShape(11.dp))
-                            .background(K.Accent.copy(alpha = 0.12f))
-                            .clickable { Update.download(this@MainActivity, u.downloadUrl) }
-                            .padding(15.dp),
-                    ) {
-                        Text(
-                            "✦  Hay una versión nueva: ${u.version}",
-                            color = K.Accent, fontSize = 13.sp, fontWeight = FontWeight.Bold,
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        Text("Toca para descargarla.", color = K.Muted, fontSize = 12.sp)
-                    }
-                    Spacer(Modifier.height(22.dp))
-                }
+                Group(stringResource(R.string.language))
+                LanguageSelector()
+                Spacer(Modifier.height(26.dp))
 
                 // --- who is draining the queue -------------------------------------------
                 // The one silent way this tool can lie to you: work scheduled for 3am, and
                 // nobody to fire it. Worth knowing; not worth shouting on every screen.
-                Group("Quién está drenando la cola")
+                Group(stringResource(R.string.queue_drainer))
                 val d = s?.daemon
                 val who = when {
                     d == null -> "—"
-                    !d.running -> "Nadie"
-                    d.kind == "daemon" -> "El daemon"
-                    else -> "Un «kaip run»"
+                    !d.running -> stringResource(R.string.nobody)
+                    d.kind == "daemon" -> stringResource(R.string.the_daemon)
+                    else -> stringResource(R.string.a_run)
                 }
                 val whoColour = when {
                     d == null -> K.Muted
@@ -639,22 +687,22 @@ class MainActivity : ComponentActivity() {
                     d.durable -> K.Ok
                     else -> K.Warn          // it fires today, and dies with its window
                 }
-                Fact("ahora mismo", who, whoColour)
-                d?.pid?.let { if (d.running) Fact("pid", "$it") }
+                Fact(stringResource(R.string.now), who, whoColour)
+                d?.pid?.let { if (d.running) Fact(stringResource(R.string.pid), "$it") }
                 // Uptime: how long whoever holds the queue has been holding it.
-                d?.since?.let { if (d.running) Fact("lleva corriendo", elapsed(it)) }
+                d?.since?.let { if (d.running) Fact(stringResource(R.string.running_for), elapsed(it)) }
 
                 if (d != null && !d.running && s.hasScheduled) {
                     Spacer(Modifier.height(10.dp))
                     Note(
-                        "Tienes trabajo agendado que NO se va a lanzar. En el PC:",
+                        stringResource(R.string.scheduled_not_running),
                         "kaip daemon start",
                         K.Err,
                     )
                 } else if (d != null && d.running && !d.durable && s.hasScheduled) {
                     Spacer(Modifier.height(10.dp))
                     Note(
-                        "Se lanzará — pero ese run muere si cierras su ventana. Para que sobreviva:",
+                        stringResource(R.string.fragile_run),
                         "kaip daemon start",
                         K.Warn,
                     )
@@ -663,19 +711,19 @@ class MainActivity : ComponentActivity() {
                 Spacer(Modifier.height(26.dp))
 
                 // --- the connection ------------------------------------------------------
-                Group("La conexión")
-                Fact("PC", s?.host ?: "—")
-                Fact("túnel", s?.server?.tunnel ?: (if (pairing?.tunnel == true) "—" else "sin túnel (wifi)"))
-                Fact("esta app usa", pairing?.url ?: "—")
+                Group(stringResource(R.string.connection))
+                Fact(stringResource(R.string.pc), s?.host ?: "—")
+                Fact(stringResource(R.string.tunnel), s?.server?.tunnel ?: (if (pairing?.tunnel == true) "—" else stringResource(R.string.no_tunnel)))
+                Fact(stringResource(R.string.app_uses), pairing?.url ?: "—")
 
                 // Who has actually talked to the PC. The answer to "is my phone even getting
                 // through?" — which you cannot otherwise ask from the phone.
                 Spacer(Modifier.height(10.dp))
-                Text("IPS CONECTADAS", color = K.Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+                Text(stringResource(R.string.connected_ips), color = K.Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
                 Spacer(Modifier.height(6.dp))
                 val ips = s?.server?.clients.orEmpty()
                 if (ips.isEmpty()) {
-                    Text("Nadie ha hablado con el PC en esta sesión.", color = K.Muted, fontSize = 12.sp)
+                    Text(stringResource(R.string.no_connected_ips), color = K.Muted, fontSize = 12.sp)
                 } else {
                     ips.forEach {
                         Text("· $it", color = K.Text, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
@@ -685,18 +733,17 @@ class MainActivity : ComponentActivity() {
                 Spacer(Modifier.height(26.dp))
 
                 // --- versions ------------------------------------------------------------
-                Group("Versiones")
-                Fact("app", appVersion())
-                Fact("PC (kaip)", s?.server?.version ?: "—")
-                s?.server?.startedAt?.let { Fact("serve lleva", elapsed(it)) }
+                Group(stringResource(R.string.versions))
+                Fact(stringResource(R.string.app), appVersion())
+                Fact(stringResource(R.string.pc_kaip), s?.server?.version ?: "—")
+                s?.server?.startedAt?.let { Fact(stringResource(R.string.serve_running_for), elapsed(it)) }
 
                 Spacer(Modifier.height(30.dp))
 
                 // --- the destructive half ------------------------------------------------
-                Group("Limpieza")
+                Group(stringResource(R.string.cleanup))
                 Text(
-                    "Borra los lanzamientos que ya han terminado (hechos, fallidos y perdidos). " +
-                        "Lo pendiente no se toca.",
+                    stringResource(R.string.cleanup_description),
                     color = K.Muted, fontSize = 12.sp, lineHeight = 17.sp,
                 )
                 Spacer(Modifier.height(12.dp))
@@ -706,7 +753,7 @@ class MainActivity : ComponentActivity() {
                     shape = RoundedCornerShape(11.dp),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = K.Err),
                 ) {
-                    Text("Borrar todos los terminados", fontSize = 14.sp)
+                    Text(stringResource(R.string.clear_finished), fontSize = 14.sp)
                 }
 
                 Spacer(Modifier.height(14.dp))
@@ -714,7 +761,7 @@ class MainActivity : ComponentActivity() {
                     onClick = { unpair() },
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Text("Desemparejar este móvil", color = K.Muted, fontSize = 13.sp)
+                    Text(stringResource(R.string.unpair), color = K.Muted, fontSize = 13.sp)
                 }
 
                 Spacer(Modifier.height(50.dp))
@@ -726,22 +773,21 @@ class MainActivity : ComponentActivity() {
             AlertDialog(
                 onDismissRequest = { confirmClear = false },
                 containerColor = K.Card,
-                title = { Text("¿Borrar los terminados?", color = K.Text, fontSize = 17.sp) },
+                title = { Text(stringResource(R.string.clear_confirm_title), color = K.Text, fontSize = 17.sp) },
                 text = {
                     Text(
-                        "Desaparecen del historial, con su conversación. Esto no se puede deshacer. " +
-                            "Lo que está pendiente o corriendo se queda como está.",
+                        stringResource(R.string.clear_confirm_body),
                         color = K.Muted, fontSize = 13.sp, lineHeight = 18.sp,
                     )
                 },
                 confirmButton = {
                     TextButton(onClick = { confirmClear = false; clearFinished() }) {
-                        Text("Borrar", color = K.Err, fontWeight = FontWeight.Bold)
+                        Text(stringResource(R.string.clear), color = K.Err, fontWeight = FontWeight.Bold)
                     }
                 },
                 dismissButton = {
                     TextButton(onClick = { confirmClear = false }) {
-                        Text("Cancelar", color = K.Muted)
+                        Text(stringResource(R.string.cancel), color = K.Muted)
                     }
                 },
             )
@@ -751,9 +797,45 @@ class MainActivity : ComponentActivity() {
     private fun clearFinished() {
         val p = pairing ?: return
         lifecycleScope.launch {
-            val r = withContext(Dispatchers.IO) { runCatching { Api(p).clearFinished() } }
+            val r = withContext(Dispatchers.IO) { runCatching { Api(p, language.localizedContext(this@MainActivity)).clearFinished() } }
             r.onSuccess { refresh() }
-                .onFailure { error = it.message ?: "No pude borrarlos." }
+                .onFailure { error = it.message ?: localizedString(R.string.error_clear) }
+        }
+    }
+
+    @Composable
+    private fun LanguageSelector() {
+        var expanded by remember { mutableStateOf(false) }
+        val label = when (language) {
+            AppLanguage.SYSTEM -> stringResource(R.string.language_system)
+            AppLanguage.SPANISH -> stringResource(R.string.language_spanish)
+            AppLanguage.ENGLISH -> stringResource(R.string.language_english)
+        }
+        Box {
+            OutlinedButton(
+                onClick = { expanded = true },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(11.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = K.Text),
+            ) { Text(label, modifier = Modifier.weight(1f)) }
+            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                AppLanguage.entries.forEach { option ->
+                    val optionLabel = when (option) {
+                        AppLanguage.SYSTEM -> stringResource(R.string.language_system)
+                        AppLanguage.SPANISH -> stringResource(R.string.language_spanish)
+                        AppLanguage.ENGLISH -> stringResource(R.string.language_english)
+                    }
+                    DropdownMenuItem(
+                        text = { Text(optionLabel) },
+                        onClick = {
+                            store.language = option
+                            language = option
+                            Notifier.ensureChannels(this@MainActivity)
+                            expanded = false
+                        },
+                    )
+                }
+            }
         }
     }
 
@@ -805,7 +887,7 @@ class MainActivity : ComponentActivity() {
 
         Column(Modifier.fillMaxSize()) {
             Row(Modifier.fillMaxWidth().padding(8.dp, 14.dp), verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = onBack) { Text("‹  volver", color = K.Muted, fontSize = 15.sp) }
+                TextButton(onClick = onBack) { Text(stringResource(R.string.back), color = K.Muted, fontSize = 15.sp) }
             }
             HorizontalDivider(color = K.Line)
 
@@ -813,7 +895,7 @@ class MainActivity : ComponentActivity() {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(K.statusIcon(job.status), color = colour, fontSize = 20.sp)
                     Spacer(Modifier.width(9.dp))
-                    Chip(K.statusLabel(job.status), colour, solid = true)
+                    Chip(K.statusLabel(LocalContext.current, job.status), colour, solid = true)
                     job.target?.let { Spacer(Modifier.width(7.dp)); Chip(it, K.Info) }
                 }
 
@@ -823,11 +905,11 @@ class MainActivity : ComponentActivity() {
                 // Why it failed comes FIRST. It is the only thing you opened this screen for.
                 job.error?.let {
                     Spacer(Modifier.height(20.dp))
-                    Section("Por qué falló", it, K.Err)
+                    Section(stringResource(R.string.why_failed), it, K.Err)
                 }
                 job.promptError?.let {
                     Spacer(Modifier.height(20.dp))
-                    Section("El archivo del prompt", it, K.Warn)
+                    Section(stringResource(R.string.prompt_file), it, K.Warn)
                 }
 
                 if (job.sessionId != null) {
@@ -839,14 +921,14 @@ class MainActivity : ComponentActivity() {
                         shape = RoundedCornerShape(11.dp),
                     ) {
                         Text(
-                            if (chatLoading) "cargando…" else "Ver la conversación entera",
+                            if (chatLoading) stringResource(R.string.chat_loading) else stringResource(R.string.view_full_chat),
                             fontWeight = FontWeight.Bold,
                         )
                     }
                 }
 
                 Spacer(Modifier.height(22.dp))
-                Section("Prompt", job.prompt ?: "(no se pudo leer)", K.Text)
+                Section(stringResource(R.string.prompt), job.prompt ?: stringResource(R.string.prompt_unreadable), K.Text)
                 job.promptFile?.let {
                     Spacer(Modifier.height(7.dp))
                     Text("↪ $it", color = K.Muted, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
@@ -862,11 +944,11 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun Facts(job: Job) {
         val rows = listOfNotNull(
-            job.dir?.let { "carpeta" to it },
-            job.whenAt?.let { "agendado" to clock(it) },
-            job.startedAt?.let { "empezó" to clock(it) },
-            job.finishedAt?.let { "terminó" to clock(it) },
-            job.sessionId?.let { "sesión" to it.take(8) + "…" },
+            job.dir?.let { stringResource(R.string.job_folder) to it },
+            job.whenAt?.let { stringResource(R.string.job_scheduled_label) to clock(LocalContext.current, it) },
+            job.startedAt?.let { stringResource(R.string.job_started) to clock(LocalContext.current, it) },
+            job.finishedAt?.let { stringResource(R.string.job_finished_label) to clock(LocalContext.current, it) },
+            job.sessionId?.let { stringResource(R.string.session) to it.take(8) + "…" },
         )
         Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(K.Card).padding(14.dp)) {
             rows.forEachIndexed { i, (k, v) ->
@@ -896,9 +978,9 @@ class MainActivity : ComponentActivity() {
                 Modifier.fillMaxWidth().padding(8.dp, 12.dp, 20.dp, 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                TextButton(onClick = onBack) { Text("‹  volver", color = K.Muted, fontSize = 15.sp) }
+                TextButton(onClick = onBack) { Text(stringResource(R.string.back), color = K.Muted, fontSize = 15.sp) }
                 Spacer(Modifier.weight(1f))
-                Text("${c.turns.size} turnos", color = K.Muted, fontSize = 12.sp)
+                Text(stringResource(R.string.turn_count, c.turns.size), color = K.Muted, fontSize = 12.sp)
             }
 
             Column(Modifier.padding(20.dp, 0.dp, 20.dp, 12.dp)) {
@@ -917,7 +999,7 @@ class MainActivity : ComponentActivity() {
             HorizontalDivider(color = K.Line)
 
             if (c.turns.isEmpty()) {
-                Center { Text("Esta conversación está vacía.", color = K.Muted, fontSize = 14.sp) }
+                Center { Text(stringResource(R.string.empty_chat), color = K.Muted, fontSize = 14.sp) }
                 return@Column
             }
 
@@ -942,7 +1024,7 @@ class MainActivity : ComponentActivity() {
 
             Column(Modifier.weight(1f)) {
                 Text(
-                    if (you) "TÚ" else "CLAUDE",
+                    if (you) stringResource(R.string.role_you) else "CLAUDE",
                     color = edge, fontSize = 10.sp,
                     fontWeight = FontWeight.Bold, letterSpacing = 1.2.sp,
                 )
@@ -980,7 +1062,7 @@ class MainActivity : ComponentActivity() {
         val removed = diffs.sumOf { it.removed }
         TextButton(onClick = { expanded = !expanded }, contentPadding = PaddingValues(0.dp)) {
             Text(
-                if (expanded) "▼  +$added -$removed" else "▶  +$added -$removed  ${diffs.size} archivo(s)",
+                if (expanded) "▼  +$added -$removed" else stringResource(R.string.diff_files, added, removed, diffs.size),
                 color = K.Info, fontSize = 12.sp, fontFamily = FontFamily.Monospace,
             )
         }

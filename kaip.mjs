@@ -19,12 +19,13 @@ import { fmt } from './lib/time.mjs';
 import { reapStale, runQueue } from './lib/runner.mjs';
 import { renderChat } from './lib/chat.mjs';
 import { editJob } from './lib/edit.mjs';
-import { addJob, clearFinished, jobDetails, removeJobs } from './lib/queue.mjs';
+import { addJob, clearFinished, jobDetails, removeJobs, retryJob } from './lib/queue.mjs';
 import { jobPreview } from './lib/prompt.mjs';
 import { COMMANDS, ENGINES } from './lib/commands.mjs';
 import { discoverOpenCodeModels, engineNames } from './lib/engines.mjs';
 import { applyEngineMigration, inspectEngineMigration } from './lib/migrate.mjs';
 import { c, isTTY } from './lib/ui.mjs';
+import { checkVersion } from './lib/update.mjs';
 
 // --- argument parsing --------------------------------------------------------
 function parseArgs(argv) {
@@ -49,6 +50,16 @@ async function cmdAdd({ flags, pos, engine }) {
   const prompt = from ? null : ((pos.join(' ').trim())
     || (typeof flags.file === 'string' ? fs.readFileSync(flags.file, 'utf8') : ''));
 
+  const chosenEngine = engine || (typeof flags.engine === 'string' ? flags.engine : (typeof flags.adapter === 'string' ? flags.adapter : null));
+  if (chosenEngine === 'opencode' && typeof flags.provider === 'string' && flags.model === undefined) {
+    const provider = flags.provider.trim().toLowerCase();
+    const models = discoverOpenCodeModels(provider);
+    if (!models.length) throw new Error(`no OpenCode models found for ${provider}`);
+    console.log(models.map((m) => m.id).join('\n'));
+    console.log(c.muted(`\nchoose one with: kaip opencode add "..." --provider ${provider} --model <name>`));
+    return;
+  }
+
   if (!from && !prompt) {
     throw new Error('missing prompt.\n  usage: kaip add "your message" | --from <path/to/prompt.md>'
       + '\n         [--target name] [--at HH:MM|+30m] [--dir project] [--perm mode] [--first]');
@@ -68,7 +79,6 @@ async function cmdAdd({ flags, pos, engine }) {
     return flags.model.trim();
   })();
 
-  const chosenEngine = engine || (typeof flags.engine === 'string' ? flags.engine : (typeof flags.adapter === 'string' ? flags.adapter : null));
   if (!chosenEngine) throw new Error('choose an engine: --engine claude | codex | opencode');
   const job = addJob({
     prompt,
@@ -204,6 +214,12 @@ function cmdEdit({ flags, pos }) {
 function cmdRm({ pos }) {
   if (!pos.length) throw new Error('usage: kaip rm <id> [<id>...]');
   console.log(`removed ${removeJobs(pos)}`);
+}
+
+function cmdRetry({ pos }) {
+  if (pos.length !== 1) throw new Error('usage: kaip retry <id>');
+  const job = retryJob(pos[0]);
+  console.log(`↻ ${job.id}  pending again${job.sessionId ? ' · resumes its existing session' : ''}`);
 }
 
 function cmdClear() {
@@ -399,6 +415,8 @@ async function cmdServe({ flags }) {
   const { DEFAULT_PORT, addresses, createServer, resetToken, serverConfig } = await import('./lib/server.mjs');
   const { installCleanup, setTitle } = await import('./lib/ui.mjs');
   const port = Number(flags.port) || DEFAULT_PORT;
+  const devices = flags.device === undefined ? 1 : Number(flags.device);
+  if (!Number.isInteger(devices) || devices < 1) throw new Error('--device needs a positive whole number');
 
   // "I lost my phone." The token and the KEY are both thrown away and every paired device
   // is dropped, so the lost phone is locked out from the next request on. The ability was
@@ -414,6 +432,19 @@ async function cmdServe({ flags }) {
   // the phone talks to this machine over the local network and that is the end of it. The
   // trade is that it only works while you are on the same wifi.
   const wifiOnly = !!flags.wifi || !!flags.local || !!flags['no-tunnel'] || flags.tunnel === false;
+
+  // A previous `kaip serve` is still the same pairing session: its token, key and tunnel
+  // live in the shared config. Reuse it and print its QR again instead of making the person
+  // hunt down a terminal just to recover an already-working phone connection.
+  const existing = await fetch(`http://127.0.0.1:${port}/api/ping`, { signal: AbortSignal.timeout(500) })
+    .then((r) => r.ok)
+    .catch(() => false);
+  if (existing) {
+    console.log(c.ok(`kaip serve already running on port ${port}`));
+    console.log(c.muted('  restored the existing pairing session; showing its QR again.'));
+    await showPairing(port, devices);
+    return;
+  }
 
   createServer({ port });
   console.log(c.bold('kaip serve') + c.muted(`  ·  port ${port}`));
@@ -475,7 +506,7 @@ async function cmdServe({ flags }) {
   // starting the server — and with a quick tunnel you need it EVERY time, because the URL
   // changes on each run. Making that a separate command you must remember to type was
   // friction with no upside.
-  await showPairing(port);
+  await showPairing(port, devices);
 
   console.log(c.muted('\n  Ctrl+C to stop.  (the tunnel dies with this window)'));
 }
@@ -498,7 +529,7 @@ async function cmdServe({ flags }) {
  *
  * Now the signal is time, not identity: has anyone talked to THIS server since it started?
  */
-async function showPairing(port) {
+async function showPairing(port, devices = 1) {
   const { pairingCompact, serverConfig, BOOTED_AT, pairedThisSession } = await import('./lib/server.mjs');
   const { render } = await import('./lib/qr.mjs');
   const { hardClear } = await import('./lib/ui.mjs');
@@ -509,7 +540,7 @@ async function showPairing(port) {
   // difference between "scans" and "worked yesterday, doesn't today".
   const p = pairingCompact(port, serverConfig().publicUrl || null);
 
-  console.log('\n' + c.bold('  scan this FROM the app') + c.muted('  — to pair it with this PC\n'));
+  console.log('\n' + c.bold('  scan this FROM the app') + c.muted(`  — ${devices === 1 ? 'to pair it with this PC' : `waiting for ${devices} devices`}\n`));
   console.log(render(JSON.stringify(p)).replace(/^/gm, '  '));
 
   // And the escape hatch, because a terminal QR is always going to be the hard way to read
@@ -523,7 +554,7 @@ async function showPairing(port) {
   console.log(c.muted('\n  no app yet? → ') + c.accent('kaip mobile'));
 
   const timer = setInterval(async () => {
-    const paired = pairedThisSession(BOOTED_AT);
+    const paired = pairedThisSession(BOOTED_AT, devices);
     if (!paired) return;
 
     clearInterval(timer);
@@ -637,7 +668,8 @@ Queue:
   list [--full|-f]            the queue, with status
   show <id>                   the job AND the whole conversation it had
   edit <id>                   change a pending job (--prompt --from --at --target --dir --perm --model)
-  rm <id> [<id>...]           remove jobs
+   rm <id> [<id>...]           remove jobs
+   retry <id>                  put an error job back in the queue
   clear                       clear finished/error entries
 
 Running:
@@ -657,6 +689,7 @@ Seeing what happened:
 The phone:
   serve                       the API + a Cloudflare tunnel, and the pairing QR.
                               Works from any network; no VPN, no ports opened.
+     --device N               keep the QR until N devices pair (default: 1)
      --wifi                   no tunnel, no Cloudflare, no third party. Your network only.
      --reset                  "I lost my phone": new token and new key, every paired
                               device dropped. They are locked out from the next request.
@@ -726,6 +759,11 @@ let av = process.argv.slice(2);
 let engine = null;
 if (ENGINES.includes(av[0])) { engine = av[0]; av = av.slice(1); }
 const [cmd, ...rest] = av;
+process.title = cmd === 'run' ? 'kaip run' : cmd === 'daemon' ? 'kaip daemon' : 'kaip';
+// Do not await: updates are informational and must never delay a command.
+void checkVersion().then((update) => {
+  if (update && process.stdout.isTTY) console.log(c.warn(`📦 Update available: v${update.latest}`));
+}).catch(() => {});
 const parsed = parseArgs(rest);
 parsed.engine = engine;
 
@@ -746,6 +784,7 @@ try {
       watch: !parsed.flags.once && parsed.flags.watch !== false && !parsed.flags['no-watch'],
     }); break;
     case 'rm': cmdRm(parsed); break;
+    case 'retry': cmdRetry(parsed); break;
     case 'clear': cmdClear(); break;
     case 'out': cmdOut(parsed); break;
     case 'chat': cmdChat(parsed); break;

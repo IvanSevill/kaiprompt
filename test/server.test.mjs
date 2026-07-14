@@ -446,6 +446,11 @@ test('the QR comes down on pairing EVEN IF the phone was already on the list fro
   assert.ok(live, 'the QR HAS to come down: it has just paired');
   assert.equal(live.name, 'pixel');
 
+  c2.devices.push({ url: 'http://192.168.1.45:8899/job-done', name: 'tablet', pairedAt: Date.now() });
+  saveServerConfig(c2);
+  assert.equal(pairedThisSession(booted, 3), null, 'the requested number of devices has not paired yet');
+  assert.equal(pairedThisSession(booted, 2).devices, 2, 'two fresh devices close a --device 2 QR');
+
   c2.devices = [];
   saveServerConfig(c2);
 });

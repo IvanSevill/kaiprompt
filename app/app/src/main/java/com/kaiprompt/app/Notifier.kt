@@ -25,22 +25,23 @@ class Notifier(private val context: Context) {
         fun ensureChannels(context: Context) {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
             val nm = context.getSystemService(NotificationManager::class.java)
+            val strings = Store(context).language.localizedContext(context)
 
             nm.createNotificationChannel(
-                NotificationChannel(CHANNEL_LIVE, "Conexión", NotificationManager.IMPORTANCE_MIN).apply {
-                    description =
-                        "La notificación permanente que Android exige para poder avisarte con la app cerrada."
+                NotificationChannel(CHANNEL_LIVE, strings.getString(R.string.notification_channel_connection), NotificationManager.IMPORTANCE_MIN).apply {
+                    description = strings.getString(R.string.notification_channel_connection_description)
                 }
             )
             nm.createNotificationChannel(
-                NotificationChannel(CHANNEL_DONE, "Lanzamientos", NotificationManager.IMPORTANCE_HIGH).apply {
-                    description = "Cuando un lanzamiento termina o falla."
+                NotificationChannel(CHANNEL_DONE, strings.getString(R.string.notification_channel_jobs), NotificationManager.IMPORTANCE_HIGH).apply {
+                    description = strings.getString(R.string.notification_channel_jobs_description)
                 }
             )
         }
     }
 
     fun jobFinished(id: String, ok: Boolean, what: String, detail: String?) {
+        val strings = Store(context).language.localizedContext(context)
         val open = PendingIntent.getActivity(
             context,
             id.hashCode(),
@@ -52,7 +53,7 @@ class Notifier(private val context: Context) {
 
         val n = NotificationCompat.Builder(context, CHANNEL_DONE)
             .setSmallIcon(android.R.drawable.stat_notify_sync)
-            .setContentTitle(if (ok) "✓ terminado" else "✗ falló")
+            .setContentTitle(strings.getString(if (ok) R.string.notification_done else R.string.notification_failed))
             .setContentText(what)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setContentIntent(open)

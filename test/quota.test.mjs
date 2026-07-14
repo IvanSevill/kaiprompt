@@ -290,3 +290,15 @@ test('resetFromUsage: if the WEEKLY one expires first (session already renewed),
   });
   assert.ok(Math.abs(resetFromUsage(f) - weekly) < 1000);
 });
+
+test('quotaVerdict: an active weekly cap beats a fresh session reading', () => {
+  const now = Date.now();
+  const weekly = now + 3 * 3600_000;
+  const f = usageFile({ rate_limits: {
+    five_hour: { used_percentage: 0, resets_at: secs(now + 5 * 3600_000) },
+    seven_day: { used_percentage: 100, resets_at: secs(weekly) },
+  } });
+  const v = quotaVerdict('hit your session limit · resets 1:30pm', { now, usageFile: f, graceMs: 0 });
+  assert.equal(v.kind, 'weekly');
+  assert.ok(Math.abs(v.resetsAt - weekly) < 1000);
+});

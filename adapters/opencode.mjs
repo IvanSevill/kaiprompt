@@ -22,11 +22,18 @@ export function buildArgs({ sessionId, provider, model, dir }) {
 
 export async function run({ prompt, sessionId, dryRun, dir, provider, model, onEvent }) {
   const args = buildArgs({ sessionId, provider, model, dir: dir && fs.existsSync(dir) ? dir : null });
-  const shown = `${BIN} ${args.join(' ')} ${JSON.stringify(prompt)}`;
+  const unattended = `${prompt}\n\n---\nUNATTENDED LAUNCH: nobody can answer questions. Do not ask for confirmation, offer choices, or wait. Make the safest reversible decision, continue, and record assumptions in your final answer. If blocked by a secret, external access, or an irreversible decision, complete everything else and report the blocker without waiting.`;
+  const shown = `${BIN} ${args.join(' ')} ${JSON.stringify(unattended)}`;
   if (dryRun) return { ok: true, sessionId, output: `[dry-run] ${shown}` };
   return new Promise((resolve) => {
     let child;
-    try { child = spawn(SHELL ? 'opencode.cmd' : BIN, [...args, prompt], { stdio: ['ignore', 'pipe', 'pipe'], shell: SHELL }); }
+    try {
+      child = spawn(SHELL ? 'opencode.cmd' : BIN, [...args, unattended], {
+        stdio: ['ignore', 'pipe', 'pipe'], shell: SHELL,
+        windowsHide: true,
+        env: { ...process.env, OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: '1' },
+      });
+    }
     catch (e) { resolve({ ok: false, sessionId, output: '', error: `could not launch ${BIN}: ${e.message}` }); return; }
     let stderr = '', buffer = '', sid = sessionId, output = '';
     let usage = null, cost = null, sawError = false;

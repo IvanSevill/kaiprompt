@@ -8,7 +8,7 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-queue-'));
 process.env.KAIP_HOME = TMP;
 const { loadQueue, loadSessions, saveProjects, saveQueue, saveSessions } = await import('../lib/store.mjs');
 const {
-  addJob, clearFinished, jobDetails, removeJobs, suggestDirs, suggestTargets,
+  addJob, clearFinished, jobDetails, removeJobs, retryJob, suggestDirs, suggestTargets,
 } = await import('../lib/queue.mjs');
 
 // --- suggested conversations --------------------------------------------------
@@ -152,6 +152,25 @@ test('removeJobs: an id that does not exist deletes nothing', () => {
   addJob({ prompt: 'a' });
   assert.equal(removeJobs(['nope']), 0);
   assert.equal(loadQueue().length, 1);
+});
+
+test('retryJob: puts an error back in the queue and preserves its session', () => {
+  saveQueue([]);
+  const failed = addJob({ prompt: 'recover this', adapter: 'mock', session: 'session-1' });
+  saveQueue([{ ...failed, status: 'error', error: 'network failed', startedAt: 1, finishedAt: 2, output: 'out/x.txt' }]);
+
+  const retried = retryJob(failed.id);
+  assert.equal(retried.status, 'pending');
+  assert.equal(retried.sessionId, 'session-1');
+  assert.equal(retried.error, undefined);
+  assert.equal(retried.output, undefined);
+  assert.ok(retried.retriedAt);
+});
+
+test('retryJob: refuses jobs that did not fail', () => {
+  saveQueue([]);
+  const pending = addJob({ prompt: 'not failed' });
+  assert.throws(() => retryJob(pending.id), /only error jobs/);
 });
 
 test('clearFinished: takes done/error and leaves pending/running alone', () => {

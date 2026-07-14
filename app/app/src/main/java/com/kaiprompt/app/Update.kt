@@ -54,12 +54,9 @@ object Update {
             ?.trim()
             .orEmpty()
 
-        val assets = json.optJSONArray("assets") ?: return null
-        val asset = (0 until assets.length()).mapNotNull { assets.optJSONObject(it) }
-            .firstOrNull { it.optString("name") == "app-release.apk" }
-            ?: (0 until assets.length()).mapNotNull { assets.optJSONObject(it) }.firstOrNull()
-            ?: return null
-        val downloadUrl = asset.optStringOrNull("browser_download_url") ?: return null
+        // Opening the release page is more reliable than handing Android's browser the asset
+        // redirect directly. Some mobile browsers lose GitHub's signed redirect and show 404.
+        val downloadUrl = json.optStringOrNull("html_url") ?: return null
 
         if (isNewer(tag, mine)) Available(tag, json.optStringOrNull("body"), downloadUrl) else null
     }.getOrNull()

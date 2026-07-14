@@ -48,7 +48,7 @@ export async function run({ prompt, sessionId, dryRun, dir, permMode, model, onE
   delete env.ANTHROPIC_API_KEY;
   delete env.ANTHROPIC_AUTH_TOKEN;
 
-  const spawnOpts = { stdio: ['pipe', 'pipe', 'pipe'], env };
+  const spawnOpts = { stdio: ['pipe', 'pipe', 'pipe'], env, windowsHide: true };
   if (cwd) spawnOpts.cwd = cwd;
 
   return await new Promise((resolve) => {

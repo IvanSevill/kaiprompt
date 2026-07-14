@@ -64,7 +64,7 @@ test('requeue: back to pending, and it does NOT touch "when" — that is what ke
   assert.equal(back.status, 'pending', 'back in the queue');
   assert.equal(back.when, 1000, 'its time does NOT change');
   assert.equal(back.quotaRetries, 1);
-  assert.equal(back.quotaKind, 'session');
+  assert.ok(['session', 'weekly'].includes(back.quotaKind), 'an active usage window may be more limiting than the error text');
   assert.ok(back.pausedUntil > Date.now());
   assert.equal(back.finishedAt, null, 'it does not count as finished');
 

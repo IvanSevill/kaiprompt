@@ -145,6 +145,7 @@ alias kaip='node "$HOME/.claude/tools/kaiprompt/kaip.mjs"'
 | `r` `D` | run now · daemon on/off |
 | `o` | the **answer** — just the last thing Claude said |
 | `c` | the **conversation** — every turn it took to get there |
+| `t` | retry the selected failed job, preserving its session |
 | `y` | **join** it — drops you into a real, interactive Claude Code on that session |
 | `R` `q` | redraw · quit |
 
@@ -161,6 +162,8 @@ kaip out <id>                      # the final answer
 kaip show <id>                     # the job AND the whole conversation it had
 kaip chat <target>                 # the conversation, by name
 kaip edit <id> --at +1h            # change a pending job
+kaip retry <id>                    # retry an error job in its existing session
+kaip opencode add --provider openai # list available OpenCode models
 kaip daemon start                  # fire scheduled jobs with no terminal open
 kaip serve                         # the API + tunnel + pairing QR, for the phone
 kaip mobile                        # the QR to download the app
@@ -190,7 +193,8 @@ kaip mobile     # the QR to download the app  (once)
 kaip serve      # the API, the tunnel, and the pairing QR
 ```
 
-`serve` shows the pairing QR itself, and takes it off the screen the moment the phone pairs.
+`serve` shows the pairing QR itself, and takes it off the screen when the requested phones pair
+(`kaip serve --device 2` waits for two).
 A code that has done its job is not neutral sitting there — it is a secret on your monitor.
 
 **No cloud, no Firebase, no account.** The PC opens an outbound Cloudflare tunnel (no ports
@@ -214,6 +218,9 @@ your own screen. They carry an envelope they have no key to.
 **Notifications** are the PC knocking directly on the phone, which a foreground service turns
 into a notification even at 3am with the app closed. A knock that lands nowhere (phone off, no
 signal) is caught by a poll every 15 minutes — the webhook is the fast path, not the only one.
+The first poll after installing or updating is silent, so old completed jobs are never replayed as
+new notifications. The app can be switched between Spanish, English, and the system language in
+Settings.
 
 Build it yourself: `kaip app build` (needs the Android SDK). `kaip app test` runs its unit
 tests on the JVM, no emulator.
@@ -322,10 +329,8 @@ logs stay readable and nothing tries to paint a full-screen interface into them.
   one watching. Point it at a repo you can revert.
 - **There is no supervision mid-launch.** If a prompt was wrong, you find out afterwards.
   That is what `/prompt` is for.
-- **Only Claude Code is really supported.** There is a `codex` adapter and an `opencode` stub,
-  but the only one exercised in anger is `claude`. `codex` builds the right invocation and
-  resumes a thread — that much is tested — but nobody has run a night's queue through it, and
-  the quota rescue (the whole point of this tool) reads Claude Code's wording specifically.
+- **Quota recovery is strongest for Claude Code.** OpenCode and Codex launch, resume sessions and
+  report their output, but provider-specific API limits cannot always supply a reliable reset time.
 - **The phone app is Android only.**
 
 ---
@@ -367,7 +372,7 @@ lib/
 adapters/
   claude.mjs        Claude Code (streams events for the live view)
   codex.mjs         Codex CLI — opt-in, not verified in anger
-  opencode.mjs      stub
+  opencode.mjs      OpenCode runner (provider/model selection + JSON streaming)
   mock.mjs          for tests — costs nothing
 app/                the Android app (Kotlin + Compose)
 ```

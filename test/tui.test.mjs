@@ -176,10 +176,49 @@ test('enter opens the detail of the selected job, and esc closes it', () => {
   assert.equal(s.detail, null);
 });
 
-test('o and c ask for the output and the chat of the selected job', () => {
+test('detail: t retries an error job through the same queue action as the CLI', () => {
+  saveQueue([]);
+  const job = addJob({ prompt: 'try again', adapter: 'mock' });
+  saveQueue([{ ...job, status: 'error', error: 'failed' }]);
+  let state = fresh();
+  state = reduce(state, 'enter').state;
+  const next = reduce(state, 't');
+  assert.deepEqual(next.effect, { type: 'retry', id: job.id });
+  assert.match(strip(applyEffect(next.effect)), /pending again/);
+  assert.equal(loadQueue()[0].status, 'pending');
+});
+
+test('detail: down stops at the last line instead of walking the view off screen', () => {
+  saveQueue([]);
+  addJob({ prompt: 'one line', adapter: 'mock' });
+  let state = reduce(fresh(), 'enter').state;
+  for (let i = 0; i < 100; i++) state = reduce(state, 'down').state;
+  const bottom = state.detail.scroll;
+  state = reduce(state, 'down').state;
+  assert.equal(state.detail.scroll, bottom);
+  assert.match(view(state), /prompt:/);
+});
+
+test('i opens complete job information and arrows scroll its prompt', () => {
+  saveQueue([]); addJob({ prompt: Array.from({ length: 40 }, (_, i) => `line ${i + 1}`).join('\n'), target: 'fixes', adapter: 'codex' });
+  let s = fresh();
+  s = reduce(s, 'i').state;
+  assert.match(view(s), /target: fixes/);
+  assert.match(view(s), /adapter: codex/);
+  assert.match(view(s), /1\/\d+ lines/);
+  s = reduce(s, 'down').state;
+  assert.equal(s.detail.scroll, 1);
+});
+
+test('o and c ask for the output and the chat only after the selected job finishes', () => {
   saveQueue([]);
   const j = addJob({ prompt: 'x' });
-  const s = fresh();
+  let s = fresh();
+
+  assert.equal(reduce(s, 'o').effect, null);
+  assert.equal(reduce(s, 'c').effect, null);
+  saveQueue(loadQueue().map((job) => ({ ...job, status: 'done' })));
+  s = fresh();
 
   assert.deepEqual(reduce(s, 'o').effect, { type: 'out', id: j.id });
   assert.deepEqual(reduce(s, 'c').effect, { type: 'chat', ref: j.id });
@@ -681,7 +720,7 @@ test('cancelling the confirmation with "n" deletes nothing', () => {
 // --- "y": walking into the Claude Code chat ------------------------------------
 test('"y" on a job asks to walk into its conversation', () => {
   saveQueue([]);
-  const j = addJob({ prompt: 'x', adapter: 'mock' });
+  const j = addJob({ prompt: 'x', adapter: 'mock', session: 'session-1' });
   const { effect } = reduce(refresh(initialState()), 'y');
   assert.deepEqual(effect, { type: 'resume', ref: j.id });
 });

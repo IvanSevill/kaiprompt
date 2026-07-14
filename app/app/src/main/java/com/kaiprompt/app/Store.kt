@@ -31,7 +31,9 @@ class Store(context: Context) {
         set(p) {
             prefs.edit().apply {
                 if (p == null) {
+                    val language = prefs.getString("language", null)
                     clear()
+                    putString("language", language)
                 } else {
                     putString("url", p.url)
                     putString("lan", p.lan)
@@ -56,6 +58,20 @@ class Store(context: Context) {
     var announced: Set<String>
         get() = prefs.getStringSet("announced", emptySet()) ?: emptySet()
         set(v) = prefs.edit().putStringSet("announced", v.take(200).toSet()).apply()
+
+    /** The first poll establishes a baseline; old jobs are history, not new notifications. */
+    var notificationBaselineReady: Boolean
+        get() = prefs.getBoolean("notification_baseline_ready", false)
+        set(v) = prefs.edit().putBoolean("notification_baseline_ready", v).apply()
+
+    /** Version whose welcome screen has already been read. */
+    var seenVersion: String?
+        get() = prefs.getString("seen_version", null)
+        set(v) = prefs.edit().putString("seen_version", v).apply()
+
+    var language: AppLanguage
+        get() = AppLanguage.fromPreference(prefs.getString("language", null))
+        set(v) = prefs.edit().putString("language", v.preference).apply()
 
     val paired get() = pairing != null
 }

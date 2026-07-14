@@ -19,6 +19,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.content.Context
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
@@ -73,12 +74,12 @@ object K {
         else -> "✗"
     }
 
-    fun statusLabel(status: String) = when (status) {
-        "done" -> "terminado"
-        "running" -> "corriendo"
-        "pending" -> "en cola"
-        "missed" -> "se pasó la hora"
-        "error" -> "falló"
+    fun statusLabel(context: Context, status: String) = when (status) {
+        "done" -> context.getString(R.string.status_done)
+        "running" -> context.getString(R.string.status_running)
+        "pending" -> context.getString(R.string.status_pending)
+        "missed" -> context.getString(R.string.status_missed)
+        "error" -> context.getString(R.string.status_error)
         else -> status
     }
 }
@@ -150,7 +151,7 @@ fun Chip(text: String, colour: Color, modifier: Modifier = Modifier, solid: Bool
  * An absolute timestamp makes you do the arithmetic yourself, and the only question anyone
  * actually asks of a scheduled job is *how long until it goes*.
  */
-fun relative(ms: Long, now: Long = System.currentTimeMillis()): String {
+fun relative(context: Context, ms: Long, now: Long = System.currentTimeMillis()): String {
     val d = ms - now
     val future = d >= 0
     val s = abs(d) / 1000
@@ -161,10 +162,11 @@ fun relative(ms: Long, now: Long = System.currentTimeMillis()): String {
         s < 86400 -> "${s / 3600}h ${(s % 3600) / 60}m"
         else -> "${s / 86400}d ${(s % 86400) / 3600}h"
     }
-    return if (future) "en $text" else "hace $text"
+    return context.getString(if (future) R.string.relative_future else R.string.relative_past, text)
 }
 
-fun clock(ms: Long): String = SimpleDateFormat("d MMM · HH:mm", Locale.getDefault()).format(Date(ms))
+fun clock(context: Context, ms: Long): String =
+    SimpleDateFormat("d MMM · HH:mm", context.resources.configuration.locales[0]).format(Date(ms))
 
 /**
  * How long something has been going: "3h 12m". A bare duration, with no "hace" on the front.
