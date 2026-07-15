@@ -5,6 +5,12 @@ import java.io.BufferedReader
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.job
+
+enum class LiveStreamEnd { EOF, TERMINAL }
 
 /**
  * Talking to your PC.
@@ -32,12 +38,19 @@ class Api(private val pairing: Pairing, private val context: Context) {
 
     fun state(): State = State.parse(get("/api/state"))
 
+    /** New servers enrich /api/targets; a missing endpoint falls back to the state snapshot. */
+    fun conversations(state: State): List<ConversationSummary> = try {
+        ConversationSummary.parse(get("/api/targets"), state)
+    } catch (cause: Down) {
+        if (cause.statusCode == 404) ConversationSummary.derive(state) else throw cause
+    }
+
     /** Optional historical telemetry. Older PCs do not have this endpoint yet. */
     fun usage(): Usage = Usage.parse(get("/api/usage"))
 
     fun job(id: String): String = get("/api/job/$id")
 
-    fun chat(ref: String): Chat = Chat.parse(get("/api/job/$ref/chat"))
+    fun chat(ref: String): Chat = Chat.parse(get("/api/chat/${URLEncoder.encode(ref, "UTF-8").replace("+", "%20")}"))
 
     /**
      * Introduce this phone to the PC: its NAME, and — if we have one — where to knock.
@@ -168,18 +181,34 @@ class Api(private val pairing: Pairing, private val context: Context) {
      * The live feed. One line at a time, blocking — the caller runs it off the main thread
      * and closes it by cancelling the coroutine.
      */
-    fun events(jobId: String, since: String?, onEvent: (LiveEvent) -> Unit) {
-        attempt { base ->
+    suspend fun events(
+        jobId: String,
+        since: String?,
+        onConnected: () -> Unit = {},
+        onEvent: (LiveEvent) -> Unit,
+    ): LiveStreamEnd {
+        var last: Exception? = null
+        for (base in bases) {
+            currentCoroutineContext().ensureActive()
             val query = buildString {
                 append("?job=").append(URLEncoder.encode(jobId, "UTF-8"))
                 if (since != null) append("&since=").append(URLEncoder.encode(since, "UTF-8"))
             }
             val c = open("$base/api/events$query")
-            c.readTimeout = 0
+            c.readTimeout = 45_000
+            val cancellation = currentCoroutineContext().job.invokeOnCompletion { c.disconnect() }
             try {
+                val code = c.responseCode
+                if (code == 401) throw Unauthorized(context)
+                if (code !in 200..299) {
+                    val body = c.errorStream?.bufferedReader()?.use(BufferedReader::readText).orEmpty()
+                    throw Down(context.getString(R.string.api_response_error, code, body.take(200)), code)
+                }
+                onConnected()
                 var eventId: String? = null
                 c.inputStream.bufferedReader().use { reader ->
                     while (true) {
+                        currentCoroutineContext().ensureActive()
                         val line = reader.readLine() ?: break
                         if (line.startsWith("id:")) eventId = line.removePrefix("id:").trim()
                         if (!line.startsWith("data:")) continue
@@ -187,13 +216,28 @@ class Api(private val pairing: Pairing, private val context: Context) {
                         if (payload.isEmpty()) continue
                         val opened = if (Crypto.isSealed(payload)) Crypto.open(payload, pairing.key) else payload
                         val parsed = LiveEvent.parse(opened)
-                        onEvent(if (parsed.id == null && eventId != null) parsed.copy(id = eventId) else parsed)
+                        val event = if (parsed.id == null && eventId != null) parsed.copy(id = eventId) else parsed
+                        onEvent(event)
+                        if (isTerminalStatus(event.status)) return LiveStreamEnd.TERMINAL
                     }
                 }
+                return LiveStreamEnd.EOF
+            } catch (cause: Unauthorized) {
+                throw cause
+            } catch (cause: CancellationException) {
+                throw cause
+            } catch (cause: Exception) {
+                currentCoroutineContext().ensureActive()
+                last = cause
             } finally {
+                cancellation.dispose()
                 c.disconnect()
             }
         }
+        val tried = bases.joinToString("\n") { "  · $it" }
+        val hint = if (pairing.tunnel) context.getString(R.string.api_tunnel_hint)
+        else context.getString(R.string.api_wifi_hint)
+        throw Down(context.getString(R.string.api_unreachable, tried, hint, last?.message.orEmpty()).trim())
     }
 
     private fun quote(s: String) = "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\""

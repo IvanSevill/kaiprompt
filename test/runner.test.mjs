@@ -8,7 +8,7 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-run-'));
 process.env.KAIP_HOME = TMP;
 const { loadQueue, loadSessions, nid, outPath, rememberSession, saveQueue, saveSessions } = await import('../lib/store.mjs');
 const { executeJob, requeue, runQueue, settle } = await import('../lib/runner.mjs');
-const { liveEvents } = await import('../lib/live-events.mjs');
+const { liveEvents, recordAdapterEvent } = await import('../lib/live-events.mjs');
 
 const job = (over = {}) => ({
   id: nid(), prompt: 'do something', target: null, adapter: 'mock', when: null,
@@ -173,6 +173,22 @@ test('executeJob: persists live events even when no terminal renderer is attache
   assert.ok(liveEvents(j.id).some((event) => event.kind === 'text'));
 });
 
+test('the first observed session is durable with engine metadata before the adapter returns', () => {
+  const j = job({
+    adapter: 'opencode', target: 'durable', provider: 'openai', model: 'gpt-5', dir: TMP,
+  });
+  saveQueue([j]); saveSessions({});
+  recordAdapterEvent(j, { type: 'system', session_id: 'ses-durable' });
+  const first = loadSessions().durable;
+
+  assert.equal(loadQueue()[0].sessionId, 'ses-durable');
+  assert.deepEqual({
+    adapter: first.adapter, provider: first.provider, model: first.model, dir: first.dir,
+  }, { adapter: 'opencode', provider: 'openai', model: 'gpt-5', dir: TMP });
+  recordAdapterEvent(j, { type: 'assistant', session_id: 'ses-durable', message: { content: [] } });
+  assert.equal(loadSessions().durable.updatedAt, first.updatedAt, 'later events do not rewrite the session');
+});
+
 test('runQueue (with no TTY): processes the sequential ones in order', async () => {
   const a = job({ prompt: 'first' });
   const b = job({ prompt: 'second' });
@@ -203,6 +219,16 @@ test('runQueue --dry-run: runs nothing', async () => {
   await runQueue({ dryRun: true });
   assert.equal(loadQueue()[0].status, 'pending', 'still pending: nothing was launched');
   assert.ok(!fs.existsSync(outPath(j.id)), 'and it writes no output');
+});
+
+test('runQueue --dry-run passes OpenCode provider and model to the adapter', async () => {
+  const j = job({ adapter: 'opencode', provider: 'google', model: 'gemini-2.5-flash' });
+  saveQueue([j]);
+  const lines = [];
+  const original = console.log;
+  console.log = (...args) => lines.push(args.join(' '));
+  try { await runQueue({ dryRun: true }); } finally { console.log = original; }
+  assert.match(lines.join('\n'), /-m google\/gemini-2\.5-flash/);
 });
 
 test('runQueue: an empty queue does not break it', async () => {

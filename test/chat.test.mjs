@@ -11,8 +11,10 @@ process.env.CLAUDE_CONFIG_DIR = path.join(TMP, 'claude');
 
 const { nid, saveQueue, saveSessions } = await import('../lib/store.mjs');
 const {
-  encodeDir, findTranscript, parseTranscript, projectsRoot, renderChat, resolveRef,
+  encodeDir, findTranscript, loadOpenCodeTranscript, normalizeOpenCodeExport, parseTranscript,
+  projectsRoot, renderChat, resolveRef, resumeCommand, resumeSpec,
 } = await import('../lib/chat.mjs');
+const { clearFinished } = await import('../lib/queue.mjs');
 
 const DIR = 'C:\\proj\\app';
 const SID = 'ff679ec5-531d-4424-aba3-7341b2fcaa38';
@@ -226,4 +228,66 @@ test('resumeTarget: with no folder on record, a CLEAR error (not a --resume that
   saveSessions({ orphan: { sessionId: 'sess-3', adapter: 'claude', updatedAt: 1 } });
   saveQueue([]);
   assert.throws(() => resumeTarget('orphan'), /which folder/i);
+});
+
+const OPEN_EXPORT = {
+  info: { id: 'ses-open', directory: DIR },
+  messages: [
+    { info: { role: 'user', time: { created: Date.parse(ts(0)) } }, parts: [{ type: 'text', text: 'question' }] },
+    { info: { role: 'assistant', time: { created: Date.parse(ts(1)) } }, parts: [
+      { type: 'reasoning', text: 'considering' },
+      { type: 'tool', tool: 'read', state: { input: { file_path: 'a.js' }, output: 'contents' } },
+      { type: 'text', text: 'answer' },
+    ] },
+  ],
+};
+const exportRun = () => ({ status: 0, stdout: JSON.stringify(OPEN_EXPORT) });
+
+test('OpenCode export normalization keeps user/assistant text, reasoning and tool blocks', () => {
+  const chat = normalizeOpenCodeExport(OPEN_EXPORT, 'ses-open');
+  assert.equal(chat.cwd, DIR);
+  assert.deepEqual(chat.turns.map((turn) => turn.role), ['user', 'assistant']);
+  assert.deepEqual(chat.turns[1].blocks.map((block) => block.type), ['thinking', 'tool_use', 'tool_result', 'text']);
+  assert.equal(chat.turns[1].blocks[1].input.file_path, 'a.js');
+});
+
+test('OpenCode loader invokes export through injection and rejects malformed output', () => {
+  let call;
+  const chat = loadOpenCodeTranscript('ses-open', { run: (bin, args) => {
+    call = { bin, args }; return { status: 0, stdout: JSON.stringify(OPEN_EXPORT) };
+  } });
+  assert.deepEqual(call.args, ['export', 'ses-open']);
+  assert.match(call.bin, /opencode/);
+  assert.equal(chat.turns.length, 2);
+  assert.equal(loadOpenCodeTranscript('bad', { run: () => ({ status: 0, stdout: 'not json' }) }), null);
+});
+
+test('OpenCode chat uses the full export and survives clearing finished jobs', () => {
+  const dir = realDir('open-project');
+  saveSessions({ open: { sessionId: 'ses-open', adapter: 'opencode', provider: 'openai', model: 'gpt-5', dir, updatedAt: 1 } });
+  saveQueue([{ ...job({ id: 'open-job', adapter: 'opencode', target: 'open', sessionId: 'ses-open', dir }), status: 'done' }]);
+  assert.equal(clearFinished(), 1);
+  const out = renderChat('open', { full: true, openCodeRun: exportRun });
+  assert.match(out, /question/);
+  assert.match(out, /considering/);
+  assert.match(out, /opencode --session ses-open --model openai\/gpt-5/);
+});
+
+test('OpenCode chat falls back to recorded prompt/output when export fails', () => {
+  const j = job({ id: 'open-fallback', adapter: 'opencode', sessionId: 'ses-fallback', prompt: 'queued prompt' });
+  saveQueue([j]); saveSessions({});
+  fs.writeFileSync(path.join(TMP, 'out', `${j.id}.txt`), 'recorded answer');
+  const out = renderChat(j.id, { openCodeRun: () => ({ status: 1, stdout: '' }) });
+  assert.match(out, /queued prompt/);
+  assert.match(out, /recorded answer/);
+});
+
+test('interactive resume commands are adapter-aware and preserve models', () => {
+  assert.deepEqual(resumeSpec({ adapter: 'codex', sessionId: 'codex-id', dir: DIR, model: 'gpt-5' }).args,
+    ['resume', '--model', 'gpt-5', 'codex-id']);
+  assert.match(resumeCommand({ adapter: 'opencode', sessionId: 'open-id', dir: DIR, provider: 'google', model: 'gemini' }),
+    /opencode --session open-id --model google\/gemini$/);
+  assert.match(resumeCommand({ adapter: 'claude', sessionId: 'claude-id', dir: DIR, model: 'sonnet' }),
+    /claude --model sonnet --resume claude-id$/);
+  assert.throws(() => resumeSpec({ adapter: 'mock', sessionId: 'x', dir: DIR }), /cannot interactively resume/);
 });

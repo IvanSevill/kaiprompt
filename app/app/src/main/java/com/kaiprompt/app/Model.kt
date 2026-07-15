@@ -3,6 +3,8 @@ package com.kaiprompt.app
 import org.json.JSONArray
 import org.json.JSONObject
 
+internal val TOOL_ARG_KEYS = listOf("file_path", "command", "pattern", "path", "url", "query")
+
 /**
  * What the PC sends, as the app understands it.
  *
@@ -92,6 +94,7 @@ data class Job(
     val finishedAt: Long?,
     val pausedUntil: Long?,
     val error: String?,
+    val createdAt: Long? = null,
 ) {
     val running get() = status == "running"
     val pending get() = status == "pending"
@@ -120,7 +123,103 @@ data class Job(
             finishedAt = j.optLongOrNull("finishedAt"),
             pausedUntil = j.optLongOrNull("pausedUntil"),
             error = j.optStringOrNull("error"),
+            createdAt = j.optLongOrNull("createdAt"),
         )
+    }
+}
+
+data class ConversationSummary(
+    val ref: String,
+    val concept: String?,
+    val status: String,
+    val adapter: String?,
+    val provider: String?,
+    val model: String?,
+    val currentJobId: String?,
+    val runningJobId: String?,
+    val updatedAt: Long?,
+    val chatAvailable: Boolean,
+    val jobIds: List<String>,
+    val target: String?,
+    val sessionId: String?,
+) {
+    companion object {
+        fun parse(body: String, state: State): List<ConversationSummary> {
+            val rows = JSONArray(body)
+            val byId = state.jobs.associateBy(Job::id)
+            val covered = mutableSetOf<String>()
+            val summaries = (0 until rows.length()).mapNotNull { index ->
+                val row = rows.optJSONObject(index) ?: return@mapNotNull null
+                val ids = row.optJSONArray("jobs").strings()
+                covered += ids
+                val jobs = ids.mapNotNull(byId::get)
+                from(row, jobs)
+            }.toMutableList()
+
+            val remaining = state.jobs.filterNot { it.id in covered }
+            val groups = remaining.groupBy { job ->
+                when {
+                    job.target != null -> "target:${job.target}:${job.adapter}"
+                    job.sessionId != null -> "session:${job.sessionId}"
+                    else -> "job:${job.id}"
+                }
+            }
+            summaries += groups.values.map(::fromJobs)
+            return summaries.sortedByDescending { it.updatedAt ?: 0L }
+        }
+
+        fun derive(state: State): List<ConversationSummary> =
+            state.jobs.groupBy { job ->
+                when {
+                    job.target != null -> "target:${job.target}:${job.adapter}"
+                    job.sessionId != null -> "session:${job.sessionId}"
+                    else -> "job:${job.id}"
+                }
+            }.values.map(::fromJobs).sortedByDescending { it.updatedAt ?: 0L }
+
+        private fun from(row: JSONObject, jobs: List<Job>): ConversationSummary? {
+            val current = currentConversationJob(jobs)
+            val target = row.optStringOrNull("target")
+            val sessionId = row.optStringOrNull("sessionId")
+            val ref = row.optStringOrNull("ref") ?: sessionId ?: target ?: current?.id ?: return null
+            val adapter = row.optStringOrNull("adapter") ?: current?.adapter
+            return ConversationSummary(
+                ref = ref,
+                concept = row.optStringOrNull("concept") ?: target,
+                status = row.optStringOrNull("status") ?: conversationStatus(current),
+                adapter = adapter,
+                provider = row.optStringOrNull("provider") ?: current?.provider,
+                model = row.optStringOrNull("model") ?: current?.model,
+                currentJobId = row.optStringOrNull("currentJobId") ?: current?.id,
+                runningJobId = row.optStringOrNull("runningJobId") ?: jobs.lastOrNull { it.running }?.id,
+                updatedAt = row.optLongOrNull("updatedAt") ?: jobs.maxOfOrNull(::jobUpdatedAt),
+                chatAvailable = if (row.has("chatAvailable")) row.optBoolean("chatAvailable")
+                    else sessionId != null || adapter in setOf("opencode", "codex"),
+                jobIds = row.optJSONArray("jobs").strings(),
+                target = target,
+                sessionId = sessionId,
+            )
+        }
+
+        private fun fromJobs(jobs: List<Job>): ConversationSummary {
+            val current = currentConversationJob(jobs) ?: requireNotNull(jobs.lastOrNull())
+            val sessionId = current.sessionId ?: jobs.firstNotNullOfOrNull(Job::sessionId)
+            return ConversationSummary(
+                ref = sessionId ?: current.target ?: jobs.first().id,
+                concept = current.target,
+                status = conversationStatus(current),
+                adapter = current.adapter,
+                provider = current.provider,
+                model = current.model,
+                currentJobId = current.id,
+                runningJobId = jobs.lastOrNull { it.running }?.id,
+                updatedAt = jobs.maxOfOrNull(::jobUpdatedAt),
+                chatAvailable = sessionId != null || current.adapter in setOf("opencode", "codex"),
+                jobIds = jobs.map(Job::id),
+                target = current.target,
+                sessionId = sessionId,
+            )
+        }
     }
 }
 
@@ -362,7 +461,7 @@ data class TodoItem(val content: String, val activeForm: String?, val status: St
 sealed class Block {
     data class Text(val text: String, val eventId: String? = null) : Block()
     data class Tool(val name: String, val arg: String, val eventId: String? = null) : Block()
-    data class Thinking(val text: String) : Block()
+    data class Thinking(val text: String, val eventId: String? = null) : Block()
     data class Todos(val items: List<TodoItem>, val eventId: String? = null) : Block()
 }
 
@@ -376,6 +475,8 @@ data class Chat(
     val turns: List<Turn>,
     val cursor: String? = null,
     val eventIds: Set<String> = emptySet(),
+    val status: String? = null,
+    val terminal: Boolean = false,
 ) {
     val assistantLabel: String?
         get() = when (adapter?.lowercase()) {
@@ -387,10 +488,6 @@ data class Chat(
         }
 
     companion object {
-        // The tools worth naming, and the one argument of each worth showing. Same choice
-        // the PC makes in its own live view, so a launch reads the same in both places.
-        private val ARG_KEYS = listOf("file_path", "command", "pattern", "path", "url", "query")
-
         fun parse(body: String): Chat {
             val j = JSONObject(body)
             val arr = j.optJSONArray("turns") ?: JSONArray()
@@ -403,20 +500,10 @@ data class Chat(
                 val blocks = (0 until bs.length()).mapNotNull { k ->
                     val b = bs.getJSONObject(k)
                     when (b.optString("type")) {
-                        "text" -> b.optStringOrNull("text")?.takeIf { it.isNotBlank() }?.let { Block.Text(it, b.optStringOrNull("eventId")) }
-                        "thinking" -> b.optStringOrNull("text")?.let { Block.Thinking(it) }
-                        "tool" -> {
-                            val input = b.optJSONObject("input")
-                            val arg = ARG_KEYS.firstNotNullOfOrNull { key -> input?.optStringOrNull(key) } ?: ""
-                            Block.Tool(b.optString("name", "tool"), arg, b.optStringOrNull("eventId"))
-                        }
-                        "todos" -> {
-                            val todos = b.optJSONArray("todos") ?: JSONArray()
-                            Block.Todos((0 until todos.length()).map { n ->
-                                val todo = todos.getJSONObject(n)
-                                TodoItem(todo.optString("content"), todo.optStringOrNull("activeForm"), todo.optString("status", "pending"))
-                            }, b.optStringOrNull("eventId"))
-                        }
+                        "text" -> b.optStringOrNull("text")?.takeIf { it.isNotBlank() }?.let { Block.Text(it, b.eventId()) }
+                        "thinking" -> b.optStringOrNull("text")?.let { Block.Thinking(it, b.eventId()) }
+                        "tool" -> Block.Tool(b.optString("name", "tool"), b.toolArg(), b.eventId())
+                        "todos" -> Block.Todos(b.todos(), b.eventId())
                         else -> null
                     }
                 }
@@ -438,14 +525,16 @@ data class Chat(
                 model = j.optStringOrNull("model"),
                 dir = j.optStringOrNull("dir"),
                 cursor = j.optStringOrNull("cursor"),
-                eventIds = turns.flatMap { turn -> turn.blocks.mapNotNull { block ->
+                eventIds = j.optJSONArray("eventIds").strings().toSet() + turns.flatMap { turn -> turn.blocks.mapNotNull { block ->
                     when (block) {
                         is Block.Text -> block.eventId
                         is Block.Tool -> block.eventId
                         is Block.Todos -> block.eventId
-                        is Block.Thinking -> null
+                        is Block.Thinking -> block.eventId
                     }
                 } }.toSet(),
+                status = j.optStringOrNull("status"),
+                terminal = j.optBoolean("terminal"),
                 turns = turns,
             )
         }
@@ -458,21 +547,14 @@ data class LiveEvent(
     val status: String? = null,
 ) {
     companion object {
-        private val ARG_KEYS = listOf("file_path", "command", "pattern", "path", "url", "query")
-
         fun parse(body: String): LiveEvent {
             val j = JSONObject(body)
-            val input = j.optJSONObject("input")
-            val todos = j.optJSONArray("todos") ?: JSONArray()
             return LiveEvent(
-                id = j.optStringOrNull("id"), jobId = j.optStringOrNull("jobId"),
+                id = j.eventId("id"), jobId = j.optStringOrNull("jobId"),
                 kind = j.optString("kind", j.optString("type")), text = j.optStringOrNull("text"),
                 name = j.optStringOrNull("name"),
-                arg = ARG_KEYS.firstNotNullOfOrNull { input?.optStringOrNull(it) } ?: "",
-                todos = (0 until todos.length()).map { i ->
-                    val todo = todos.getJSONObject(i)
-                    TodoItem(todo.optString("content"), todo.optStringOrNull("activeForm"), todo.optString("status", "pending"))
-                },
+                arg = j.toolArg(),
+                todos = j.todos(),
                 status = j.optStringOrNull("status"),
             )
         }
@@ -495,3 +577,29 @@ fun JSONObject.optStringOrNull(key: String): String? =
 
 fun JSONObject.optLongOrNull(key: String): Long? =
     if (isNull(key) || !has(key)) null else optLong(key).takeIf { it != 0L }
+
+internal fun JSONArray?.strings(): List<String> = this?.let { array ->
+    (0 until array.length()).mapNotNull { index ->
+        (array.opt(index) as? String)?.takeIf(String::isNotBlank)
+    }
+}.orEmpty()
+
+private fun JSONObject.eventId(key: String = "eventId"): String? = optStringOrNull(key)
+
+private fun JSONObject.toolArg(): String {
+    val input = optJSONObject("input")
+    return TOOL_ARG_KEYS.firstNotNullOfOrNull { key -> input?.optStringOrNull(key) }.orEmpty()
+}
+
+private fun JSONObject.todos(): List<TodoItem> {
+    val values = optJSONArray("todos") ?: return emptyList()
+    return (0 until values.length()).mapNotNull { index ->
+        values.optJSONObject(index)?.let { todo ->
+            TodoItem(
+                todo.optString("content"),
+                todo.optStringOrNull("activeForm"),
+                todo.optString("status", "pending"),
+            )
+        }
+    }
+}

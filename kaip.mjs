@@ -17,7 +17,7 @@ import {
 } from './lib/store.mjs';
 import { fmt } from './lib/time.mjs';
 import { reapStale, runQueue } from './lib/runner.mjs';
-import { renderChat } from './lib/chat.mjs';
+import { renderChat, resumeCommand } from './lib/chat.mjs';
 import { editJob } from './lib/edit.mjs';
 import { addJob, clearFinished, jobDetails, removeJobs, retryJob } from './lib/queue.mjs';
 import { jobPreview } from './lib/prompt.mjs';
@@ -25,7 +25,6 @@ import { COMMANDS, ENGINES } from './lib/commands.mjs';
 import { discoverOpenCodeModels, engineNames } from './lib/engines.mjs';
 import { applyEngineMigration, inspectEngineMigration } from './lib/migrate.mjs';
 import { c, isTTY } from './lib/ui.mjs';
-import { checkVersion } from './lib/update.mjs';
 import { aggregateUsage } from './lib/usage.mjs';
 
 // --- argument parsing --------------------------------------------------------
@@ -262,7 +261,7 @@ function cmdOut({ pos }) {
   if (job.dir) console.log(`   folder: ${job.dir}`);
   if (job.sessionId) {
     console.log(`   session: ${job.sessionId}`);
-    console.log(`   resume:  cd "${job.dir || '.'}" && claude --resume ${job.sessionId}`);
+    try { console.log(`   resume:  ${resumeCommand(job)}`); } catch { /* unsupported adapter */ }
   }
   const f = outPath(job.id);                    // the file is always out/<id>.txt under HOME
   if (job.output && fs.existsSync(f)) console.log('\n' + fs.readFileSync(f, 'utf8').trimEnd());
@@ -773,10 +772,10 @@ Notes:
              everything (thinking + tool results), --raw for the transcript as-is.
   edit       only PENDING jobs (a running/finished one is already history). Same flags
              as "add"; --target/--dir/--perm accept "none" to clear them.
-  gui        views: Queue · Chats · Projects · Help. Keys: ↑↓ move · ←→/tab/1-4 view ·
-             enter detail · a add (guided) · e edit · d delete · D daemon on/off ·
-             r run now · o output · c chat · ? help · q quit. The header tells you
-             whether the daemon is up — if it isn't, nothing you schedule will fire.
+  gui        views: Queue · Chats · Projects · Usage · Help. Keys: ↑↓ move · ←→/tab/1-5 view ·
+              enter detail · a add (guided) · e edit · d delete · D daemon on/off ·
+              r run now · o output · c chat · R refresh · Ctrl+L repaint · U update ·
+              ? help · q quit. The header tells you whether anything will fire the queue.
              Adding a launch never sends it. Without a terminal it prints this help.
 
 Examples:
@@ -796,10 +795,6 @@ let engine = null;
 if (ENGINES.includes(av[0])) { engine = av[0]; av = av.slice(1); }
 const [cmd, ...rest] = av;
 process.title = cmd === 'run' ? 'kaip run' : cmd === 'daemon' ? 'kaip daemon' : 'kaip';
-// Do not await: updates are informational and must never delay a command.
-void checkVersion().then((update) => {
-  if (update && process.stdout.isTTY) console.log(c.warn(`📦 Update available: v${update.latest}`));
-}).catch(() => {});
 const parsed = parseArgs(rest);
 parsed.engine = engine;
 

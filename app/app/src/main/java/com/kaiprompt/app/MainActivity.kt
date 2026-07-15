@@ -50,8 +50,12 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job as CoroutineJob
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -62,42 +66,66 @@ class MainActivity : ComponentActivity() {
     private lateinit var store: Store
 
     private var pairing by mutableStateOf<Pairing?>(null)
-    private var state by mutableStateOf<State?>(null)
-    private var error by mutableStateOf<String?>(null)
-    private var loading by mutableStateOf(false)
-    private var openJob by mutableStateOf<Job?>(null)
-    private var chat by mutableStateOf<Chat?>(null)
-    private var chatLoading by mutableStateOf(false)
-    private var chatError by mutableStateOf<String?>(null)
+    private var queue by mutableStateOf(QueueContent())
+    private var usageContent by mutableStateOf(UsageContent())
+    private var chatDisplay by mutableStateOf(ChatDisplay())
+    private var destination by mutableStateOf<Destination>(Destination.Queue)
     private var update by mutableStateOf<Update.Available?>(null)
-    private var settings by mutableStateOf(false)
     private var confirmClear by mutableStateOf(false)
     private var showWhatsNew by mutableStateOf(false)
     private var language by mutableStateOf(AppLanguage.SYSTEM)
-    private var usage by mutableStateOf<Usage?>(null)
-    private var usageLoading by mutableStateOf(false)
-    private var usageError by mutableStateOf(false)
     private var notificationsEnabled by mutableStateOf(true)
     private var chatLiveState by mutableStateOf("idle")
     private var chatStream: CoroutineJob? = null
+    private var chatJobId: String? = null
+    private var chatGeneration = 0L
     private var unpairDialog by mutableStateOf(false)
     private var unpairing by mutableStateOf(false)
     private var unpairError by mutableStateOf<String?>(null)
     private var updateCheckRunning = false
+    private lateinit var pairingScope: CoroutineScope
+    private var pairingGeneration = 0L
+
+    private data class QueueContent(
+        val state: State? = null,
+        val conversations: List<ConversationSummary> = emptyList(),
+        val error: String? = null,
+        val loading: Boolean = false,
+    )
+
+    private data class UsageContent(
+        val data: Usage? = null,
+        val loading: Boolean = false,
+        val failed: Boolean = false,
+    )
+
+    private data class ChatDisplay(
+        val chat: Chat? = null,
+        val loading: Boolean = false,
+        val error: String? = null,
+    )
+
+    private sealed interface Destination {
+        data object Queue : Destination
+        data object Settings : Destination
+        data class Job(val job: com.kaiprompt.app.Job) : Destination
+        data class Chat(val conversation: ConversationSummary) : Destination
+    }
 
     private val scanner = registerForActivityResult(ScanContract()) { result ->
         val text = result.contents ?: return@registerForActivityResult
         runCatching { Pairing.parse(text) }
             .onSuccess { p ->
+                beginPairingSession()
                 store.pairing = p
                 pairing = p
-                error = null
+                queue = queue.copy(error = null)
                 announceSelf(p)
                 ListenerService.start(this)
                 CatchUpWorker.schedule(this)
                 refresh()
             }
-            .onFailure { error = localizedString(R.string.error_invalid_qr) }
+            .onFailure { queue = queue.copy(error = localizedString(R.string.error_invalid_qr)) }
     }
 
     private val askNotifications =
@@ -108,6 +136,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         store = Store(this)
+        pairingScope = newPairingScope()
         pairing = store.pairing
         language = store.language
         showWhatsNew = store.seenVersion != installedVersion()
@@ -132,19 +161,19 @@ class MainActivity : ComponentActivity() {
                     // behind the camera cutout. Nothing about that is obvious until you
                     // hold a phone that has one.
                     Box(Modifier.fillMaxSize().systemBarsPadding()) {
-                        BackHandler(enabled = settings || chat != null || openJob != null) {
-                            when {
-                                chat != null -> closeChat()
-                                openJob != null -> openJob = null
-                                settings -> settings = false
+                        BackHandler(enabled = destination != Destination.Queue) {
+                            when (destination) {
+                                is Destination.Chat -> closeChat()
+                                else -> destination = Destination.Queue
                             }
                         }
-                        when {
-                            pairing == null -> PairScreen()
-                            settings -> SettingsScreen { settings = false }
-                            chat != null -> ChatScreen(chat!!) { closeChat() }
-                            openJob != null -> JobScreen(openJob!!) { openJob = null }
-                            else -> QueueScreen()
+                        if (pairing == null) PairScreen() else when (val screen = destination) {
+                            Destination.Queue -> QueueScreen()
+                            Destination.Settings -> SettingsScreen { destination = Destination.Queue }
+                            is Destination.Job -> JobScreen(screen.job) { destination = Destination.Queue }
+                            is Destination.Chat -> chatDisplay.chat?.let {
+                                ChatScreen(it, screen.conversation) { closeChat() }
+                            } ?: QueueScreen()
                         }
                         if (showWhatsNew) WhatsNewDialog()
                         if (unpairDialog) UnpairDialog()
@@ -162,6 +191,47 @@ class MainActivity : ComponentActivity() {
         notificationsEnabled = notificationsAreEnabled()
         checkForUpdate()
         if (pairing != null) refresh()
+    }
+
+    override fun onDestroy() {
+        pairingScope.cancel()
+        super.onDestroy()
+    }
+
+    private fun newPairingScope(): CoroutineScope = CoroutineScope(
+        SupervisorJob(lifecycleScope.coroutineContext[CoroutineJob]) + Dispatchers.Main.immediate,
+    )
+
+    private fun beginPairingSession() {
+        pairingGeneration++
+        pairingScope.cancel()
+        pairingScope = newPairingScope()
+    }
+
+    private fun isCurrentPairing(p: Pairing, generation: Long): Boolean =
+        pairing == p && pairingGeneration == generation
+
+    private fun api(pairing: Pairing): Api =
+        Api(pairing, language.localizedContext(this@MainActivity))
+
+    private fun <T> pairingRequest(
+        request: (Api) -> T,
+        apply: (Result<T>) -> Unit,
+    ) {
+        val capturedPairing = pairing ?: return
+        val generation = pairingGeneration
+        pairingScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                try {
+                    Result.success(request(api(capturedPairing)))
+                } catch (cause: CancellationException) {
+                    throw cause
+                } catch (cause: Throwable) {
+                    Result.failure(cause)
+                }
+            }
+            if (isCurrentPairing(capturedPairing, generation)) apply(result)
+        }
     }
 
     private fun checkForUpdate() {
@@ -186,14 +256,27 @@ class MainActivity : ComponentActivity() {
 
     // --- talking to the PC ------------------------------------------------------
     private fun refresh() {
-        val p = pairing ?: return
-        loading = true
-        lifecycleScope.launch {
-            val r = withContext(Dispatchers.IO) { runCatching { Api(p, language.localizedContext(this@MainActivity)).state() } }
-            loading = false
-            r.onSuccess { state = it; error = null }
-                .onFailure { error = it.message ?: localizedString(R.string.error_pc_unreachable) }
-        }
+        if (pairing == null) return
+        queue = queue.copy(loading = true)
+        pairingRequest(
+            request = { api ->
+                val snapshot = api.state()
+                snapshot to api.conversations(snapshot)
+            },
+            apply = { result ->
+                queue = result.fold(
+                    onSuccess = { (snapshot, summaries) ->
+                        QueueContent(snapshot, summaries, error = null, loading = false)
+                    },
+                    onFailure = { cause ->
+                        queue.copy(
+                            error = cause.message ?: localizedString(R.string.error_pc_unreachable),
+                            loading = false,
+                        )
+                    },
+                )
+            }
+        )
     }
 
     /**
@@ -205,9 +288,9 @@ class MainActivity : ComponentActivity() {
      * all, so it never learnt its name and never counted it as paired. The pairing QR stayed
      * on screen and the device list showed nothing.
      */
-    private fun announceSelf(p: Pairing) = lifecycleScope.launch(Dispatchers.IO) {
+    private fun announceSelf(p: Pairing) = pairingScope.launch(Dispatchers.IO) {
         val callback = localAddress()?.let { ListenerService.callbackUrl(it) }
-        runCatching { Api(p, language.localizedContext(this@MainActivity)).registerDevice(callback, deviceName(), store.deviceId) }
+        runCatching { api(p).registerDevice(callback, deviceName(), store.deviceId) }
     }
 
     /** What this phone is called. Never blank, and never "?" — the PC cannot work this out. */
@@ -230,67 +313,122 @@ class MainActivity : ComponentActivity() {
             ?.hostAddress
     }.getOrNull()
 
-    private fun openChat(job: Job) {
-        val p = pairing ?: return
-        if (chatLoading) return
-        chatLoading = true
-        chatError = null
-        lifecycleScope.launch {
-            val r = withContext(Dispatchers.IO) { runCatching { Api(p, language.localizedContext(this@MainActivity)).chat(job.id) } }
-            chatLoading = false
-            r.onSuccess {
-                chat = it
-                chatError = null
-                startLiveChat(job)
-            }
-                .onFailure { cause ->
-                    chatError = when {
+    private fun openChat(summary: ConversationSummary) {
+        if (pairing == null || chatDisplay.loading) return
+        chatGeneration++
+        val streamGeneration = chatGeneration
+        val streamJobId = summary.runningJobId ?: summary.currentJobId
+        chatJobId = streamJobId
+        chatStream?.cancel()
+        chatStream = null
+        destination = Destination.Chat(summary)
+        chatDisplay = ChatDisplay(
+            chat = Chat(
+                sessionId = summary.sessionId ?: "job:${summary.ref}", target = summary.target,
+                adapter = summary.adapter, provider = summary.provider, model = summary.model,
+                dir = null, turns = emptyList(), status = summary.status,
+                terminal = isTerminalStatus(summary.status),
+            ),
+            loading = summary.chatAvailable,
+        )
+        chatLiveState = if (summary.status in setOf("pending", "quota")) "waiting" else "idle"
+        if (!summary.chatAvailable) return
+        pairingRequest(
+            request = { it.chat(summary.ref) },
+            apply = applyChat@{ result ->
+                val current = destination as? Destination.Chat
+                if (chatGeneration != streamGeneration || current?.conversation?.ref != summary.ref) return@applyChat
+                result.onSuccess { loaded ->
+                    chatDisplay = ChatDisplay(chat = loaded)
+                    if (streamJobId != null) startLiveChat(summary, streamJobId, streamGeneration)
+                    else chatLiveState = "finished"
+                }.onFailure { cause ->
+                    val message = when {
                         cause is Api.Down && cause.statusCode == 404 ->
                             localizedString(R.string.error_chat_unavailable)
                         cause is Api.Down -> cause.message ?: localizedString(R.string.error_pc_unreachable)
                         else -> localizedString(R.string.error_open_chat, cause.message ?: localizedString(R.string.error_unknown))
                     }
+                    chatDisplay = chatDisplay.copy(loading = false, error = message)
                 }
-        }
+            },
+        )
     }
 
     private fun closeChat() {
+        chatGeneration++
+        chatJobId = null
         chatStream?.cancel()
         chatStream = null
         chatLiveState = "idle"
-        chat = null
+        chatDisplay = ChatDisplay()
+        destination = Destination.Queue
         refresh()
     }
 
-    private fun startLiveChat(job: Job) {
+    private fun isChatIdentity(jobId: String, generation: Long): Boolean =
+        jobId == chatJobId && generation == chatGeneration
+
+    private fun isCurrentChat(jobId: String, generation: Long): Boolean =
+        isChatIdentity(jobId, generation) && chatDisplay.chat != null
+
+    private fun startLiveChat(summary: ConversationSummary, jobId: String, streamGeneration: Long) {
         chatStream?.cancel()
-        if (!job.running) {
+        val snapshot = chatDisplay.chat ?: return
+        if (!shouldStreamChat(summary.status, snapshot)) {
             chatLiveState = "finished"
             return
         }
         val p = pairing ?: return
+        val generation = pairingGeneration
         chatLiveState = "connecting"
-        chatStream = lifecycleScope.launch(Dispatchers.IO) {
+        chatStream = pairingScope.launch(Dispatchers.IO) {
             var waitMs = 500L
-            while (pairing == p && chat != null) {
+            while (isCurrentPairing(p, generation) && isCurrentChat(jobId, streamGeneration)) {
                 try {
-                    runOnUiThread { chatLiveState = "live" }
-                    Api(p, language.localizedContext(this@MainActivity)).events(job.id, chat?.cursor) { event ->
-                        runOnUiThread {
-                            if (event.kind == "reset") {
-                                reloadChat(job)
-                            } else {
-                                chat = chat?.let { mergeLiveEvent(it, event) }
-                                if (event.kind == "status" && event.status in listOf("done", "error")) {
-                                    chatLiveState = "finished"
-                                    reloadChat(job)
+                    val end = api(p).events(
+                        jobId,
+                        chatDisplay.chat?.cursor,
+                        onConnected = {
+                            runOnUiThread {
+                                if (isCurrentPairing(p, generation) && isCurrentChat(jobId, streamGeneration)) {
+                                    chatLiveState = "live"
                                 }
                             }
+                        },
+                    ) { event ->
+                        runOnUiThread eventUpdate@{
+                            if (!isCurrentPairing(p, generation) || !acceptsLiveEvent(
+                                    jobId, streamGeneration, chatJobId, chatGeneration, event.jobId,
+                                ) || chatDisplay.chat == null
+                            ) return@eventUpdate
+                            if (event.kind == "reset") reloadChat(summary, jobId, streamGeneration)
+                            else chatDisplay = chatDisplay.copy(chat = chatDisplay.chat?.let { mergeLiveEvent(it, event) })
                         }
                     }
+                    if (end == LiveStreamEnd.TERMINAL) {
+                        runOnUiThread {
+                            if (isCurrentChat(jobId, streamGeneration)) {
+                                chatLiveState = "finished"
+                                reloadChat(summary, jobId, streamGeneration)
+                            }
+                        }
+                        break
+                    }
                     waitMs = 500L
+                    runOnUiThread {
+                        if (isCurrentPairing(p, generation) && isCurrentChat(jobId, streamGeneration)) {
+                            chatLiveState = "reconnecting"
+                        }
+                    }
+                    delay(waitMs)
+                    waitMs = (waitMs * 2).coerceAtMost(8_000L)
+                } catch (cause: CancellationException) {
+                    throw cause
                 } catch (_: Exception) {
-                    runOnUiThread { if (chat != null) chatLiveState = "reconnecting" }
+                    runOnUiThread {
+                        if (isCurrentPairing(p, generation) && isCurrentChat(jobId, streamGeneration)) chatLiveState = "reconnecting"
+                    }
                     delay(waitMs)
                     waitMs = (waitMs * 2).coerceAtMost(8_000L)
                 }
@@ -298,31 +436,34 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun reloadChat(job: Job) {
-        val p = pairing ?: return
-        lifecycleScope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching { Api(p, language.localizedContext(this@MainActivity)).chat(job.id) }
-            }
-            result.onSuccess { fresh ->
-                val oldIds = chat?.eventIds.orEmpty()
-                chat = fresh.copy(eventIds = fresh.eventIds + oldIds)
-            }
-        }
+    private fun reloadChat(summary: ConversationSummary, jobId: String, streamGeneration: Long = chatGeneration) {
+        pairingRequest(
+            request = { it.chat(summary.ref) },
+            apply = applyReload@{ result ->
+                if (!isCurrentChat(jobId, streamGeneration)) return@applyReload
+                result.onSuccess { fresh ->
+                    val oldIds = chatDisplay.chat?.eventIds.orEmpty()
+                    chatDisplay = chatDisplay.copy(chat = fresh.copy(
+                        eventIds = fresh.eventIds + oldIds,
+                        cursor = fresh.cursor ?: chatDisplay.chat?.cursor,
+                    ))
+                }
+            },
+        )
     }
 
     private fun refreshUsage() {
-        val p = pairing ?: return
-        usageLoading = true
-        usageError = false
-        lifecycleScope.launch {
-            val found = withContext(Dispatchers.IO) {
-                runCatching { Api(p, language.localizedContext(this@MainActivity)).usage() }
-            }
-            usageLoading = false
-            found.onSuccess { usage = it; usageError = false }
-                .onFailure { usageError = true }
-        }
+        if (pairing == null) return
+        usageContent = usageContent.copy(loading = true, failed = false)
+        pairingRequest(
+            request = Api::usage,
+            apply = { result ->
+                usageContent = result.fold(
+                    onSuccess = { UsageContent(data = it) },
+                    onFailure = { usageContent.copy(loading = false, failed = true) },
+                )
+            },
+        )
     }
 
     private fun installedVersion(): String = packageManager
@@ -333,41 +474,68 @@ class MainActivity : ComponentActivity() {
 
     private fun unpair() {
         val p = pairing ?: return
+        val generation = pairingGeneration
         if (unpairing) return
         unpairDialog = true
         unpairing = true
         unpairError = null
-        lifecycleScope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching {
-                    val api = Api(p, language.localizedContext(this@MainActivity))
-                    var remote = api.deleteDevice(store.deviceId)
+        pairingScope.launch {
+            val attempt = withContext(Dispatchers.IO) {
+                try {
+                    val client = api(p)
+                    var remote = client.deleteDevice(store.deviceId)
                     repeat(40) {
-                        if (remote.mode == "pairing" && !remote.registered) return@runCatching remote
+                        if (remote.mode == "pairing" && !remote.registered) {
+                            return@withContext UnpairAttempt(UnpairAttemptKind.REMOTE_SUCCESS)
+                        }
                         Thread.sleep(500)
-                        remote = api.pairingState(store.deviceId)
+                        remote = client.pairingState(store.deviceId)
                     }
-                    throw Api.Down(localizedString(R.string.unpair_wait_timeout))
+                    UnpairAttempt(UnpairAttemptKind.TIMEOUT, localizedString(R.string.unpair_wait_timeout))
+                } catch (cause: Api.Unauthorized) {
+                    UnpairAttempt(UnpairAttemptKind.UNAUTHORIZED, cause.message)
+                } catch (cause: Api.Down) {
+                    UnpairAttempt(UnpairAttemptKind.API_DOWN, cause.message)
+                } catch (cause: CancellationException) {
+                    throw cause
+                } catch (cause: Exception) {
+                    UnpairAttempt(UnpairAttemptKind.API_DOWN, cause.message)
                 }
             }
+            if (!isCurrentPairing(p, generation)) return@launch
             unpairing = false
-            result.onSuccess {
-                unpairDialog = false
-                clearPairing()
-            }.onFailure {
-                unpairError = it.message ?: localizedString(R.string.error_pc_unreachable)
+            when (unpairDecision(attempt.kind)) {
+                UnpairDecision.CLEAR_LOCAL_PAIRING -> clearPairing()
+                UnpairDecision.OFFER_LOCAL_FORGET -> {
+                    unpairError = attempt.message ?: localizedString(R.string.error_pc_unreachable)
+                }
             }
         }
     }
 
     private fun clearPairing() {
+        beginPairingSession()
         store.pairing = null
+        store.announced = emptySet()
+        store.notificationBaselineReady = false
         pairing = null
-        state = null
-        settings = false               // it is invoked from inside Settings; do not strand us there
+        queue = QueueContent()
+        usageContent = UsageContent()
+        chatDisplay = ChatDisplay()
+        destination = Destination.Queue
+        chatLiveState = "idle"
+        chatStream = null
+        chatJobId = null
+        chatGeneration++
+        confirmClear = false
+        unpairDialog = false
+        unpairing = false
+        unpairError = null
         ListenerService.stop(this)
         CatchUpWorker.cancel(this)
     }
+
+    private data class UnpairAttempt(val kind: UnpairAttemptKind, val message: String? = null)
 
     /** Same source Update.check compares against, so the two can never disagree. */
     private fun appVersion(): String =
@@ -418,8 +586,8 @@ class MainActivity : ComponentActivity() {
                     Text(stringResource(R.string.pair_scan_button), style = MaterialTheme.typography.labelLarge)
                 }
 
-                AnimatedVisibility(error != null) {
-                    Alarm(stringResource(R.string.pair_error_title), error ?: "", null)
+                AnimatedVisibility(queue.error != null) {
+                    Alarm(stringResource(R.string.pair_error_title), queue.error ?: "", null)
                 }
 
                 Spacer(Modifier.height(28.dp))
@@ -468,7 +636,7 @@ class MainActivity : ComponentActivity() {
     // ============================== QUEUE =========================================
     @Composable
     private fun QueueScreen() {
-        val s = state
+        val s = queue.state
 
         Column(Modifier.fillMaxSize()) {
             TopBar(s)
@@ -480,30 +648,32 @@ class MainActivity : ComponentActivity() {
             // they are diagnosis, so they moved into Settings. What survives at the top is the
             // one line that answers "what is happening", which now includes `Parado`: the
             // same alarm, said in one word, and visible from across the room.
-            AnimatedVisibility(error != null && s != null) {
-                Alarm(stringResource(R.string.connection_alarm_title), error ?: "", stringResource(R.string.connection_alarm_hint))
+            AnimatedVisibility(queue.error != null && s != null) {
+                Alarm(stringResource(R.string.connection_alarm_title), queue.error ?: "", stringResource(R.string.connection_alarm_hint))
             }
 
             s?.quota?.let { QuotaStrip(it) }
 
             when {
-                s == null && loading -> Center { StateMessage(stringResource(R.string.connecting), loading = true) }
+                s == null && queue.loading -> Center { StateMessage(stringResource(R.string.connecting), loading = true) }
                 s == null -> Center {
                     StateMessage(
                         title = stringResource(R.string.no_data),
-                        body = error ?: stringResource(R.string.no_data_detail),
+                        body = queue.error ?: stringResource(R.string.no_data_detail),
                         actionLabel = stringResource(R.string.retry),
                         onAction = { refresh() },
                     )
                 }
-                s.jobs.isEmpty() -> EmptyQueue()
+                queue.conversations.isEmpty() -> EmptyQueue()
                 else -> LazyColumn(
                     Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(14.dp, 8.dp, 14.dp, 28.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    item(key = "queue-heading") { QueueHeading(s) }
-                    items(s.jobs.reversed(), key = { it.id }) { JobCard(it) { openJob = it } }
+                    item(key = "queue-heading") { QueueHeading(queue.conversations.size) }
+                    items(queue.conversations, key = { it.ref }) { summary ->
+                        ConversationCard(summary) { openChat(summary) }
+                    }
                 }
             }
         }
@@ -523,7 +693,7 @@ class MainActivity : ComponentActivity() {
                 }
                 Spacer(Modifier.height(3.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    val live = error == null && s != null
+                    val live = queue.error == null && s != null
                     Text(
                         if (live) "◆" else "◇",
                         color = if (live) K.Ok else K.Err,
@@ -539,13 +709,13 @@ class MainActivity : ComponentActivity() {
             // One button. The reload was doing what onResume already does, and the unpair —
             // the single most destructive thing here — sat one mis-tap from everything else.
             // Both are now inside Settings, where you go on purpose.
-            if (loading && s != null) {
+            if (queue.loading && s != null) {
                 CircularProgressIndicator(
                     modifier = Modifier.size(16.dp), color = K.Accent, strokeWidth = 2.dp,
                 )
                 Spacer(Modifier.width(8.dp))
             }
-            IconButton(onClick = { settings = true }) {
+            IconButton(onClick = { destination = Destination.Settings }) {
                 Icon(
                     Icons.Default.Settings,
                     contentDescription = stringResource(R.string.open_settings),
@@ -554,7 +724,10 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        NowStrip(s?.now ?: Now(Activity.UNKNOWN), s)
+        val runningSummary = s?.now?.jobId?.let { id -> queue.conversations.find { it.runningJobId == id || id in it.jobIds } }
+        NowStrip(s?.now ?: Now(Activity.UNKNOWN), s) {
+            runningSummary?.let(::openChat)
+        }
         HorizontalDivider(color = K.Line)
     }
 
@@ -568,14 +741,14 @@ class MainActivity : ComponentActivity() {
      * the day it actually is.
      */
     @Composable
-    private fun NowStrip(now: Now, s: State?) {
+    private fun NowStrip(now: Now, s: State?, onOpenRunning: () -> Unit) {
         val (colour, icon, label) = when (now.activity) {
             Activity.RUNNING -> Triple(K.Accent, "●", stringResource(R.string.activity_running))
             Activity.QUOTA -> Triple(K.Warn, "⏸", stringResource(R.string.activity_quota))
             Activity.STALLED -> Triple(K.Err, "■", stringResource(R.string.activity_stalled))
             Activity.QUEUED -> Triple(K.Info, "◷", stringResource(R.string.activity_queued))
             Activity.IDLE -> Triple(K.Ok, "✓", stringResource(R.string.activity_idle))
-            Activity.UNKNOWN -> Triple(K.Muted, "·", if (error != null) stringResource(R.string.activity_offline) else "…")
+            Activity.UNKNOWN -> Triple(K.Muted, "·", if (queue.error != null) stringResource(R.string.activity_offline) else "…")
         }
 
         // What each state owes you underneath — the thing you would otherwise have to walk to
@@ -602,12 +775,14 @@ class MainActivity : ComponentActivity() {
             ).joinToString("  ·  ")
 
             Activity.IDLE -> stringResource(R.string.nothing_pending)
-            Activity.UNKNOWN -> error?.takeIf { it.isNotBlank() }?.lines()?.firstOrNull() ?: ""
+            Activity.UNKNOWN -> queue.error?.takeIf { it.isNotBlank() }?.lines()?.firstOrNull() ?: ""
         }
 
+        val canOpen = now.activity == Activity.RUNNING && now.jobId != null
         Column(
             Modifier.fillMaxWidth()
                 .background(colour.copy(alpha = 0.10f))
+                .then(if (canOpen) Modifier.clickable(onClick = onOpenRunning).semantics { role = Role.Button } else Modifier)
                 .padding(20.dp, 11.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -725,12 +900,8 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun JobCard(job: Job, onClick: () -> Unit) {
-        val colour = K.statusColour(job.status)
-        val prompt = displayPrompt(job)
-        val promptLines = estimatedPromptLines(prompt)
-        val canExpand = canExpandPrompt(prompt)
-        var expanded by remember(job.id) { mutableStateOf(false) }
+    private fun ConversationCard(summary: ConversationSummary, onClick: () -> Unit) {
+        val colour = K.statusColour(summary.status)
 
         Row(
             Modifier.fillMaxWidth().widthIn(max = 760.dp).padding(vertical = 5.dp)
@@ -744,19 +915,15 @@ class MainActivity : ComponentActivity() {
             // from across the room, without reading a word of it.
             Box(Modifier.width(3.dp).fillMaxHeight().background(colour))
 
-            Column(Modifier.padding(14.dp)) {
+            Column(Modifier.padding(14.dp).weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Chip(K.statusLabel(LocalContext.current, job.status), colour)
-                    val engine = engineLabel(job)
+                    Chip(K.statusLabel(LocalContext.current, summary.status), colour)
+                    val engine = engineLabel(summary)
                     if (engine.isNotBlank()) {
                         Spacer(Modifier.width(6.dp))
                         Chip(engine, K.Muted)
                     }
-                    job.target?.let {
-                        Spacer(Modifier.width(6.dp))
-                        Chip(it, K.Info)
-                    }
-                    if (job.running) {
+                    if (summary.status == "running") {
                         Spacer(Modifier.width(6.dp))
                         Blink()
                     }
@@ -764,27 +931,16 @@ class MainActivity : ComponentActivity() {
 
                 Spacer(Modifier.height(9.dp))
                 Text(
-                    prompt,
-                    color = K.Text, fontSize = 15.sp,
-                    maxLines = if (expanded) Int.MAX_VALUE else 3, lineHeight = 21.sp,
+                    summary.concept ?: stringResource(R.string.untitled_conversation),
+                    color = K.Text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold,
+                    maxLines = 2, lineHeight = 21.sp,
                     overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                 )
-
-                if (canExpand) {
-                    TextButton(onClick = { expanded = !expanded }, contentPadding = PaddingValues(0.dp)) {
-                        Text(
-                            if (expanded) stringResource(R.string.collapse_prompt)
-                            else if (job.running) stringResource(R.string.show_prompt_lines_running, promptLines - 3)
-                            else stringResource(R.string.show_prompt_lines, promptLines - 3),
-                            color = K.Accent, fontSize = 12.sp,
-                        )
-                    }
-                }
-
                 val foot = listOfNotNull(
-                    job.whenAt?.let { if (job.pending) stringResource(R.string.job_scheduled, relative(LocalContext.current, it)) else clock(LocalContext.current, it) },
-                    job.finishedAt?.let { stringResource(R.string.job_finished, relative(LocalContext.current, it)) },
-                    if (job.whenAt == null && job.pending) stringResource(R.string.job_waits_for_run) else null,
+                    summary.updatedAt?.takeIf { it > 0 }?.let { relative(LocalContext.current, it) },
+                    summary.jobIds.size.takeIf { it > 1 }?.let {
+                        pluralStringResource(R.plurals.launch_count, it, it)
+                    },
                 )
                 if (foot.isNotEmpty()) {
                     Spacer(Modifier.height(8.dp))
@@ -795,16 +951,16 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun QueueHeading(s: State) {
+    private fun QueueHeading(count: Int) {
         Row(
             Modifier.fillMaxWidth().widthIn(max = 760.dp).padding(4.dp, 10.dp, 4.dp, 6.dp),
             verticalAlignment = Alignment.Bottom,
         ) {
-            Text(stringResource(R.string.launches), color = K.Text, style = MaterialTheme.typography.titleLarge)
+            Text(stringResource(R.string.conversations), color = K.Text, style = MaterialTheme.typography.titleLarge)
             Spacer(Modifier.weight(1f))
             Text(
-                pluralStringResource(R.plurals.items_in_queue_count, s.pending, s.pending),
-                color = if (s.pending > 0) K.Info else K.Muted,
+                pluralStringResource(R.plurals.conversation_count, count, count),
+                color = K.Muted,
                 style = MaterialTheme.typography.labelMedium,
             )
         }
@@ -846,16 +1002,10 @@ class MainActivity : ComponentActivity() {
      */
     @Composable
     private fun SettingsScreen(onBack: () -> Unit) {
-        val s = state
+        val s = queue.state
         LaunchedEffect(Unit) { refreshUsage() }
 
-        Column(Modifier.fillMaxSize()) {
-            ScreenHeader(stringResource(R.string.settings), onBack)
-
-            Column(
-                Modifier.align(Alignment.CenterHorizontally).widthIn(max = 760.dp).fillMaxSize()
-                    .verticalScroll(rememberScrollState()).padding(20.dp),
-            ) {
+        ScrollableScreen(stringResource(R.string.settings), onBack) {
 
                 Group(stringResource(R.string.language))
                 LanguageSelector()
@@ -885,7 +1035,7 @@ class MainActivity : ComponentActivity() {
                 }
                 Spacer(Modifier.height(26.dp))
 
-                UsagePanel(usage, usageLoading, usageError)
+                UsagePanel(usageContent.data, usageContent.loading, usageContent.failed)
                 Spacer(Modifier.height(26.dp))
 
                 // --- who is draining the queue -------------------------------------------
@@ -983,7 +1133,6 @@ class MainActivity : ComponentActivity() {
                 }
 
                 Spacer(Modifier.height(50.dp))
-            }
         }
 
         // Confirmation, because it is not undoable and there is no bin to fish it out of.
@@ -1013,12 +1162,13 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun clearFinished() {
-        val p = pairing ?: return
-        lifecycleScope.launch {
-            val r = withContext(Dispatchers.IO) { runCatching { Api(p, language.localizedContext(this@MainActivity)).clearFinished() } }
-            r.onSuccess { refresh() }
-                .onFailure { error = it.message ?: localizedString(R.string.error_clear) }
-        }
+        pairingRequest(
+            request = { it.clearFinished() },
+            apply = { result ->
+                result.onSuccess { refresh() }
+                    .onFailure { queue = queue.copy(error = it.message ?: localizedString(R.string.error_clear)) }
+            },
+        )
     }
 
     @Composable
@@ -1039,8 +1189,13 @@ class MainActivity : ComponentActivity() {
                 }
             },
             confirmButton = {
-                if (!unpairing) TextButton(onClick = { unpair() }) {
-                    Text(stringResource(R.string.retry), color = K.Accent)
+                Row {
+                    if (!unpairing) TextButton(onClick = { unpair() }) {
+                        Text(stringResource(R.string.retry), color = K.Accent)
+                    }
+                    TextButton(onClick = { clearPairing() }) {
+                        Text(stringResource(R.string.forget_pc_locally), color = K.Err)
+                    }
                 }
             },
             dismissButton = {
@@ -1179,8 +1334,13 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun Fact(k: String, v: String, colour: Color = K.Text) {
-        Column(Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
+    private fun Fact(
+        k: String,
+        v: String,
+        colour: Color = K.Text,
+        modifier: Modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
+    ) {
+        Column(modifier) {
             Text(k, color = K.Muted, fontSize = 11.sp)
             Spacer(Modifier.height(2.dp))
             Text(
@@ -1200,12 +1360,7 @@ class MainActivity : ComponentActivity() {
         ) {
             Text(body, color = K.Text.copy(alpha = 0.85f), fontSize = 12.sp, lineHeight = 17.sp)
             Spacer(Modifier.height(7.dp))
-            Text(
-                cmd,
-                color = K.Accent, fontSize = 12.sp, fontFamily = FontFamily.Monospace,
-                modifier = Modifier.clip(RoundedCornerShape(6.dp))
-                    .background(K.Bg.copy(alpha = 0.5f)).padding(8.dp, 5.dp),
-            )
+            CommandText(cmd)
         }
     }
 
@@ -1214,13 +1369,7 @@ class MainActivity : ComponentActivity() {
     private fun JobScreen(job: Job, onBack: () -> Unit) {
         val colour = K.statusColour(job.status)
 
-        Column(Modifier.fillMaxSize()) {
-            ScreenHeader(stringResource(R.string.kaip_job), onBack)
-
-            Column(
-                Modifier.align(Alignment.CenterHorizontally).widthIn(max = 760.dp).fillMaxSize()
-                    .verticalScroll(rememberScrollState()).padding(20.dp),
-            ) {
+        ScrollableScreen(stringResource(R.string.kaip_job), onBack) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Chip(K.statusLabel(LocalContext.current, job.status), colour, solid = true)
                     val engine = engineLabel(job)
@@ -1241,32 +1390,6 @@ class MainActivity : ComponentActivity() {
                     Section(stringResource(R.string.prompt_file), it, K.Warn)
                 }
 
-                if (job.sessionId != null || job.running) {
-                    Spacer(Modifier.height(20.dp))
-                    Button(
-                        onClick = { openChat(job) },
-                        enabled = !chatLoading,
-                        colors = ButtonDefaults.buttonColors(containerColor = K.Accent, contentColor = K.Bg),
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
-                        shape = RoundedCornerShape(11.dp),
-                    ) {
-                        if (chatLoading) {
-                            CircularProgressIndicator(
-                                Modifier.size(18.dp), color = K.Bg, strokeWidth = 2.dp,
-                            )
-                            Spacer(Modifier.width(10.dp))
-                        }
-                        Text(
-                            if (chatLoading) stringResource(R.string.chat_loading) else stringResource(R.string.view_full_chat),
-                            fontWeight = FontWeight.Bold,
-                        )
-                    }
-                    chatError?.let {
-                        Spacer(Modifier.height(10.dp))
-                        Alarm(stringResource(R.string.connection_alarm_title), it, null)
-                    }
-                }
-
                 Spacer(Modifier.height(22.dp))
                 Section(stringResource(R.string.prompt), job.prompt ?: stringResource(R.string.prompt_unreadable), K.Text)
                 job.promptFile?.let {
@@ -1277,7 +1400,6 @@ class MainActivity : ComponentActivity() {
                 Spacer(Modifier.height(20.dp))
                 Facts(job)
                 Spacer(Modifier.height(44.dp))
-            }
         }
     }
 
@@ -1296,11 +1418,7 @@ class MainActivity : ComponentActivity() {
         Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(K.Card).padding(14.dp)) {
             rows.forEachIndexed { i, (k, v) ->
                 if (i > 0) Spacer(Modifier.height(9.dp))
-                Column {
-                    Text(k, color = K.Muted, fontSize = 11.sp)
-                    Spacer(Modifier.height(2.dp))
-                    Text(v, color = K.Text, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-                }
+                Fact(k, v, modifier = Modifier.fillMaxWidth())
             }
         }
     }
@@ -1316,7 +1434,7 @@ class MainActivity : ComponentActivity() {
      * conversation; read the grey and you get how it got there.
      */
     @Composable
-    private fun ChatScreen(c: Chat, onBack: () -> Unit) {
+    private fun ChatScreen(c: Chat, summary: ConversationSummary?, onBack: () -> Unit) {
         val assistantLabel = c.assistantLabel ?: stringResource(R.string.role_assistant)
         val turns = pluralStringResource(R.plurals.turn_count_plural, c.turns.size, c.turns.size)
         val liveLabel = when (chatLiveState) {
@@ -1324,11 +1442,12 @@ class MainActivity : ComponentActivity() {
             "connecting" -> stringResource(R.string.chat_connecting)
             "reconnecting" -> stringResource(R.string.chat_reconnecting)
             "finished" -> stringResource(R.string.chat_finished)
+            "waiting" -> stringResource(R.string.chat_waiting)
             else -> null
         }
         Column(Modifier.fillMaxSize()) {
             ScreenHeader(
-                c.target ?: stringResource(R.string.conversation), onBack,
+                summary?.concept ?: c.target ?: stringResource(R.string.untitled_conversation), onBack,
                 listOfNotNull(liveLabel, turns).joinToString(" · "),
             )
 
@@ -1339,12 +1458,38 @@ class MainActivity : ComponentActivity() {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Chip(assistantLabel, K.Info)
                     c.model?.let { Spacer(Modifier.width(6.dp)); Chip(it, K.Muted) }
+                    val technicalJob = summary?.currentJobId?.let { id -> queue.state?.jobs?.find { it.id == id } }
+                    if (technicalJob != null) {
+                        Spacer(Modifier.weight(1f))
+                        TextButton(onClick = {
+                            closeChat()
+                            destination = Destination.Job(technicalJob)
+                        }) {
+                            Text(stringResource(R.string.job_details), color = K.Muted, fontSize = 12.sp)
+                        }
+                    }
                 }
             }
             HorizontalDivider(color = K.Line)
 
             if (c.turns.isEmpty()) {
-                Center { StateMessage(stringResource(R.string.empty_chat)) }
+                val title = when {
+                    chatDisplay.loading -> stringResource(R.string.chat_loading)
+                    chatDisplay.error != null -> stringResource(R.string.error_chat_unavailable)
+                    summary?.status == "quota" -> stringResource(R.string.chat_waiting_quota)
+                    summary?.status == "pending" -> stringResource(R.string.chat_waiting_session)
+                    summary?.status == "error" -> stringResource(R.string.chat_failed_empty)
+                    else -> stringResource(R.string.empty_chat)
+                }
+                Center {
+                    StateMessage(
+                        title = title,
+                        body = chatDisplay.error,
+                        loading = chatDisplay.loading,
+                        actionLabel = chatDisplay.error?.let { stringResource(R.string.retry) },
+                        onAction = chatDisplay.error?.let { { summary?.let(::openChat) } },
+                    )
+                }
                 return@Column
             }
 
@@ -1511,6 +1656,22 @@ class MainActivity : ComponentActivity() {
 
     // ============================== bits ==========================================
     @Composable
+    private fun ScrollableScreen(
+        title: String,
+        onBack: () -> Unit,
+        content: @Composable ColumnScope.() -> Unit,
+    ) {
+        Column(Modifier.fillMaxSize()) {
+            ScreenHeader(title, onBack)
+            Column(
+                Modifier.align(Alignment.CenterHorizontally).widthIn(max = 760.dp).fillMaxSize()
+                    .verticalScroll(rememberScrollState()).padding(20.dp),
+                content = content,
+            )
+        }
+    }
+
+    @Composable
     private fun ScreenHeader(title: String, onBack: () -> Unit, detail: String? = null) {
         Row(
             Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(horizontal = 8.dp),
@@ -1594,14 +1755,19 @@ class MainActivity : ComponentActivity() {
             Text(body, color = K.Text.copy(alpha = 0.85f), fontSize = 12.sp, lineHeight = 17.sp)
             cmd?.let {
                 Spacer(Modifier.height(8.dp))
-                Text(
-                    it,
-                    color = K.Accent, fontSize = 12.sp, fontFamily = FontFamily.Monospace,
-                    modifier = Modifier.clip(RoundedCornerShape(6.dp))
-                        .background(K.Bg.copy(alpha = 0.5f)).padding(8.dp, 5.dp),
-                )
+                CommandText(it)
             }
         }
+    }
+
+    @Composable
+    private fun CommandText(command: String) {
+        Text(
+            command,
+            color = K.Accent, fontSize = 12.sp, fontFamily = FontFamily.Monospace,
+            modifier = Modifier.clip(RoundedCornerShape(6.dp))
+                .background(K.Bg.copy(alpha = 0.5f)).padding(8.dp, 5.dp),
+        )
     }
 
     @Composable

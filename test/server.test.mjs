@@ -23,12 +23,17 @@ const { executeJob } = await import('../lib/runner.mjs');
 const { emitLive } = await import('../lib/live-events.mjs');
 const {
   addresses, createServer, noteClient, pairingPayload, publish, resetToken, serverConfig, saveServerConfig,
-  BOOTED_AT, clientList, forgetClients, pairedThisSession, stateDTO,
+  BOOTED_AT, chatDTO, clientList, conversationStatus, forgetClients, pairedThisSession, stateDTO, targetsDTO,
 } = await import('../lib/server.mjs');
 
 const PORT = 7899;
 let server;
 let token;
+const openCodeExports = new Map();
+const openCodeRun = (_bin, args) => {
+  const data = openCodeExports.get(args[1]);
+  return data ? { status: 0, stdout: JSON.stringify(data) } : { status: 1, stdout: '' };
+};
 
 const get = (p, opts = {}) => fetch(`http://127.0.0.1:${PORT}${p}`, {
   headers: opts.noAuth ? {} : { authorization: `Bearer ${opts.token ?? token}` },
@@ -51,7 +56,7 @@ const rawGet = (p, headers = {}) => new Promise((resolve, reject) => {
 
 before(async () => {
   token = serverConfig().token;
-  server = createServer({ port: PORT });
+  server = createServer({ port: PORT, loadChat: (ref) => chatDTO(ref, { openCodeRun }) });
   await server.ready;
 });
 
@@ -172,6 +177,49 @@ test('/api/targets: the conversations, grouped — several jobs share one chat',
   assert.equal(t.jobs.length, 2, 'both jobs hang off the same conversation');
 });
 
+test('/api/targets: enriched summaries preserve legacy fields and never use prompt text as a concept', () => {
+  saveQueue([]);
+  saveSessions({});
+  const pending = addJob({ prompt: 'secret prompt must not become a title', target: 'phase-six', adapter: 'opencode', provider: 'openai', model: 'gpt-5' });
+  const failed = addJob({ prompt: 'also private', target: 'phase-six', adapter: 'opencode', provider: 'openai', model: 'gpt-5' });
+  patchJob({ ...pending, pausedUntil: Date.now() + 60_000 });
+  patchJob({ ...failed, status: 'error', finishedAt: Date.now() + 1 });
+
+  const [summary] = targetsDTO();
+  assert.equal(summary.ref, 'phase-six');
+  assert.equal(summary.concept, 'phase-six');
+  assert.equal(summary.status, 'quota', 'pending/quota outranks an error');
+  assert.equal(summary.currentJobId, pending.id);
+  assert.equal(summary.chatAvailable, true);
+  assert.equal(summary.target, 'phase-six', 'legacy target remains');
+  assert.equal(summary.sessionId, null, 'legacy sessionId remains');
+  assert.deepEqual(summary.jobs, [pending.id, failed.id]);
+  assert.doesNotMatch(JSON.stringify(summary), /secret prompt|also private/);
+});
+
+test('/api/targets: status precedence is running > pending > error > done > missed', () => {
+  const jobs = ['missed', 'done', 'error', 'pending', 'running'].map((status, index) => ({
+    id: status, status, createdAt: index,
+  }));
+  assert.equal(conversationStatus(jobs).id, 'running');
+  assert.equal(conversationStatus(jobs.filter((job) => job.status !== 'running')).id, 'pending');
+  assert.equal(conversationStatus(jobs.filter((job) => !['running', 'pending'].includes(job.status))).id, 'error');
+  assert.equal(conversationStatus(jobs.filter((job) => ['done', 'missed'].includes(job.status))).id, 'done');
+});
+
+test('/api/targets: an untargeted OpenCode conversation uses export metadata title and stable session ref', () => {
+  saveQueue([]);
+  saveSessions({});
+  const job = addJob({ prompt: 'never title from this', adapter: 'opencode', provider: 'openai', model: 'gpt-5', session: 'ses-titled' });
+  openCodeExports.set('ses-titled', { info: { id: 'ses-titled', title: 'Exported session title' }, messages: [] });
+
+  const [summary] = targetsDTO({ openCodeRun });
+  assert.equal(summary.ref, 'ses-titled');
+  assert.equal(summary.concept, 'Exported session title');
+  assert.equal(summary.currentJobId, job.id);
+  assert.equal(summary.chatAvailable, true);
+});
+
 test('/api/job/:id/chat with no transcript: a 404 with a reason, not a 500', async () => {
   saveQueue([]);
   const j = addJob({ prompt: 'x', adapter: 'mock' });
@@ -196,6 +244,24 @@ test('/api/job/:id/chat falls back to the prompt and output for OpenCode', async
   assert.deepEqual(chat.turns.map((t) => t.blocks[0].text), ['ask OpenCode', 'OpenCode answer']);
 });
 
+test('/api/job/:id/chat is useful for pending and failed OpenCode jobs before a session exists', async () => {
+  saveQueue([]);
+  const pending = addJob({ prompt: 'waiting prompt', adapter: 'opencode', provider: 'openai', model: 'gpt-5' });
+  const failed = addJob({ prompt: 'failed prompt', adapter: 'opencode', provider: 'openai', model: 'gpt-5' });
+  patchJob({ ...failed, status: 'error', error: 'launch failed', finishedAt: Date.now() });
+
+  const waitingChat = await (await get(`/api/job/${pending.id}/chat`)).json();
+  assert.equal(waitingChat.sessionId, `job:${pending.id}`);
+  assert.equal(waitingChat.status, 'pending');
+  assert.equal(waitingChat.terminal, false);
+  assert.equal(waitingChat.turns[0].blocks[0].text, 'waiting prompt');
+
+  const failedChat = await (await get(`/api/job/${failed.id}/chat`)).json();
+  assert.equal(failedChat.status, 'error');
+  assert.equal(failedChat.terminal, true);
+  assert.deepEqual(failedChat.turns.map((turn) => turn.blocks[0].text), ['failed prompt', 'launch failed']);
+});
+
 test('/api/job/:id/chat returns every turn from the same OpenCode session', async () => {
   saveQueue([]);
   const a = addJob({ prompt: 'first question', target: 'shared', adapter: 'opencode', provider: 'openai', model: 'gpt-5.6-sol', session: 'ses-shared' });
@@ -209,6 +275,82 @@ test('/api/job/:id/chat returns every turn from the same OpenCode session', asyn
   assert.deepEqual(chat.turns.map((turn) => turn.blocks[0].text), [
     'first question', 'first answer', 'second question', 'second answer',
   ]);
+});
+
+test('/api/chat/:target uses the normalized OpenCode export after queue history is cleared', async () => {
+  saveQueue([]);
+  saveSessions({ exported: {
+    sessionId: 'ses-exported', adapter: 'opencode', provider: 'openai', model: 'gpt-5', dir: TMP, updatedAt: 1,
+  } });
+  openCodeExports.set('ses-exported', {
+    info: { id: 'ses-exported', directory: TMP },
+    messages: [
+      { info: { role: 'user', time: { created: 1 } }, parts: [{ type: 'text', text: 'persisted question' }] },
+      { info: { role: 'assistant', time: { created: 2 } }, parts: [{ type: 'reasoning', text: 'thought' }, { type: 'text', text: 'persisted answer' }] },
+    ],
+  });
+
+  const response = await get('/api/chat/exported');
+  assert.equal(response.status, 200);
+  const chat = await response.json();
+  assert.equal(chat.adapter, 'opencode');
+  assert.equal(chat.dir, TMP);
+  assert.deepEqual(chat.turns[1].blocks.map((block) => block.type), ['thinking', 'text']);
+});
+
+test('exported OpenCode camelCase Edit arguments produce canonical API diffs', async () => {
+  saveQueue([]);
+  saveSessions({ edits: {
+    sessionId: 'ses-edit-export', adapter: 'opencode', provider: 'openai', model: 'gpt-5', dir: TMP, updatedAt: 1,
+  } });
+  openCodeExports.set('ses-edit-export', {
+    info: { id: 'ses-edit-export', directory: TMP },
+    messages: [{ info: { role: 'assistant', time: { created: 1 } }, parts: [{
+      type: 'tool', toolName: 'edit', arguments: {
+        filePath: 'lib/example.mjs', oldString: 'before', newString: 'after',
+      },
+    }] }],
+  });
+
+  const chat = await (await get('/api/chat/edits')).json();
+  assert.deepEqual(chat.turns[0].blocks[0], {
+    type: 'tool', name: 'Edit', input: {
+      filePath: 'lib/example.mjs', oldString: 'before', newString: 'after',
+      file_path: 'lib/example.mjs', old_string: 'before', new_string: 'after',
+    },
+  });
+  assert.deepEqual(chat.turns[0].diffs, [{
+    file: 'lib/example.mjs', added: 1, removed: 1, diff: '-before\n+after',
+  }]);
+});
+
+test('OpenCode chat combines export and durable live events without duplicates and uses the requested job cursor', async () => {
+  saveQueue([]);
+  const current = addJob({ prompt: 'question', adapter: 'opencode', provider: 'openai', model: 'gpt-5', session: 'ses-live-export' });
+  const other = addJob({ prompt: 'other', adapter: 'opencode', provider: 'openai', model: 'gpt-5', session: 'ses-live-export' });
+  patchJob({ ...current, status: 'running', startedAt: Date.now() });
+  patchJob({ ...other, status: 'running', startedAt: Date.now() });
+  const duplicateStart = emitLive(current, { kind: 'text', text: 'already ' });
+  const duplicate = emitLive(current, { kind: 'text', text: 'exported' });
+  const thinking = emitLive(current, { kind: 'thinking', text: 'still working' });
+  const otherLast = emitLive(other, { kind: 'text', text: 'belongs to the other job' });
+  openCodeExports.set('ses-live-export', {
+    info: { id: 'ses-live-export', directory: TMP },
+    messages: [
+      { info: { role: 'user', time: { created: 1 } }, parts: [{ type: 'text', text: 'question' }] },
+      { info: { role: 'assistant', time: { created: 2 } }, parts: [{ type: 'text', text: 'already exported' }] },
+    ],
+  });
+
+  const chat = await (await get(`/api/job/${current.id}/chat`)).json();
+  const blocks = chat.turns.flatMap((turn) => turn.blocks);
+  assert.equal(blocks.filter((block) => block.text === 'already exported').length, 1);
+  assert.equal(blocks.find((block) => block.text === 'already exported').eventId, duplicate.id);
+  assert.equal(blocks.find((block) => block.text === 'still working').eventId, thinking.id);
+  assert.equal(chat.cursor, thinking.id, 'the cursor belongs to the requested job, not another job in its session');
+  assert.notEqual(chat.cursor, otherLast.id);
+  assert.ok(chat.eventIds.includes(chat.cursor), 'the cursor identifies an event represented in this snapshot');
+  assert.ok(chat.eventIds.includes(duplicateStart.id), 'every reconciled chunk remains known for replay deduplication');
 });
 
 // --- pairing --------------------------------------------------------------------
@@ -392,6 +534,17 @@ test('/api/events replays missed live chat events after a cursor', async () => {
   ctrl.abort();
   assert.doesNotMatch(got, /"text":"one"/);
   assert.match(got, /id: attempt-1:2/);
+});
+
+test('/api/events delivers a terminal status and then closes the job stream cleanly', async () => {
+  const job = { id: `terminal-${Date.now()}`, attemptId: 'attempt-terminal', target: 'chat' };
+  emitLive(job, { kind: 'text', text: 'last words' });
+  const ended = emitLive(job, { kind: 'status', status: 'done' });
+  const r = await fetch(`http://127.0.0.1:${PORT}/api/events?token=${token}&job=${job.id}`);
+  const body = await r.text();
+  assert.match(body, /"text":"last words"/);
+  assert.match(body, /"status":"done"/);
+  assert.match(body, new RegExp(`id: ${ended.id}`));
 });
 
 // --- what Cloudflare sees --------------------------------------------------------

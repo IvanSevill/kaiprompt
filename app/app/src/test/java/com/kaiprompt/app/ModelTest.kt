@@ -366,4 +366,36 @@ class ModelTest {
         assertEquals("a.kt", event.arg)
         assertEquals(PairingState("pairing", false, 2), PairingState.parse("""{"mode":"pairing","registered":false,"protocol":2}"""))
     }
+
+    @Test
+    fun `chat y live comparten prioridad de argumentos y parseo de todos`() {
+        val chat = Chat.parse(
+            """{"sessionId":"s","turns":[{"role":"assistant","blocks":[
+              {"type":"tool","name":"Read","eventId":"e:1","input":{"command":"later","file_path":"first.kt"}},
+              {"type":"todos","eventId":"e:2","todos":[null,{"content":"probar","activeForm":"probando"}]}
+            ]}]}""",
+        )
+        val liveTool = LiveEvent.parse(
+            """{"id":"e:3","kind":"tool","input":{"command":"later","file_path":"first.kt"}}""",
+        )
+        val liveTodos = LiveEvent.parse(
+            """{"id":"e:4","kind":"todos","todos":[null,{"content":"probar","activeForm":"probando"}]}""",
+        )
+
+        assertEquals("first.kt", (chat.turns.single().blocks[0] as Block.Tool).arg)
+        assertEquals("first.kt", liveTool.arg)
+        assertEquals("pending", (chat.turns.single().blocks[1] as Block.Todos).items.single().status)
+        assertEquals(liveTodos.todos, (chat.turns.single().blocks[1] as Block.Todos).items)
+        assertEquals(setOf("e:1", "e:2"), chat.eventIds)
+        assertEquals("e:4", liveTodos.id)
+    }
+
+    @Test
+    fun `arrays de strings omiten vacios null y valores no textuales`() {
+        val chat = Chat.parse(
+            """{"sessionId":"s","eventIds":["a","",null,{"id":"no"},"b"],"turns":[]}""",
+        )
+
+        assertEquals(setOf("a", "b"), chat.eventIds)
+    }
 }

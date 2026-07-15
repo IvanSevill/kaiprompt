@@ -1,5 +1,19 @@
 # Ideas
 
+## Follow-ups after the OpenCode reliability pass
+
+These issues were discovered during verification and deliberately deferred so they did not
+interrupt the approved work:
+
+- Resolve the remaining Android lint warnings: runtime locale bundle configuration, plural
+  resources, stale dependencies and unused strings. The current report has zero errors and 25
+  warnings; none is related to the launcher icon or the OpenCode/live-chat changes.
+- Rename the two Kotlin test cases whose display names contain characters Gradle warns can be
+  troublesome on Windows.
+- Exercise stream switching, offline unpair and adaptive/themed launcher rendering on physical
+  Android devices. Unit tests cover state transitions, but OEM networking and launcher behavior
+  require device testing.
+
 ## Follow-ups after v1.3.5
 
 These are non-blocking improvements. The automated Node and Android suites cover the release,

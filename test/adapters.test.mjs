@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 
 import * as claude from '../adapters/claude.mjs';
 import * as codex from '../adapters/codex.mjs';
@@ -142,4 +144,52 @@ test('opencode: normalizes punctuated TodoWrite tool names', () => {
   }, 'ses-2');
   assert.equal(event.message.content[0].name, 'TodoWrite');
   assert.equal(event.message.content[0].input.todos[0].content, 'test it');
+});
+
+test('opencode: normalizes reasoning parts for the durable live transcript', () => {
+  assert.deepEqual(opencode.liveEvent({
+    type: 'reasoning', part: { type: 'reasoning', text: 'checking the edge case' },
+  }, 'ses-3'), {
+    type: 'assistant', session_id: 'ses-3',
+    message: { content: [{ type: 'thinking', thinking: 'checking the edge case' }] },
+  });
+});
+
+test('opencode: accepts alternate session and tool event spellings', async () => {
+  const tool = opencode.toolEvent({
+    type: 'tool-use', part: { tool: 'read', input: { path: 'README.md' } },
+  }, 'ses-alt');
+  assert.equal(tool.message.content[0].name, 'Read');
+  assert.equal(tool.message.content[0].input.file_path, 'README.md');
+
+  const child = new EventEmitter();
+  child.stdout = new PassThrough(); child.stderr = new PassThrough();
+  const events = [];
+  const running = opencode.run({
+    prompt: 'x', provider: 'openai', model: 'gpt-5', spawnProcess: () => child,
+    onEvent: (event) => events.push(event),
+  });
+  child.stdout.end(JSON.stringify({ type: 'text', sessionId: 'ses-camel', text: 'answer' }) + '\n');
+  child.stderr.end(); child.emit('close', 0);
+  assert.equal((await running).sessionId, 'ses-camel');
+  assert.equal(events.at(-1).message.content[0].text, 'answer');
+});
+
+test('opencode: reports a new session before any text and supports an injected process', async () => {
+  const child = new EventEmitter();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  const events = [];
+  const running = opencode.run({
+    prompt: 'x', provider: 'openai', model: 'gpt-5', onEvent: (event) => events.push(event),
+    spawnProcess: () => child,
+  });
+  child.stdout.write(JSON.stringify({ type: 'step_start', sessionID: 'ses-new', part: {} }) + '\n');
+  child.stdout.write(JSON.stringify({ type: 'text', sessionID: 'ses-new', part: { text: 'answer' } }) + '\n');
+  child.stdout.end(); child.stderr.end(); child.emit('close', 0);
+
+  const result = await running;
+  assert.equal(result.sessionId, 'ses-new');
+  assert.deepEqual(events[0], { type: 'system', subtype: 'init', session_id: 'ses-new' });
+  assert.equal(events[1].message.content[0].text, 'answer');
 });

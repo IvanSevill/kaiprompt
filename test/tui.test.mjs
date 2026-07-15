@@ -22,8 +22,9 @@ const { addJob } = await import('../lib/queue.mjs');
 const { strip } = await import('../lib/ui.mjs');
 const {
   applyEffect, asPaste, decodeKey, initialState, keyReader, pasteText,
-  reduce, refresh, render, rows, selected, VIEWS,
+  readOutput, reduce, refresh, render, rows, selected, VIEWS,
 } = await import('../lib/tui.mjs');
+const { loadUsageData } = await import('../lib/tui-state.mjs');
 
 const DIMS = { cols: 100, rows: 30 };
 const view = (state) => strip(render(state, DIMS).join('\n'));
@@ -35,7 +36,15 @@ function press(state, keys) {
   return { state, effect };
 }
 
-const fresh = () => refresh(initialState());
+const TEST_CATALOG = {
+  status: 'ready', error: null, generation: 1,
+  models: [
+    { id: 'openai/gpt-5.6-terra', provider: 'openai', model: 'gpt-5.6-terra' },
+    { id: 'google/gemini-2.5-flash', provider: 'google', model: 'gemini-2.5-flash' },
+  ],
+  lastSuccessful: [],
+};
+const fresh = () => refresh(initialState({ catalog: TEST_CATALOG }));
 
 test('refresh: picks up jobs added by another Kaiprompt process without losing wizard input', () => {
   saveQueue([]);
@@ -60,6 +69,7 @@ test('decodeKey: arrows, enter, esc, backspace and Ctrl+C', () => {
   assert.equal(decodeKey('\x1b'), 'esc');
   assert.equal(decodeKey('\x7f'), 'backspace');
   assert.equal(decodeKey('\x03'), 'ctrl-c');
+  assert.equal(decodeKey('\x0c'), 'ctrl-l');
   assert.equal(decodeKey(Buffer.from('a')), 'a', 'an ordinary character comes back as it is');
 });
 
@@ -653,7 +663,9 @@ test('usage view switches Claude, Codex, and OpenCode providers through shared r
   fs.writeFileSync(historyPath('usage-codex'), JSON.stringify({ type: 'attempt-end', engine: 'codex', sessionId: 'codex-session' }) + '\n');
   fs.writeFileSync(historyPath('usage-openai'), JSON.stringify({ type: 'attempt-end', engine: 'opencode', provider: 'openai', sessionId: 'openai-session', usage: { input: 8, output: 2, total: 10 }, cost: 0.01 }) + '\n');
 
-  let state = reduce(fresh(), 'u').state;
+  const entered = reduce(fresh(), 'u');
+  assert.deepEqual(entered.effect, { type: 'load-usage' });
+  let state = loadUsageData(entered.state);
   assert.equal(state.view, 'usage');
   assert.match(view(state), /Usage · Claude/);
   assert.match(view(state), /alpha.*14 tok · 10 in · 4 out/s);
@@ -697,9 +709,16 @@ test('with no TTY, a bare "kaip" prints the help and does NOT open the GUI', () 
 // resize the terminal swallowed) leaves debris on screen, and there was no way to get a
 // clean frame back short of quitting.
 
-test('R asks to restart the interface', () => {
+test('R asks to refresh data and the model catalog', () => {
   const { effect } = reduce(refresh(initialState()), 'R');
-  assert.deepEqual(effect, { type: 'restart' });
+  assert.deepEqual(effect, { type: 'refresh' });
+});
+
+test('Ctrl+L only repaints and never refreshes', () => {
+  assert.deepEqual(reduce(fresh(), 'ctrl-l').effect, { type: 'repaint' });
+  const wizard = reduce(fresh(), 'a').state;
+  assert.deepEqual(reduce(wizard, 'ctrl-l').effect, { type: 'repaint' });
+  assert.equal(reduce(wizard, 'ctrl-l').state.wizard.buffer, '');
 });
 
 test('R inside the wizard does NOT restart: there it is a letter you are typing', () => {
@@ -707,6 +726,25 @@ test('R inside the wizard does NOT restart: there it is a letter you are typing'
   const { state: next, effect } = reduce(st, 'R');
   assert.equal(effect, null, 'it fires no effect');
   assert.ok(next.wizard.buffer.endsWith('R'), 'it is typed into the prompt');
+});
+
+test('Help is complete, scrollable, and stays within a narrow short terminal', () => {
+  let state = reduce(fresh(), '?').state;
+  const first = render(state, { cols: 44, rows: 12 }).map(strip);
+  assert.ok(first.every((line) => line.length <= 44));
+  assert.ok(first.length <= 12, `short terminal received ${first.length} lines`);
+  assert.match(first.join('\n'), /Help .* of .*scroll/);
+  state = reduce(state, 'down').state;
+  assert.equal(state.helpScroll, 1);
+  const all = render({ ...state, helpScroll: 999 }, { cols: 44, rows: 12 }).map(strip).join('\n');
+  assert.match(all, /Adding\s+never sends/);
+});
+
+test('U opens only a known update URL', () => {
+  assert.equal(reduce(fresh(), 'U').effect, null);
+  const state = { ...fresh(), update: { latest: '99.0.0', url: 'https://example.test/release' } };
+  assert.deepEqual(reduce(state, 'U').effect, { type: 'open-update', url: 'https://example.test/release' });
+  assert.match(strip(render(state, DIMS).join('\n')), /U open release/);
 });
 
 // --- suggested conversations ---------------------------------------------------
@@ -838,4 +876,15 @@ test('"y" with nothing selected does nothing', () => {
   saveQueue([]);
   const { effect } = reduce(refresh(initialState()), 'y');
   assert.equal(effect, null);
+});
+
+test('the output footer resumes OpenCode with OpenCode, never Claude', () => {
+  saveQueue([]);
+  const j = addJob({
+    prompt: 'x', adapter: 'opencode', provider: 'openai', model: 'gpt-5', session: 'ses-open', dir: TMP,
+  });
+  fs.writeFileSync(path.join(TMP, 'out', `${j.id}.txt`), 'answer');
+  const output = strip(readOutput(j.id));
+  assert.match(output, /opencode --session ses-open --model openai\/gpt-5/);
+  assert.doesNotMatch(output, /claude --resume/);
 });

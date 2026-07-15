@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { normalizeSelection, qualifiedModel } from '../lib/engines.mjs';
+import { normalizeOpenCodePart } from '../lib/opencode-normalize.mjs';
 
 export const name = 'opencode';
 // npm's Windows shim forwards through cmd.exe, which both interprets prompt characters and
@@ -20,31 +21,23 @@ export function buildArgs({ sessionId, provider, model, dir }) {
   return args;
 }
 
-const TOOL_NAMES = {
-  read: 'Read', edit: 'Edit', write: 'Write', multiedit: 'MultiEdit',
-  bash: 'Bash', glob: 'Glob', grep: 'Grep', task: 'Task', todowrite: 'TodoWrite',
-};
-
-const toolKey = (value) => String(value ?? '').toLowerCase().replace(/[^a-z]/g, '');
-
 /** Translate OpenCode's tool part into the Claude-shaped event the live renderer consumes. */
 export function toolEvent(evt, sessionId) {
-  const part = evt?.part;
-  if (!part || !['tool', 'tool_use'].includes(part.type)) return null;
-  const raw = part.tool ?? part.name ?? part.toolName;
-  if (!raw) return null;
-  const source = part.state?.input ?? part.input ?? part.arguments ?? {};
-  const input = { ...source };
-  input.file_path ??= input.filePath ?? input.path ?? input.filename;
-  input.old_string ??= input.oldString ?? input.oldText ?? input.old;
-  input.new_string ??= input.newString ?? input.newText ?? input.new;
+  const block = normalizeOpenCodePart(evt, { output: false }).find((item) => item.type === 'tool_use');
+  if (!block) return null;
   return {
     type: 'assistant', session_id: sessionId,
-     message: { content: [{ type: 'tool_use', name: TOOL_NAMES[toolKey(raw)] ?? String(raw), input }] },
+    message: { content: [block] },
   };
 }
 
-export async function run({ prompt, sessionId, dryRun, dir, provider, model, onEvent }) {
+/** Translate every user-visible OpenCode part into the shared adapter event shape. */
+export function liveEvent(evt, sessionId) {
+  const block = normalizeOpenCodePart(evt, { output: false })[0];
+  return block ? { type: 'assistant', session_id: sessionId, message: { content: [block] } } : null;
+}
+
+export async function run({ prompt, sessionId, dryRun, dir, provider, model, onEvent, spawnProcess = spawn }) {
   const args = buildArgs({ sessionId, provider, model, dir: dir && fs.existsSync(dir) ? dir : null });
   const unattended = `${prompt}\n\n---\nUNATTENDED LAUNCH: nobody can answer questions. Do not ask for confirmation, offer choices, or wait. Make the safest reversible decision, continue, and record assumptions in your final answer. If blocked by a secret, external access, or an irreversible decision, complete everything else and report the blocker without waiting.`;
   const shown = `${BIN} ${args.join(' ')} ${JSON.stringify(unattended)}`;
@@ -52,7 +45,7 @@ export async function run({ prompt, sessionId, dryRun, dir, provider, model, onE
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn(SHELL ? 'opencode.cmd' : BIN, [...args, unattended], {
+      child = spawnProcess(SHELL ? 'opencode.cmd' : BIN, [...args, unattended], {
         stdio: ['ignore', 'pipe', 'pipe'], shell: SHELL,
         windowsHide: true,
         env: { ...process.env, OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: '1' },
@@ -63,21 +56,25 @@ export async function run({ prompt, sessionId, dryRun, dir, provider, model, onE
     let usage = null, cost = null, sawError = false, eventError = null;
     const seenTools = new Set();
     const handle = (evt) => {
-      if (evt.sessionID) sid = evt.sessionID;
+      const eventSession = evt.sessionID ?? evt.sessionId ?? evt.session_id ?? evt.part?.sessionID;
+      if (eventSession && eventSession !== sid) {
+        sid = eventSession;
+        try { onEvent?.({ type: 'system', subtype: 'init', session_id: sid }); } catch { /* rendering cannot stop a launch */ }
+      }
       if (evt.type === 'error') {
         sawError = true;
         eventError = evt.error?.data?.message ?? evt.error?.message ?? eventError;
       }
-      if (evt.type === 'text' && typeof evt.part?.text === 'string') {
-        output += evt.part.text;
-        try { onEvent?.({ type: 'assistant', session_id: sid, message: { content: [{ type: 'text', text: evt.part.text }] } }); } catch { /* rendering cannot stop a launch */ }
-      }
-      const tool = toolEvent(evt, sid);
-      if (tool) {
-        const signature = `${evt.part?.id ?? ''}:${JSON.stringify(tool.message.content[0])}`;
-        if (!seenTools.has(signature)) {
-          seenTools.add(signature);
-          try { onEvent?.(tool); } catch { /* rendering cannot stop a launch */ }
+      const normalized = liveEvent(evt, sid);
+      if (normalized?.message?.content?.[0]?.type === 'text') output += normalized.message.content[0].text;
+      if (normalized) {
+        const block = normalized.message.content[0];
+        const signature = block.type === 'tool_use'
+          ? (evt.part?.id ? `id:${evt.part.id}` : JSON.stringify(block))
+          : null;
+        if (signature == null || !seenTools.has(signature)) {
+          if (signature != null) seenTools.add(signature);
+          try { onEvent?.(normalized); } catch { /* rendering cannot stop a launch */ }
         }
       }
       if (evt.type === 'step_finish') {

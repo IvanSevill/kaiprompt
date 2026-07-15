@@ -47,6 +47,7 @@
     <string name="status_done">terminado</string>
     <string name="status_running">corriendo</string>
     <string name="status_pending">en cola</string>
+    <string name="status_quota">esperando cupo</string>
     <string name="status_missed">se pasó la hora</string>
     <string name="status_error">falló</string>
     <string name="collapse_prompt">▼  colapsar prompt</string>
@@ -55,9 +56,11 @@
     <string name="job_scheduled">sale %1$s</string>
     <string name="job_finished">terminó %1$s</string>
     <string name="job_waits_for_run">espera a un «run»</string>
-    <string name="empty_queue">La cola está vacía</string>
+    <string name="empty_queue">Aún no hay conversaciones</string>
     <string name="empty_queue_hint">Encola algo desde el PC:</string>
     <string name="launches">Lanzamientos</string>
+    <string name="conversations">Conversaciones</string>
+    <string name="untitled_conversation">Sin título</string>
     <string name="settings">Ajustes</string>
     <string name="open_settings">Abrir ajustes</string>
     <string name="back_accessibility">Volver</string>
@@ -107,6 +110,7 @@
     <string name="unpairing_title">Desemparejando</string>
     <string name="unpairing_waiting">Avisando al PC y esperando a que «kaip serve» vuelva a mostrar el QR…</string>
     <string name="unpair_wait_timeout">El PC respondió, pero todavía no ha vuelto al QR.</string>
+    <string name="forget_pc_locally">Olvidar este PC en este móvil</string>
     <string name="clear_confirm_title">¿Borrar los terminados?</string>
     <string name="clear_confirm_body">Desaparecen del historial, con su conversación. Esto no se puede deshacer. Lo que está pendiente o corriendo se queda como está.</string>
     <string name="clear">Borrar</string>
@@ -130,6 +134,11 @@
     <string name="chat_connecting">conectando…</string>
     <string name="chat_reconnecting">reconectando…</string>
     <string name="chat_finished">finalizado</string>
+    <string name="chat_waiting">en espera</string>
+    <string name="chat_waiting_session">Este lanzamiento está en cola. La conversación aparecerá aquí cuando empiece.</string>
+    <string name="chat_waiting_quota">La conversación está esperando a que se renueve el cupo.</string>
+    <string name="chat_failed_empty">El lanzamiento falló antes de crear una conversación.</string>
+    <string name="job_details">Detalles técnicos</string>
     <string name="empty_chat">Esta conversación está vacía.</string>
     <string name="role_you">TÚ</string>
     <string name="role_assistant">ASISTENTE</string>
@@ -156,6 +165,14 @@
     <plurals name="turn_count_plural">
         <item quantity="one">%1$d turno</item>
         <item quantity="other">%1$d turnos</item>
+    </plurals>
+    <plurals name="conversation_count">
+        <item quantity="one">%1$d conversación</item>
+        <item quantity="other">%1$d conversaciones</item>
+    </plurals>
+    <plurals name="launch_count">
+        <item quantity="one">%1$d lanzamiento</item>
+        <item quantity="other">%1$d lanzamientos</item>
     </plurals>
     <plurals name="diff_files_count">
         <item quantity="one">%3$d archivo</item>

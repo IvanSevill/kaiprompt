@@ -106,6 +106,7 @@ object K {
         "done" -> Ok
         "running" -> Accent
         "pending" -> Info
+        "quota" -> Warn
         "missed" -> Warn
         else -> Err
     }
@@ -114,6 +115,7 @@ object K {
         "done" -> "✓"
         "running" -> "▶"
         "pending" -> "·"
+        "quota" -> "⏸"
         "missed" -> "⊘"
         else -> "✗"
     }
@@ -122,6 +124,7 @@ object K {
         "done" -> context.getString(R.string.status_done)
         "running" -> context.getString(R.string.status_running)
         "pending" -> context.getString(R.string.status_pending)
+        "quota" -> context.getString(R.string.status_quota)
         "missed" -> context.getString(R.string.status_missed)
         "error" -> context.getString(R.string.status_error)
         else -> status
