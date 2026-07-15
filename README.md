@@ -102,9 +102,11 @@ node install.mjs
 ```
 
 The installer asks for an optional projects folder, creates `projects.json`, and adds the
-`/prompt` and `/kaip-summary` commands plus a short note under `~/.claude`. It does not overwrite
-existing files and does not touch `settings.json`. It prints a shell shortcut for the actual clone
-path; add that shortcut to your profile.
+`/prompt` and `/kaip-summary` commands plus a short note under `~/.claude`. It also installs an
+OpenCode `usage_metrics` tool under `~/.config/opencode/plugins`; the tool reports observed Codex
+quota headers and estimated context occupancy without reading prompts or making requests. The
+installer does not overwrite existing files or touch `settings.json`. It prints a shell shortcut
+for the actual clone path; add that shortcut to your profile. Restart OpenCode after installation.
 
 The examples below assume the clone lives at `~/.claude/tools/kaiprompt`. Use the path printed by
 the installer if you cloned elsewhere.
@@ -122,8 +124,9 @@ alias kaip='node "$HOME/.claude/tools/kaiprompt/kaip.mjs"'
 ```
 
 For unattended installation, use `node install.mjs --yes`; to set the project base explicitly,
-use `node install.mjs --base "PROJECTS_PATH"`. `node uninstall.mjs` removes the installed slash commands
-and note, but keeps queue data, outputs, and `projects.json`. Remove the shell shortcut yourself.
+use `node install.mjs --base "PROJECTS_PATH"`. `node uninstall.mjs` removes the installed slash commands,
+note, and unmodified OpenCode loader, but keeps queue data, outputs, and `projects.json`. Remove the
+shell shortcut yourself.
 
 ## Use Kaiprompt
 

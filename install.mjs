@@ -1,12 +1,11 @@
 #!/usr/bin/env node
-// install.mjs — wire this clone into Claude Code. Zero dependencies.
+// install.mjs — wire this clone into Claude Code and OpenCode. Zero dependencies.
 //
 //   node install.mjs                 asks for the projects folder
 //   node install.mjs --base <path>   takes it from the flag
 //   node install.mjs --yes           no questions (detects the folder, or leaves it empty)
 //
-// It writes two slash commands and a note into ~/.claude, and never overwrites a file that
-// is already there. settings.json is not touched at all.
+// It also installs an OpenCode usage plugin. Existing files are never overwritten.
 //
 // Undo with: node uninstall.mjs
 
