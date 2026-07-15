@@ -8,7 +8,7 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-queue-'));
 process.env.KAIP_HOME = TMP;
 const { loadQueue, loadSessions, saveProjects, saveQueue, saveSessions } = await import('../lib/store.mjs');
 const {
-  addJob, clearFinished, jobDetails, removeJobs, suggestDirs, suggestTargets,
+  addJob, clearFinished, jobDetails, removeJobs, retryJob, suggestDirs, suggestTargets,
 } = await import('../lib/queue.mjs');
 
 // --- suggested conversations --------------------------------------------------
@@ -110,6 +110,26 @@ test('addJob: with session + target, the target points at that session', () => {
   assert.equal(loadSessions().fixes.sessionId, 'session-123');
 });
 
+test('addJob: attaching one engine session preserves the target other engines', () => {
+  saveQueue([]);
+  saveSessions({
+    fixes: {
+      sessionId: 'claude-1', adapter: 'claude', updatedAt: 1,
+      engines: {
+        claude: { sessionId: 'claude-1', adapter: 'claude', updatedAt: 1 },
+        opencode: { sessionId: 'open-1', adapter: 'opencode', provider: 'openai', updatedAt: 2 },
+      },
+    },
+  });
+
+  addJob({ prompt: 'x', target: 'fixes', session: 'mock-1', adapter: 'mock' });
+  const sessions = loadSessions().fixes;
+  assert.equal(sessions.engines.claude.sessionId, 'claude-1');
+  assert.equal(sessions.engines.opencode.sessionId, 'open-1');
+  assert.equal(sessions.engines.mock.sessionId, 'mock-1');
+  assert.equal(sessions.sessionId, 'mock-1', 'the compatibility top level tracks the newest session');
+});
+
 test('addJob: a time it cannot make sense of → a parseWhen error, and the queue untouched', () => {
   saveQueue([]);
   assert.throws(() => addJob({ prompt: 'x', at: 'whenever' }), /can't parse time/);
@@ -152,6 +172,25 @@ test('removeJobs: an id that does not exist deletes nothing', () => {
   addJob({ prompt: 'a' });
   assert.equal(removeJobs(['nope']), 0);
   assert.equal(loadQueue().length, 1);
+});
+
+test('retryJob: puts an error back in the queue and preserves its session', () => {
+  saveQueue([]);
+  const failed = addJob({ prompt: 'recover this', adapter: 'mock', session: 'session-1' });
+  saveQueue([{ ...failed, status: 'error', error: 'network failed', startedAt: 1, finishedAt: 2, output: 'out/x.txt' }]);
+
+  const retried = retryJob(failed.id);
+  assert.equal(retried.status, 'pending');
+  assert.equal(retried.sessionId, 'session-1');
+  assert.equal(retried.error, undefined);
+  assert.equal(retried.output, undefined);
+  assert.ok(retried.retriedAt);
+});
+
+test('retryJob: refuses jobs that did not fail', () => {
+  saveQueue([]);
+  const pending = addJob({ prompt: 'not failed' });
+  assert.throws(() => retryJob(pending.id), /only error jobs/);
 });
 
 test('clearFinished: takes done/error and leaves pending/running alone', () => {

@@ -43,19 +43,26 @@ class CatchUpWorker(context: Context, params: WorkerParameters) : CoroutineWorke
         val pairing = store.pairing ?: return Result.success()
 
         val state = try {
-            Api(pairing).state()
+            Api(pairing, store.language.localizedContext(applicationContext)).state()
         } catch (_: Exception) {
             return Result.retry()               // the PC is off, or we are; try again later
         }
 
-        val finished = state.jobs.filter { it.finishedAt != null && it.id !in store.announced }
-        if (finished.isEmpty()) return Result.success()
+        val finished = state.jobs.filter { it.finishedAt != null }
+        if (!store.notificationBaselineReady) {
+            // Installing or updating the app must not replay the whole queue as alerts.
+            store.announced = store.announced + finished.map { it.id }
+            store.notificationBaselineReady = true
+            return Result.success()
+        }
 
-        // Mark them all first. If the notification itself fails we would rather lose one
-        // than announce the same job on every wake-up from now until the end of time.
-        store.announced = store.announced + finished.map { it.id }
+        val unseen = finished.filter { it.id !in store.announced }
+        if (unseen.isEmpty()) return Result.success()
 
-        Notifier(applicationContext).jobsFinished(finished)
+        // Only suppress an alert after Android accepted it. A denied permission or disabled
+        // channel must remain recoverable on the next wake-up rather than losing the event.
+        val delivered = Notifier(applicationContext).jobsFinished(unseen)
+        store.announced = store.announced + delivered
         return Result.success()
     }
 }

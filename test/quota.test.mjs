@@ -14,6 +14,7 @@ import {
 
 // The real message that killed last night's launch.
 const REAL = "You've hit your session limit · resets 1:30pm (Europe/Madrid)\n\n[ERROR] claude exited with code 1";
+const REAL_WEEKLY = "You've hit your weekly limit · resets Jul 18, 11pm (Europe/Madrid)";
 
 // --- detection ---------------------------------------------------------------
 test('it recognises the exact message that cut the overnight batch off', () => {
@@ -202,10 +203,46 @@ test('planRetry: it gives up after several tries in a row (otherwise, an infinit
 
 test('it recognises the weekly cap too', () => {
   for (const s of [
+    REAL_WEEKLY,
     "You've reached your weekly limit · resets Thursday at 9am",
     'You have hit your week limit',
     'weekly limit reached',
   ]) assert.ok(isQuotaExhausted(s), s);
+});
+
+test('parseResetAt: the real weekly message uses its month and day at the printed time', () => {
+  const now = Date.parse('2026-07-14T12:00:00+02:00');
+  assert.equal(parseResetAt(REAL_WEEKLY, now), Date.parse('2026-07-18T23:00:00+02:00'));
+});
+
+test('parseResetAt: weekly dates accept abbreviated and full month names in either order', () => {
+  const now = Date.parse('2026-07-14T12:00:00+02:00');
+  const expected = Date.parse('2026-07-18T23:00:00+02:00');
+  for (const s of [
+    'resets Jul 18, 11pm',
+    'resets July 18, 11pm',
+    'resets 18 Jul, 11pm',
+    'resets 18 July, 11pm',
+  ]) assert.equal(parseResetAt(s, now), expected, s);
+});
+
+test('quotaVerdict: the real weekly message requeues at its weekly reset', () => {
+  const now = Date.parse('2026-07-14T12:00:00+02:00');
+  const v = quotaVerdict(REAL_WEEKLY, { now, usageFile: '/does/not/exist.json', graceMs: 0 });
+  assert.deepEqual(v, {
+    exhausted: true,
+    resetsAt: Date.parse('2026-07-18T23:00:00+02:00'),
+    source: 'message',
+    kind: 'weekly',
+  });
+});
+
+test('quotaVerdict: an unparseable weekly message falls back to seven days, not five hours', () => {
+  const now = Date.now();
+  const v = quotaVerdict('hit your weekly limit', { now, usageFile: '/does/not/exist.json' });
+  assert.equal(v.source, 'fallback');
+  assert.equal(v.kind, 'weekly');
+  assert.equal(v.resetsAt, now + 7 * 86400_000);
 });
 
 test('parseResetAt: a weekly reset with a weekday', () => {
@@ -252,4 +289,16 @@ test('resetFromUsage: if the WEEKLY one expires first (session already renewed),
     },
   });
   assert.ok(Math.abs(resetFromUsage(f) - weekly) < 1000);
+});
+
+test('quotaVerdict: an active weekly cap beats a fresh session reading', () => {
+  const now = Date.now();
+  const weekly = now + 3 * 3600_000;
+  const f = usageFile({ rate_limits: {
+    five_hour: { used_percentage: 0, resets_at: secs(now + 5 * 3600_000) },
+    seven_day: { used_percentage: 100, resets_at: secs(weekly) },
+  } });
+  const v = quotaVerdict('hit your session limit · resets 1:30pm', { now, usageFile: f, graceMs: 0 });
+  assert.equal(v.kind, 'weekly');
+  assert.ok(Math.abs(v.resetsAt - weekly) < 1000);
 });

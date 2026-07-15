@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// uninstall.mjs — undo what install.mjs did: the two slash commands and the note.
+// uninstall.mjs — undo the generated Claude files and OpenCode usage plugin.
 // Your data (data/, out/, projects.json) is left exactly as it is.
 
 import path from 'node:path';

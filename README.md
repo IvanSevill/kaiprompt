@@ -1,114 +1,99 @@
 # Kaiprompt
 
-**Claude Code stops when the quota runs out. Your work doesn't.**
+**A local launch queue for coding agents. Your quota can stop. Your queue does not have to.**
 
-Kaiprompt puts your prompts in a queue and launches them for you — at 3am, or the moment
-your quota comes back. And when the quota dies in the middle of a job, it puts that job
-**back in the queue in its place and resumes it where it left off**. It does not start over.
+Kaiprompt schedules prompts for Claude Code, Codex, and OpenCode, runs them on your machine,
+and keeps related jobs in the same engine session. Queue work before bed, leave a batch waiting
+for quota to return, or split a long task into several launches without making the agent read the
+project from scratch each time.
 
-You queue the work and walk away.
-
-```
-kaip add "run the tests and fix whatever breaks" --at 03:00 --dir myapp
-```
-
-Zero dependencies — just Node. It runs on your **Claude Code subscription**, never the paid
-API.
-
----
-
-## What this is actually for
-
-**You have four things to do and quota for two.** Queue all four. The first two go out now,
-the other two go out by themselves when the window resets. You do not have to be there, and
-you do not have to remember.
-
-**You are going to bed and you want it done by morning.** `--at 03:00`, start the daemon,
-close the terminal. The daemon fires it with nothing open and nobody watching.
-
-**Something got cut off halfway and you don't want to re-send the whole prompt.** You don't
-have to. The job kept its place in the queue and its conversation; when the quota returns it
-carries on from where it stopped, with the context it already paid for.
-
-**You're out of the house and you want to know if it finished.** The phone app shows the
-queue, the full conversation of every launch, and pushes you a notification the moment a
-launch ends — with the app closed.
-
-**A big job keeps dying before it finishes.** Split it across several launches that share a
-`--target`. They continue one conversation instead of re-reading your project four times, so
-they cost less and are far likelier to finish.
-
----
-
-## Running out of quota is an interruption, not a failure
-
-This is the part worth understanding, because it is the whole point.
-
-When Claude runs out of quota mid-launch it prints `You've hit your session limit · resets
-1:30pm` and **exits 1** — which, to anything watching the exit code, looks exactly like a
-crash. Treat it as one and you mark the job `error` and throw the work away.
-
-So kaip reads it for what it is:
-
-- The job goes **back to `pending`**, not `error`.
-- Its scheduled time is **left alone**. That is what preserves the order: it is still the
-  earliest job due, so when the quota returns it goes **first** again, and everything behind
-  it stays behind it.
-- The runner sleeps until the reset and carries on. Same job, same conversation, same place.
-
-Both windows are covered — the 5-hour session and the 7-day weekly limit — and the wait is
-computed from whichever comes back first.
-
-### It also rescues the conversations *you* were having
-
-That only ever covered launches kaip made. The chat you were having by hand had none of it:
-you were five minutes from done, the quota ran out, and now you have to wait four hours,
-**remember**, find the right conversation and type "carry on".
-
-So kaip reads your transcripts, and the GUI offers to finish them:
-
-```
-╭─ cut short ─────────────────────────────────────────────╮
-│ A conversation looks like it was cut off.               │
-│                                                         │
-│ ▸ myapp · 12 min ago                                    │
-│     «…still need to wire up the network config»         │
-│                                                         │
-│ Finish it as soon as the quota is back?                 │
-╰─────────────────────────────────────────────────────────╯
-  [enter] yes   ·   [esc] no (won't ask again)
+```bash
+kaip claude add "run the tests and fix whatever breaks" --at 03:00 --dir myapp
+kaip daemon start
 ```
 
-Say yes and it is queued as a **continuation** — same session, resumed, prompt never re-sent
-— and it goes first. It is the cheapest job in the queue: the context is already paid for and
-the work is half done.
+When a recognized quota limit cuts a Claude launch short, Kaiprompt does not confuse the
+interruption with a crash. It puts the job back in its original place, keeps the active runner
+asleep until the reported reset, and resumes the saved session. You queue the work; Kaiprompt
+keeps the appointment.
 
-Say no and **it never asks about that one again**. An alert that keeps coming back is one you
-learn to dismiss without reading, and then it is worth nothing on the day it matters.
+Kaiprompt 2.0.0 is an ESM Node CLI with zero npm dependencies. The repository also includes a
+full-screen terminal UI and an Android companion app. Launches remain local: Kaiprompt has no
+hosted backend and requires no Kaiprompt account.
 
-**GUI only.** With no terminal there is nobody to answer a question, so nothing is asked and
-nothing changes.
+## Why Kaiprompt exists
 
----
+Coding agents are useful in bursts. Their limits are not.
 
-## The one thing to get right: queueing is not launching
+- **More work than the current quota window can hold.** Queue it all. Due jobs keep their order,
+  and the runner continues when capacity returns.
+- **Work that should start while you are away.** Give it a time and leave the daemon running.
+  No terminal needs to stay open.
+- **A long task that should retain context.** Give related jobs the same `--target`; each engine
+  resumes its own session for that target.
+- **A launch that stopped halfway through.** Recognized quota interruptions are requeued with the
+  saved session instead of being marked as ordinary errors.
+- **A queue you need to check from elsewhere.** The Android app shows queue state, outputs,
+  conversations, usage, and runner status from another network.
 
-This trips everyone up, so it is worth stating plainly.
+Kaiprompt does not increase quota, move execution to the cloud, or supervise the quality of a
+prompt. It makes the quota and machine time you already have easier to use without being present.
 
-| | |
+## The queue model
+
+The important distinction is simple: **queueing is not launching**.
+
+| Job | What happens |
 |---|---|
-| A job **with** a time (`--at`) | is **scheduled**: the daemon fires it at that time. Nothing needs to be open. |
-| A job **without** a time | is **sequential**: it waits in the queue until *you* run it (`run`, or `r` in the GUI). |
+| With `--at` | It is scheduled. A daemon or a `kaip run` process launches it when due. |
+| Without `--at` | It is sequential. It waits for an explicit `kaip run` or `r` in the TUI. |
+| With `--first` | It becomes priority work and runs before other eligible jobs. |
 
-**Adding a job never launches it.** For a scheduled job to actually fire, something has to be
-processing the queue at that moment: either the **daemon** (`kaip daemon start`) or a `run`
-you left up. The GUI, the phone app and the goodbye screen all tell you when the daemon is
-off — because scheduling work that nothing will fire is the one silent way this tool could
-lie to you.
+Adding a job never launches it. Scheduled work also needs something to process the queue at the
+right time. Use `kaip daemon start` for a detached runner, or leave `kaip run` open. The TUI and
+phone app warn when scheduled work has no runner.
 
----
+The daemon normally takes scheduled and priority jobs, not sequential jobs. `kaip daemon start
+--seq` opts into sequential work too.
+
+### Quota interruptions
+
+Claude Code can report a session or weekly limit and exit with code 1, just as a failed process
+would. Kaiprompt inspects the output and, when it recognizes a quota limit:
+
+1. Returns the job to `pending` instead of `error`.
+2. Leaves its scheduled time unchanged, preserving its place in the queue.
+3. Keeps the current runner asleep until the reset time from the message or Claude usage data,
+   with a fallback when neither supplies a usable time.
+4. Resumes the engine session when the adapter returned a usable session ID.
+
+Quota detection is based on provider output and can be imperfect. A job is requeued at most three
+times for consecutive quota interruptions; the next one becomes an error rather than looping
+forever. Recovery is strongest for Claude Code. Codex and OpenCode can launch and resume sessions,
+but provider-specific limits do not always expose a reliable reset time.
+
+The wait belongs to the active runner. If that runner is stopped and restarted, the normal
+single-job loop can pick up the pending job before its recorded reset; the parallel runner is the
+only loop that filters the persisted pause time after a restart.
+
+### Interrupted manual chats
+
+The TUI can also notice a resumable Claude conversation from the last 24 hours that appears to
+have been cut short by a session or weekly limit. It offers to queue that conversation as a
+continuation. Accepting resumes the existing session; declining dismisses that conversation so it
+is not offered again.
+
+This is TUI-only. Unattended commands never answer the prompt on your behalf.
 
 ## Install
+
+Requirements:
+
+- A modern Node.js runtime. No minimum is declared in package metadata; Node 18 or newer is the
+  practical baseline because the CLI uses built-in `fetch` and `AbortSignal.timeout`.
+- At least one installed and authenticated engine CLI: `claude`, `codex`, or `opencode`.
+
+Clone the repository and run the dependency-free installer:
 
 ```bash
 git clone https://github.com/IvanSevill/kaiprompt.git
@@ -116,286 +101,310 @@ cd kaiprompt
 node install.mjs
 ```
 
-It writes two slash commands and a short note into `~/.claude`, and **overwrites nothing that
-is already there**. It does not touch `settings.json`. `node uninstall.mjs` reverses it.
+The installer asks for an optional projects folder, creates `projects.json`, and adds the
+`/prompt` and `/kaip-summary` commands plus a short note under `~/.claude`. It also installs an
+OpenCode `usage_metrics` tool under `~/.config/opencode/plugins`; the tool reports observed Codex
+quota headers and estimated context occupancy without reading prompts or making requests. The
+installer does not overwrite existing files or touch `settings.json`. It prints a shell shortcut
+for the actual clone path; add that shortcut to your profile. Restart OpenCode after installation.
 
-**Shell alias** — PowerShell (`notepad $PROFILE`):
+The examples below assume the clone lives at `~/.claude/tools/kaiprompt`. Use the path printed by
+the installer if you cloned elsewhere.
+
+PowerShell (`notepad $PROFILE`):
 
 ```powershell
 function kaip { node "$env:USERPROFILE\.claude\tools\kaiprompt\kaip.mjs" @args }
 ```
 
-bash / zsh:
+bash or zsh:
 
 ```bash
 alias kaip='node "$HOME/.claude/tools/kaiprompt/kaip.mjs"'
 ```
 
----
+For unattended installation, use `node install.mjs --yes`; to set the project base explicitly,
+use `node install.mjs --base "PROJECTS_PATH"`. `node uninstall.mjs` removes the installed slash commands,
+note, and unmodified OpenCode loader, but keeps queue data, outputs, and `projects.json`. Remove the
+shell shortcut yourself.
 
-## Using it
+## Use Kaiprompt
 
-### The GUI
+### Terminal UI
 
-`kaip` with no arguments. Views: **Queue · Chats · Projects · Help**.
+Run `kaip` with no arguments in an interactive terminal. The full-screen TUI has five views:
+**Queue, Chats, Projects, Usage, and Help**. Switch views with `Left`/`Right`, `Tab`, or `1-5`.
+Inside Usage, `Up`/`Down` changes the engine or OpenCode provider scope.
 
-| key | |
+| Key | Action |
 |---|---|
-| `a` `e` `d` `x` | add · edit · delete · clear finished |
-| `r` `D` | run now · daemon on/off |
-| `o` | the **answer** — just the last thing Claude said |
-| `c` | the **conversation** — every turn it took to get there |
-| `y` | **join** it — drops you into a real, interactive Claude Code on that session |
-| `R` `q` | redraw · quit |
+| `a` | Add a job |
+| `e` | Edit a pending or missed job |
+| `Space`, `m` | Select pending jobs and change their engine |
+| `Enter` or `i` | Open job details |
+| `d`, `x` | Delete the selected job; clear finished jobs |
+| `r`, `D` | Run the queue; toggle the daemon |
+| `o`, `c` | Show final output; show the available conversation history |
+| `t` | Retry an error job from its detail screen, preserving its session |
+| `y` | Join a saved Claude session in interactive Claude Code |
+| `u` | Open historical token and cost usage |
+| `?`, `R`, `q` | Help; redraw; quit |
 
-The add wizard suggests the conversations and folders you already have.
+The add wizard is one navigable form. `Up`/`Down` moves between fields, `Left`/`Right` chooses
+prompt mode, engine, provider, model, and permissions, and `Enter` validates and queues. It
+suggests known conversations and folders. It remembers only the last engine, provider, model, and
+permission mode; prompt, time, target, and folder start empty.
 
-### The terminal
+### CLI
 
-```bash
-kaip add "<prompt>" --at 03:00 --target fixes --dir myapp
-kaip add --from ./prompts/refactor.md --at 03:00      # the prompt lives in a file
-kaip list                          # the queue, with status
-kaip run                           # process it: full-screen countdown + live view
-kaip out <id>                      # the final answer
-kaip show <id>                     # the job AND the whole conversation it had
-kaip chat <target>                 # the conversation, by name
-kaip edit <id> --at +1h            # change a pending job
-kaip daemon start                  # fire scheduled jobs with no terminal open
-kaip serve                         # the API + tunnel + pairing QR, for the phone
-kaip mobile                        # the QR to download the app
-```
-
-### From a Claude chat
-
-- **`/prompt <your rough idea>`** — interviews you until the idea is sharp, investigates the
-  project so the launch does not burn quota rediscovering it, and writes the finished prompt
-  to a file. It hands you the path, what it assumed without asking, and the `kaip add --from …`
-  ready to paste. It never runs anything.
-- **`/kaip-summary`** — what the last batch actually did, what got **cut short by quota**, and
-  a *continuation* prompt for the unfinished work rather than the original.
-
-To queue something, the agent just runs `kaip add`.
-
----
-
-## The phone app
-
-<img src="https://img.shields.io/badge/Android-APK-D97757" alt="Android"> **[Download the
-APK](https://github.com/IvanSevill/kaiprompt/releases/latest)** · or scan the QR from
-`kaip mobile`.
+Choose the engine explicitly when adding a job:
 
 ```bash
-kaip mobile     # the QR to download the app  (once)
-kaip serve      # the API, the tunnel, and the pairing QR
+kaip claude add "<prompt>" --at 03:00 --target fixes --dir myapp
+kaip opencode add --from ./prompts/refactor.md --provider openai --model MODEL_ID
+kaip codex add "review this repository" --model MODEL_ID
+
+kaip list                          # queue and status
+kaip run                           # stay open, process work, show the live TUI
+kaip run --once                    # drain runnable work and exit
+kaip run --plain                   # readable logs for pipes, servers, and CI
+kaip run --parallel 3              # up to three independent target lanes
+
+kaip out JOB_ID                    # final answer
+kaip show JOB_ID                   # job details and available conversation history
+kaip chat TARGET                   # conversation by target, job, or session
+kaip edit JOB_ID --at +1h          # edit a pending job
+kaip retry JOB_ID                  # retry an error in its existing session
+kaip usage --engine opencode --provider openai
+
+kaip engines list
+kaip engines models --provider openai
+kaip daemon start
+kaip daemon status
+kaip serve                         # phone API, tunnel, and pairing QR
+kaip mobile                        # Android download QR
 ```
 
-`serve` shows the pairing QR itself, and takes it off the screen the moment the phone pairs.
-A code that has done its job is not neutral sitting there — it is a secret on your monitor.
+Times accept `HH:MM`, relative forms such as `+30m` and `+2h`, ISO date/time values, and English
+or Spanish forms such as `tomorrow 09:00`, `manana 09:00`, `mon 09:00`, and `lun 09:00`.
 
-**No cloud, no Firebase, no account.** The PC opens an outbound Cloudflare tunnel (no ports
-forwarded, no router touched) and the phone reaches it over plain HTTPS. It needs **no VPN on
-the phone**, so a firewall app like NetGuard keeps its one VPN slot — and it works from any
-network, 4G included.
+### From Claude Code
 
-Want no third party at all? **`kaip serve --wifi`** drops the tunnel: the phone talks to this
-machine over your own network and nothing leaves the house. The trade is that it only works
-while you are on that network.
+The installer adds two slash commands:
 
-Lost the phone? **`kaip serve --reset`** mints a new token *and a new key* and drops every
-paired device: the lost one is locked out from its next request. The key goes too, not just
-the token — leaving it alive would let that phone still read anything it had already fetched.
+- **`/prompt <rough idea>`** interviews you, inspects the project, and writes a launch-ready prompt
+  to a file. It reports assumptions and a command for queueing the file; it does not run the job.
+- **`/kaip-summary`** summarizes the last batch, identifies work cut short by quota, and proposes a
+  continuation prompt instead of repeating the original request.
 
-Cloudflare terminates the TLS and could otherwise read everything passing through. It cannot:
-the payload is **sealed end-to-end** with AES-256-GCM, and the key never travels the tunnel it
-protects — it is minted on the PC and reaches the phone *inside the pairing QR*, scanned off
-your own screen. They carry an envelope they have no key to.
+## Core controls
 
-**Notifications** are the PC knocking directly on the phone, which a foreground service turns
-into a notification even at 3am with the app closed. A knock that lands nowhere (phone off, no
-signal) is caught by a poll every 15 minutes — the webhook is the fast path, not the only one.
+### `--target`: keep a conversation
 
-Build it yourself: `kaip app build` (needs the Android SDK). `kaip app test` runs its unit
-tests on the JVM, no emulator.
-
----
-
-## Concepts
-
-### `--target` — persistent conversations (this is where the savings are)
-
-Jobs sharing a `--target` **continue the same conversation**: the first creates the session,
-the rest resume it (`claude --resume`). The context is already loaded, so the launch does not
-pay to re-read your project from scratch.
-
-### `--from` — the prompt lives in a file
+Jobs with the same target continue the same engine-specific conversation. A Claude session is
+never handed to Codex or OpenCode, even when the target name matches.
 
 ```bash
-kaip add --from ./prompts/refactor-auth.md --at 03:00 --dir myapp
+kaip claude add "inspect the failing tests" --target release
+kaip claude add "fix the failures you found" --target release
 ```
 
-The job stores the **path**, and the file is read **at launch** — so you can keep sharpening
-the prompt right up to the second it goes out. (`--file` does the opposite: it pastes the
-contents in now, as a snapshot.)
+A target is also a parallel lane. Jobs in different lanes may run together; jobs in one lane run
+one at a time so the same session is never resumed concurrently.
 
-If the file is gone or empty at launch time, **nothing is sent** and the job fails loudly. An
-unattended launch runs with full autonomy in a real project; handing it a blank instruction
-and letting it improvise is the worst thing this tool could do.
-
-### `--dir` — which project it runs in
-
-Claude Code sessions are **per folder**. `--dir` takes a project name (a subfolder of your
-configured base), an alias, or a path.
-
-### `--perm` — permissions for an unattended launch
-
-Default is **bypass**: full autonomy (edits, Bash, installs) with no prompts. It has to be
-that way — if a launch stops to ask permission at 3am, there is nobody to grant it and the job
-just hangs, having done nothing. `--perm acceptEdits` restricts it to edits only.
-
-### `--first` — jump the queue without lying about the time
-
-Priority cannot be done by giving a job an earlier `when`: the scheduled times **are** the
-order, and moving one moves the meaning of every job behind it. So priority is its own field.
+### `--from`: read the prompt at launch
 
 ```bash
-kaip add "finish the refactor" --first     # before everything, as soon as there is quota
+kaip claude add --from ./prompts/refactor-auth.md --at 03:00 --dir myapp
 ```
 
-Nobody else's time moves. `--first` and `--at` contradict each other, so kaip refuses the pair
-rather than guessing which you meant.
+`--from` stores an absolute path and reads that file when the job launches, so you can keep editing
+it after queueing. `--file` snapshots the contents while queueing. If a linked file is missing or
+empty at launch, the job fails without sending a blank instruction.
 
----
+### `--dir`: choose the project
 
-## Parallel launches
+`--dir` accepts a path, a project alias, or a subfolder name under the base configured during
+installation. Claude Code sessions are folder-specific.
+
+### Engines, models, and permissions
+
+Every job pins an engine, and each attempt records the engine, provider, and model it used.
+OpenCode also requires a provider and model:
+
+```bash
+kaip engines list
+kaip engines models --provider openai
+kaip opencode add "review this repository" --provider openai --model MODEL_ID
+```
+
+OpenCode streams text and Read/Edit/Write activity into the live view, and provider errors are
+kept verbatim. Claude permission mode defaults to `bypass`, which permits unattended edits,
+commands, and installs; `--perm acceptEdits` automatically accepts Claude's file edits, while
+other operations may still prompt and stall an unattended launch. Codex always bypasses its
+approval and sandbox prompts, while OpenCode runs with `--auto`; Kaiprompt's `--perm` value does
+not constrain those two adapters.
+
+Unattended launches are intentionally autonomous. Point them at work you can review and revert.
+
+### `--first`: priority without changing time
+
+```bash
+kaip claude add "finish the refactor" --first
+```
+
+Priority is separate from scheduled time, so moving one job does not rewrite every job behind it.
+`--first` and `--at` contradict each other and are rejected together.
+
+## Daemon and parallel work
+
+```bash
+kaip daemon start      # detached runner for scheduled and priority jobs
+kaip daemon status     # report the runner that is actually alive
+kaip daemon sweep      # stop untracked daemon processes
+kaip daemon log --last 50
+kaip daemon install    # restore on login through Task Scheduler, Windows only
+kaip daemon stop
+```
+
+There is one runner lock per Kaiprompt data home. A daemon and `kaip run` using the same clone or
+`KAIP_HOME` both drain the same queue, so only one can own that lock. Separate data homes are
+independent. If `kaip run` is active, `kaip daemon start` starts nothing and reports why. On macOS
+and Linux, daemon autostart is not installed for you; configure the platform's own service manager
+if needed.
+
+For concurrent work:
 
 ```bash
 kaip run --parallel 3
 ```
 
-Two prompts aimed at different conversations have no reason to wait for each other. The rule
-that makes it safe: **a target is a lane**. Two jobs on the same target share one conversation,
-and resuming a session twice at once would corrupt it — so a lane runs one job at a time, while
-different lanes run at once.
+Different targets can launch in parallel. A single target remains serial because it shares one
+conversation. Parallel work can still touch the same checkout; use separate directories when jobs
+could edit the same files.
 
-## The daemon
+## Android app
 
-```bash
-kaip daemon start      # detached background runner
-kaip daemon status     # …and how many are REALLY alive
-kaip daemon sweep      # kill leftovers nobody is tracking
-kaip daemon log --last 50
-kaip daemon install    # bring it back on login (Windows)
-kaip daemon stop
-```
+<img src="https://img.shields.io/badge/Android-APK-D97757" alt="Android"> **[Download the latest
+release](https://github.com/IvanSevill/kaiprompt/releases/latest)** or scan `kaip mobile`.
 
-The daemon only takes **scheduled** jobs. Sequential ones still wait for an explicit run —
-otherwise adding a job would fire it seconds later, which is precisely the surprise this tool
-avoids.
-
-**There is exactly one daemon, machine-wide**, and a `kaip run` is the same role: drain the
-queue. Which is why there is a lock, and why only one of them can hold it. With a `run` up,
-`daemon start` starts nothing and says so. A daemon and a run at once is not a state that
-should exist.
-
-## Servers and CI
+The app supports Android 8.0 and newer. There is no iOS app.
 
 ```bash
-kaip run --plain        # no full-screen TUI, just a log
+kaip mobile             # show the app download QR
+kaip serve              # start the API and show the pairing QR
+kaip serve --device 2   # wait for two phones to pair
+kaip serve --wifi       # start a new server in local-network mode
+kaip serve --reset      # rotate credentials and drop paired devices
 ```
 
-The plain path is also what runs under a pipe, a scheduled task, or with no TTY at all — so
-logs stay readable and nothing tries to paint a full-screen interface into them.
+Pairing replaces the QR with a live status panel but leaves the server and tunnel running. Starting
+`kaip serve` while a server is already active restores the pairing screen until `Ctrl+C`.
 
----
+The app can inspect the queue, launch details, output, available conversations, historical usage,
+runner state, tunnel state, versions, and notification status. From the phone it can clear
+finished/error/missed history; it cannot add, edit, retry, run, or delete individual pending jobs.
+Assistant turns are labeled with their actual engine and, for OpenCode, provider.
 
-## What it does not do
+The fast notification path is a direct callback from the PC to the phone and therefore requires
+the phone to be reachable on its local network. When that is unavailable, including on mobile
+data, Android uses a nominal 15-minute catch-up poll that the operating system may defer. The
+first poll after installation or update is silent so old completions are not replayed as new.
 
-- **It does not get you more quota.** It spends what you have while you are not looking. That
-  is all.
-- **It does not run in the cloud.** The launches happen on your machine. If it is off, nothing
-  fires.
-- **It cannot fire a scheduled job if nothing is processing the queue.** The daemon or a `run`
-  has to be up. Everything in the UI says so, loudly, because it is the one way this could
-  quietly do nothing.
-- **A launch runs with full autonomy by default.** It edits files and runs commands with no
-  one watching. Point it at a repo you can revert.
-- **There is no supervision mid-launch.** If a prompt was wrong, you find out afterwards.
-  That is what `/prompt` is for.
-- **Only Claude Code is really supported.** There is a `codex` adapter and an `opencode` stub,
-  but the only one exercised in anger is `claude`. `codex` builds the right invocation and
-  resumes a thread — that much is tested — but nobody has run a night's queue through it, and
-  the quota rescue (the whole point of this tool) reads Claude Code's wording specifically.
-- **The phone app is Android only.**
+The UI can follow the system language or be set to Spanish or English. Update checks run when the
+app returns to the foreground and open the latest GitHub release. Settings shows notification
+status and a test button; if Android blocked the channel, the app links to system settings.
 
----
+Build or test the app locally:
 
-## Layout
-
+```bash
+kaip app build           # release APK; requires Android SDK and JDK 17
+kaip app test            # JVM unit tests; no emulator
 ```
+
+The current release build uses the debug signing key and is not minified.
+
+## Network and security boundaries
+
+Kaiprompt has no hosted service, Firebase project, or account system. In the default remote mode,
+the PC opens an outbound Cloudflare tunnel: no router configuration or inbound port forwarding is
+required, and the phone does not need a VPN. Engine traffic and GitHub update/download checks still
+go to their respective external services.
+
+Pairing creates a bearer token and an AES-256-GCM key on the PC. Both reach the phone in the QR
+shown on your screen. The Android app requests sealed JSON responses, so their contents cross the
+Cloudflare tunnel as encrypted envelopes whose AES key is not sent through that tunnel.
+
+That protection has a defined boundary: live SSE events are not AES-sealed, request bodies and
+authorization metadata are not payload-sealed, and authenticated API clients can request plain
+JSON. Cloudflare TLS still protects those paths in tunnel mode. Do not treat the tunnel as a fully
+zero-knowledge transport.
+
+`kaip serve --wifi` starts a new API server without a Cloudflare tunnel and connects over the local
+network. If a server is already active, `kaip serve` restores its screen instead of changing its
+mode; stop that server before restarting with `--wifi`. Wi-Fi mode does not stop engine traffic or
+update checks from using the internet. It uses local HTTP, so use it only on a network you trust.
+
+The fast notification callback is a separate local HTTP endpoint on the phone. It is not protected
+by the API bearer token or AES response sealing, and its payload includes job status, ID, target,
+prompt preview, and error text. A device that can reach that phone endpoint could read the local
+traffic or spoof a notification; keep this path on a trusted LAN.
+
+If a phone is lost, `kaip serve --reset` rotates both the bearer token and encryption key and drops
+all paired devices. The old phone is rejected on its next request.
+
+## Limits by design
+
+- Kaiprompt does not provide more quota; it schedules the quota you already have.
+- Launches run on your machine. If the machine is off, nothing runs.
+- Scheduled work needs an active daemon or `kaip run` process.
+- Launches are autonomous by default, with no mid-launch supervision.
+- Quota recovery depends on recognizable provider output and resumable session data.
+- Conversation detail is richest for Claude transcripts. Codex and OpenCode views reconstruct
+  history from stored prompts and final outputs rather than every streamed tool event.
+- Remote mobile access normally depends on Cloudflare; Wi-Fi mode works only on that local network.
+- The companion app is Android-only and has deliberately limited queue mutation controls.
+
+## Data and layout
+
+Queue state, outputs, and project aliases default to `data/`, `out/`, and `projects.json` under the
+Kaiprompt clone. They are gitignored. Set `KAIP_HOME` to relocate them. Historical attempt usage is
+retained independently when finished queue entries are cleared.
+
+```text
 kaip.mjs            CLI dispatch
-install.mjs         slash commands + the note + alias
-lib/
-  store.mjs         queue · sessions · projects
-  queue.mjs         add/remove/clear, and the suggestions
-  prompt.mjs        the prompt: inline, or linked to a file
-  runner.mjs        takes the lock, cleans up, and picks one of the three loops
-  lock.mjs          one runner at a time
-  schedule.mjs      what runs now, the lanes, and closing out what never ran
-  launch.mjs        one job end to end: execute → settle → requeue or finish
-  frames.mjs        everything that gets painted
-  run-plain.mjs     the unattended loop (daemon, Task Scheduler, pipes)
-  run-tui.mjs       the full-screen loop: the clock and the live view
-  run-parallel.mjs  the lane loop
-  quota.mjs         out-of-quota detection, and when it comes back
-  runner-status.mjs "will anything actually fire?" — asked HERE, by everyone
-  cutshort.mjs      YOUR conversations the quota killed — the signal, and the offer
-  daemon.mjs        the detached background runner
-  chat.mjs          reading session transcripts
-  server.mjs        the HTTP routes the phone talks to
-  server-pair.mjs   pairing: the token, the key, the QR, who is on the other end
-  server-dto.mjs    what the API answers with — shapes, no sockets
-  tunnel.mjs        the Cloudflare tunnel
-  crypto.mjs        end-to-end sealing (AES-256-GCM)
-  qr.mjs            a QR encoder, from scratch — see below
-  notify.mjs        knocking on the phone when a launch ends
-  tui.mjs           the guided GUI: the reducer and the loop
-  tui-keys.mjs      raw stdin bytes → a key name
-  tui-state.mjs     what the GUI is looking at
-  tui-render.mjs    state → the lines to paint (pure)
-  ui.mjs            ANSI primitives
-adapters/
-  claude.mjs        Claude Code (streams events for the live view)
-  codex.mjs         Codex CLI — opt-in, not verified in anger
-  opencode.mjs      stub
-  mock.mjs          for tests — costs nothing
-app/                the Android app (Kotlin + Compose)
+install.mjs         slash commands, note, project setup, shell shortcut output
+lib/store.mjs       queue, sessions, projects, and remembered defaults
+lib/runner.mjs      runner lock, cleanup, and run-loop selection
+lib/schedule.mjs    due work, target lanes, and missed launches
+lib/launch.mjs      execute, settle, requeue, or finish one job
+lib/quota.mjs       quota detection and reset timing
+lib/run-tui.mjs     full-screen runner
+lib/run-plain.mjs   daemon, pipe, and CI runner
+lib/daemon.mjs      detached background runner
+lib/server.mjs      Android HTTP API
+lib/crypto.mjs      AES-256-GCM response sealing
+lib/qr.mjs          dependency-free QR encoder
+adapters/           Claude, Codex, OpenCode, and test adapters
+app/                Android app in Kotlin and Compose
 ```
 
-Your data lives outside the repo and is gitignored: `data/`, `out/`, `projects.json`. Set
-`KAIP_HOME` to keep it somewhere else.
-
-### Why a QR encoder from scratch
-
-Because it is not decoration — it is the security boundary. The QR is what lets the encryption
-key reach the phone *without going through the tunnel it protects*. Pulling an npm package in
-for it would have broken the only promise this tool makes about itself.
-
----
+The QR encoder is kept in-repository because pairing is the path that carries the token and
+encryption key from the PC screen to the phone. The Node CLI and server remain free of npm
+dependencies; the Android project uses its normal Gradle dependencies.
 
 ## Tests
 
 ```bash
-node --test test/*.test.mjs      # no dependencies
-kaip app test                    # the app's, on the JVM — no emulator
+npm test
+# equivalent: node --test test/*.test.mjs
+
+kaip app test
 ```
 
-The `mock` adapter makes the whole run loop testable without spending a single token. The
-app's crypto test seals an envelope *exactly the way Node does* and checks the phone opens it
-— so if the two halves ever drift apart, it fails on the machine that builds them rather than
-in your hand at 3am.
-
----
+The mock adapter exercises the run loop without using an engine token. The Android crypto test
+opens an envelope produced in the same format as the Node server, catching protocol drift before
+it reaches a phone.
 
 ## License
 

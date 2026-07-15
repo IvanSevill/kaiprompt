@@ -27,10 +27,7 @@ object Update {
     private const val LATEST =
         "https://api.github.com/repos/IvanSevill/kaiprompt/releases/latest"
 
-    private const val DOWNLOAD =
-        "https://github.com/IvanSevill/kaiprompt/releases/latest/download/kaiprompt.apk"
-
-    data class Available(val version: String, val notes: String?)
+    data class Available(val version: String, val notes: String?, val downloadUrl: String)
 
     /**
      * The newer release, if there is one. Null when up to date — and null when the check
@@ -41,7 +38,10 @@ object Update {
         val c = (URL(LATEST).openConnection() as HttpURLConnection).apply {
             connectTimeout = 6000
             readTimeout = 6000
+            useCaches = false
             setRequestProperty("accept", "application/vnd.github+json")
+            setRequestProperty("user-agent", "Kaiprompt-Android/${installedVersion(context)}")
+            setRequestProperty("cache-control", "no-cache")
         }
         if (c.responseCode != 200) return null
 
@@ -52,13 +52,19 @@ object Update {
         val tag = json.optString("tag_name").removePrefix("v").trim()
         if (tag.isBlank()) return null
 
-        val mine = context.packageManager
-            .getPackageInfo(context.packageName, 0).versionName
-            ?.trim()
-            .orEmpty()
+        val mine = installedVersion(context)
 
-        if (isNewer(tag, mine)) Available(tag, json.optStringOrNull("body")) else null
+        // Opening the release page is more reliable than handing Android's browser the asset
+        // redirect directly. Some mobile browsers lose GitHub's signed redirect and show 404.
+        val downloadUrl = json.optStringOrNull("html_url") ?: return null
+
+        if (isNewer(tag, mine)) Available(tag, json.optStringOrNull("body"), downloadUrl) else null
     }.getOrNull()
+
+    private fun installedVersion(context: Context): String = context.packageManager
+        .getPackageInfo(context.packageName, 0).versionName
+        ?.trim()
+        .orEmpty()
 
     /**
      * Is `remote` newer than `local`? Compared segment by segment as numbers — "1.10" is
@@ -79,9 +85,9 @@ object Update {
     }
 
     /** Hand it to the browser. Android takes it from there, permissions and all. */
-    fun download(context: Context) {
+    fun download(context: Context, url: String) {
         context.startActivity(
-            Intent(Intent.ACTION_VIEW, Uri.parse(DOWNLOAD))
+            Intent(Intent.ACTION_VIEW, Uri.parse(url))
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         )
     }

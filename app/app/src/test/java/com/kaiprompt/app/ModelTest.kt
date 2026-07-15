@@ -48,7 +48,8 @@ class ModelTest {
       ],
       "counts":{"pending":1,"running":0,"done":1,"error":0,"missed":0},
       "daemon":{"running":false,"pid":null,"next":null},
-      "quota":{"freePct":73,"resetsAt":1700003600000,"renewed":false}
+       "quota":{"freePct":73,"resetsAt":1700003600000,"renewed":false,
+                "weekly":{"freePct":61,"resetsAt":1700503600000}}
     }
     """
 
@@ -60,6 +61,8 @@ class ModelTest {
         assertEquals(1, s.pending)
         assertEquals("corre los tests", s.jobs[0].prompt)
         assertEquals(73, s.quota?.freePct)
+        assertEquals(61, s.quota?.freePctWeek)
+        assertEquals(1700503600000L, s.quota?.resetsAtWeek)
     }
 
     @Test
@@ -103,6 +106,13 @@ class ModelTest {
     }
 
     @Test
+    fun `un PC viejo sin cuota semanal sigue mostrando la cuota de sesion`() {
+        val s = State.parse("""{"host":"X","jobs":[],"quota":{"freePct":73,"resetsAt":1,"renewed":false}}""")
+        assertEquals(73, s.quota?.freePct)
+        assertNull(s.quota?.freePctWeek)
+    }
+
+    @Test
     fun `un job enlazado cuyo archivo desaparecio se ve como error, no como prompt vacio`() {
         val roto = """
         {"host":"X","jobs":[{"id":"j1","status":"pending","prompt":null,
@@ -118,21 +128,24 @@ class ModelTest {
     fun `la conversacion se aplana a lo que cabe en una pantalla`() {
         val chat = Chat.parse(
             """
-            {"sessionId":"s-1","target":"fixes","dir":"C:/p","turns":[
+            {"sessionId":"s-1","target":"fixes","adapter":"opencode","provider":"openai","model":"gpt-5.6-terra","dir":"C:/p","turns":[
               {"role":"user","at":"2026-01-01T10:00:00Z","blocks":[{"type":"text","text":"arregla esto"}]},
-              {"role":"assistant","at":"2026-01-01T10:00:05Z","blocks":[
-                {"type":"text","text":"voy"},
-                {"type":"tool","name":"Edit","input":{"file_path":"lib/ui.mjs"}}
-              ]}
+               {"role":"assistant","at":"2026-01-01T10:00:05Z","blocks":[
+                 {"type":"text","text":"voy"},
+                 {"type":"tool","name":"Edit","input":{"file_path":"lib/ui.mjs"}}
+               ],"diffs":[{"file":"lib/ui.mjs","added":2,"removed":1,"diff":"-old\n+new"}]}
             ]}
             """
         )
         assertEquals(2, chat.turns.size)
         assertEquals("fixes", chat.target)
+        assertEquals("OPENCODE · OPENAI", chat.assistantLabel)
 
         val tool = chat.turns[1].blocks[1] as Block.Tool
         assertEquals("Edit", tool.name)
         assertEquals("lib/ui.mjs", tool.arg)
+        assertEquals(1, chat.turns[1].diffs.size)
+        assertEquals(2, chat.turns[1].diffs[0].added)
     }
 
     @Test
@@ -153,7 +166,9 @@ class ModelTest {
 
     @Test
     fun `una conversacion vacia no revienta`() {
-        assertEquals(0, Chat.parse("""{"sessionId":"s","turns":[]}""").turns.size)
+        val chat = Chat.parse("""{"sessionId":"s","turns":[]}""")
+        assertEquals(0, chat.turns.size)
+        assertNull(chat.assistantLabel)
     }
 
     // --- el QR compacto ---------------------------------------------------------
@@ -215,6 +230,12 @@ class ModelTest {
         // Compatibilidad: un PC viejo sigue mandando "host". Se ignora, no se rechaza.
         val p = Pairing.parse("""{"v":1,"url":"http://192.168.1.5:7777","token":"t","key":"k","host":"MI-PC"}""")
         assertEquals("http://192.168.1.5:7777", p.url)
+    }
+
+    @Test
+    fun `el identificador de instalación es un UUID no derivado del nombre del móvil`() {
+        val id = DeviceId.new()
+        assertTrue(Regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$").matches(id))
     }
 
     @Test
@@ -319,5 +340,62 @@ class ModelTest {
         val s = State.parse("""{"host":"X","jobs":[],"server":{"version":"2.0.0","tunnel":null,"clients":[]}}""")
         assertNull(s.server.tunnel)
         assertTrue(s.server.clients.isEmpty())
+    }
+
+    @Test
+    fun `chat conserva todos los turnos y los todos estructurados`() {
+        val chat = Chat.parse(
+            """{"sessionId":"s","cursor":"a:2","turns":[
+              {"role":"user","blocks":[{"type":"text","text":"uno"}]},
+              {"role":"assistant","live":true,"blocks":[
+                {"type":"text","text":"dos","eventId":"a:1"},
+                {"type":"todos","eventId":"a:2","todos":[{"content":"probar","status":"in_progress"}]}
+              ]}
+            ]}"""
+        )
+        assertEquals(2, chat.turns.size)
+        assertEquals("a:2", chat.cursor)
+        assertTrue("a:1" in chat.eventIds)
+        assertEquals("probar", chat.turns[1].blocks.filterIsInstance<Block.Todos>().single().items.single().content)
+    }
+
+    @Test
+    fun `evento live y estado de pairing se parsean sin inventar campos`() {
+        val event = LiveEvent.parse("""{"id":"x:1","jobId":"j","kind":"tool","name":"Read","input":{"file_path":"a.kt"}}""")
+        assertEquals("x:1", event.id)
+        assertEquals("a.kt", event.arg)
+        assertEquals(PairingState("pairing", false, 2), PairingState.parse("""{"mode":"pairing","registered":false,"protocol":2}"""))
+    }
+
+    @Test
+    fun `chat y live comparten prioridad de argumentos y parseo de todos`() {
+        val chat = Chat.parse(
+            """{"sessionId":"s","turns":[{"role":"assistant","blocks":[
+              {"type":"tool","name":"Read","eventId":"e:1","input":{"command":"later","file_path":"first.kt"}},
+              {"type":"todos","eventId":"e:2","todos":[null,{"content":"probar","activeForm":"probando"}]}
+            ]}]}""",
+        )
+        val liveTool = LiveEvent.parse(
+            """{"id":"e:3","kind":"tool","input":{"command":"later","file_path":"first.kt"}}""",
+        )
+        val liveTodos = LiveEvent.parse(
+            """{"id":"e:4","kind":"todos","todos":[null,{"content":"probar","activeForm":"probando"}]}""",
+        )
+
+        assertEquals("first.kt", (chat.turns.single().blocks[0] as Block.Tool).arg)
+        assertEquals("first.kt", liveTool.arg)
+        assertEquals("pending", (chat.turns.single().blocks[1] as Block.Todos).items.single().status)
+        assertEquals(liveTodos.todos, (chat.turns.single().blocks[1] as Block.Todos).items)
+        assertEquals(setOf("e:1", "e:2"), chat.eventIds)
+        assertEquals("e:4", liveTodos.id)
+    }
+
+    @Test
+    fun `arrays de strings omiten vacios null y valores no textuales`() {
+        val chat = Chat.parse(
+            """{"sessionId":"s","eventIds":["a","",null,{"id":"no"},"b"],"turns":[]}""",
+        )
+
+        assertEquals(setOf("a", "b"), chat.eventIds)
     }
 }

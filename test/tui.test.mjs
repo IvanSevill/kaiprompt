@@ -8,17 +8,23 @@ import { fileURLToPath } from 'node:url';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-tui-'));
 process.env.KAIP_HOME = TMP;
+process.env.CODEX_HOME = path.join(TMP, 'codex');
+fs.mkdirSync(process.env.CODEX_HOME, { recursive: true });
+fs.writeFileSync(path.join(process.env.CODEX_HOME, 'models_cache.json'), JSON.stringify({
+  models: [{ slug: 'gpt-test-codex', priority: 1, visibility: 'list' }],
+}));
 // Adding a job with a time arms the daemon (that is the whole point). Not here: a test
 // cannot leave background processes alive. That it really does arm it is proved in
 // daemon.test.mjs.
 process.env.KAIP_NO_DAEMON = '1';
-const { loadQueue, saveQueue, saveProjects, saveSessions } = await import('../lib/store.mjs');
+const { historyPath, loadQueue, saveLaunchDefaults, saveQueue, saveProjects, saveSessions } = await import('../lib/store.mjs');
 const { addJob } = await import('../lib/queue.mjs');
 const { strip } = await import('../lib/ui.mjs');
 const {
   applyEffect, asPaste, decodeKey, initialState, keyReader, pasteText,
-  reduce, refresh, render, rows, selected, VIEWS,
+  readOutput, reduce, refresh, render, rows, selected, VIEWS,
 } = await import('../lib/tui.mjs');
+const { loadUsageData } = await import('../lib/tui-state.mjs');
 
 const DIMS = { cols: 100, rows: 30 };
 const view = (state) => strip(render(state, DIMS).join('\n'));
@@ -30,7 +36,28 @@ function press(state, keys) {
   return { state, effect };
 }
 
-const fresh = () => refresh(initialState());
+const TEST_CATALOG = {
+  status: 'ready', error: null, generation: 1,
+  models: [
+    { id: 'openai/gpt-5.6-terra', provider: 'openai', model: 'gpt-5.6-terra' },
+    { id: 'google/gemini-2.5-flash', provider: 'google', model: 'gemini-2.5-flash' },
+  ],
+  lastSuccessful: [],
+};
+const fresh = () => refresh(initialState({ catalog: TEST_CATALOG }));
+
+test('refresh: picks up jobs added by another Kaiprompt process without losing wizard input', () => {
+  saveQueue([]);
+  let state = fresh();
+  state = reduce(state, 'a').state;
+  state = reduce(state, asPaste('draft prompt')).state;
+
+  addJob({ prompt: 'arrived elsewhere', adapter: 'mock' });
+  state = refresh(state);
+
+  assert.equal(state.data.queue.length, 1);
+  assert.equal(state.wizard.buffer, 'draft prompt');
+});
 
 // --- keys --------------------------------------------------------------------
 test('decodeKey: arrows, enter, esc, backspace and Ctrl+C', () => {
@@ -42,6 +69,7 @@ test('decodeKey: arrows, enter, esc, backspace and Ctrl+C', () => {
   assert.equal(decodeKey('\x1b'), 'esc');
   assert.equal(decodeKey('\x7f'), 'backspace');
   assert.equal(decodeKey('\x03'), 'ctrl-c');
+  assert.equal(decodeKey('\x0c'), 'ctrl-l');
   assert.equal(decodeKey(Buffer.from('a')), 'a', 'an ordinary character comes back as it is');
 });
 
@@ -111,7 +139,7 @@ test('outside the wizard a paste presses no keys (it could carry a "d" inside)',
 });
 
 // --- navigation --------------------------------------------------------------
-test('views: tab and 1-4 switch view, and wrap around', () => {
+test('views: tab and 1-5 switch view, and wrap around', () => {
   saveQueue([]);
   let s = fresh();
   assert.equal(s.view, 'queue');
@@ -163,10 +191,49 @@ test('enter opens the detail of the selected job, and esc closes it', () => {
   assert.equal(s.detail, null);
 });
 
-test('o and c ask for the output and the chat of the selected job', () => {
+test('detail: t retries an error job through the same queue action as the CLI', () => {
+  saveQueue([]);
+  const job = addJob({ prompt: 'try again', adapter: 'mock' });
+  saveQueue([{ ...job, status: 'error', error: 'failed' }]);
+  let state = fresh();
+  state = reduce(state, 'enter').state;
+  const next = reduce(state, 't');
+  assert.deepEqual(next.effect, { type: 'retry', id: job.id });
+  assert.match(strip(applyEffect(next.effect)), /pending again/);
+  assert.equal(loadQueue()[0].status, 'pending');
+});
+
+test('detail: down stops at the last line instead of walking the view off screen', () => {
+  saveQueue([]);
+  addJob({ prompt: 'one line', adapter: 'mock' });
+  let state = reduce(fresh(), 'enter').state;
+  for (let i = 0; i < 100; i++) state = reduce(state, 'down').state;
+  const bottom = state.detail.scroll;
+  state = reduce(state, 'down').state;
+  assert.equal(state.detail.scroll, bottom);
+  assert.match(view(state), /prompt:/);
+});
+
+test('i opens complete job information and arrows scroll its prompt', () => {
+  saveQueue([]); addJob({ prompt: Array.from({ length: 40 }, (_, i) => `line ${i + 1}`).join('\n'), target: 'fixes', adapter: 'codex' });
+  let s = fresh();
+  s = reduce(s, 'i').state;
+  assert.match(view(s), /target: fixes/);
+  assert.match(view(s), /adapter: codex/);
+  assert.match(view(s), /1\/\d+ lines/);
+  s = reduce(s, 'down').state;
+  assert.equal(s.detail.scroll, 1);
+});
+
+test('o and c ask for the output and the chat only after the selected job finishes', () => {
   saveQueue([]);
   const j = addJob({ prompt: 'x' });
-  const s = fresh();
+  let s = fresh();
+
+  assert.equal(reduce(s, 'o').effect, null);
+  assert.equal(reduce(s, 'c').effect, null);
+  saveQueue(loadQueue().map((job) => ({ ...job, status: 'done' })));
+  s = fresh();
 
   assert.deepEqual(reduce(s, 'o').effect, { type: 'out', id: j.id });
   assert.deepEqual(reduce(s, 'c').effect, { type: 'chat', ref: j.id });
@@ -190,7 +257,7 @@ test('in the chats view, enter opens that target conversation', () => {
 });
 
 // --- the add wizard -----------------------------------------------------------
-test('a: the wizard walks prompt → when → target → folder → permissions', () => {
+test('a: the wizard edits fields with ↑↓ and validates the complete form with enter', () => {
   saveQueue([]);
   let s = press(fresh(), ['a']).state;
   assert.ok(s.wizard, 'the wizard opens');
@@ -201,14 +268,17 @@ test('a: the wizard walks prompt → when → target → folder → permissions'
   assert.equal(s.wizard.buffer, '/test');
   assert.match(view(s), /Prompt/);
 
-  s = press(s, ['enter']).state;
-  assert.equal(s.wizard.step, 1, 'moves on to "when"');
-  s = press(s, [...'+2h', 'enter']).state;
+  s = press(s, ['down']).state;
+  assert.equal(s.wizard.step, 1, 'moves directly to "when"');
+  s = press(s, [...'+2h', 'down']).state;
   assert.equal(s.wizard.step, 2);
-  s = press(s, [...'fixes', 'enter']).state;
+  s = press(s, [...'fixes', 'down']).state;
   assert.equal(s.wizard.step, 3);
-  s = press(s, ['enter']).state;                       // empty folder → the current one
-  assert.equal(s.wizard.step, 4, 'last step: permissions');
+  s = press(s, ['down']).state;                        // empty folder → the current one
+  assert.equal(s.wizard.step, 4, 'engine step');
+  assert.equal(s.wizard.values.engine, 'claude');
+  s = press(s, ['down', 'down']).state;                // provider is absent; model is optional
+  assert.equal(s.wizard.step, 6, 'last step: permissions');
 
   // permissions are chosen with ← →, not typed
   assert.equal(s.wizard.values.perm, 'bypass');
@@ -221,6 +291,42 @@ test('a: the wizard walks prompt → when → target → folder → permissions'
   assert.equal(effect.values.when, '+2h');
   assert.equal(effect.values.target, 'fixes');
   assert.equal(effect.values.perm, 'acceptEdits');
+});
+
+test('left and right switch the prompt field between text and file path', () => {
+  let s = reduce(fresh(), 'a').state;
+  s = reduce(s, 'right').state;
+  assert.equal(s.wizard.promptMode, 'file');
+  assert.match(view(s), /Prompt file/);
+  s = reduce(s, 'left').state;
+  assert.equal(s.wizard.promptMode, 'text');
+});
+
+test('engine selection uses ←→ and OpenAI offers Terra first', () => {
+  saveLaunchDefaults();
+  let s = press(fresh(), ['a', 'down', 'down', 'down', 'down']).state;
+  assert.equal(s.wizard.values.engine, 'claude');
+  s = press(s, ['right']).state;
+  assert.equal(s.wizard.values.engine, 'codex');
+  s = press(s, ['right', 'down', ...'openai', 'down', 'right']).state;
+  assert.equal(s.wizard.values.engine, 'opencode');
+  assert.equal(s.wizard.values.provider, 'openai');
+  assert.equal(s.wizard.buffer, 'gpt-5.6-terra');
+});
+
+test('Claude and Codex omit provider and autocomplete their own models', () => {
+  saveLaunchDefaults();
+  let s = press(fresh(), ['a', 'down', 'down', 'down', 'down', 'down']).state;
+  assert.equal(s.wizard.values.engine, 'claude');
+  assert.doesNotMatch(view(s), /Provider:/);
+  s = press(s, ['right']).state;
+  assert.equal(s.wizard.buffer, 'sonnet');
+
+  s = press(s, ['up', 'right']).state;
+  assert.equal(s.wizard.values.engine, 'codex');
+  assert.doesNotMatch(view(s), /Provider:/);
+  s = press(s, ['down', 'right']).state;
+  assert.equal(s.wizard.buffer, 'gpt-test-codex');
 });
 
 test('wizard: backspace deletes and esc cancels without touching the queue', () => {
@@ -241,7 +347,7 @@ test('wizard: an empty prompt does not move on', () => {
 });
 
 test('wizard: an impossible time is caught here, not at 3am on launch', () => {
-  const { state } = press(fresh(), ['a', ...'x', 'enter', ...'whenever', 'enter']);
+  const { state } = press(fresh(), ['a', ...'x', 'down', ...'whenever', 'enter']);
   assert.equal(state.wizard.step, 1, 'it stays on "when" so you can retype it');
   assert.match(strip(state.message), /can't parse time/);
 });
@@ -312,6 +418,28 @@ test('applyEffect add: "bypass" is stored as null (the default it always was)', 
   assert.equal(loadQueue()[0].permMode, null);
 });
 
+test('new jobs remember only the last engine selection and permissions', () => {
+  saveQueue([]);
+  applyEffect({
+    type: 'add',
+    values: {
+      prompt: 'do not remember', when: '+2h', target: 'do-not-remember', dir: '',
+      engine: 'opencode', provider: 'openai', model: 'gpt-5.6-terra', perm: 'acceptEdits',
+    },
+  });
+
+  const s = reduce(fresh(), 'a').state;
+  assert.deepEqual({
+    engine: s.wizard.values.engine, provider: s.wizard.values.provider,
+    model: s.wizard.values.model, perm: s.wizard.values.perm,
+  }, { engine: 'opencode', provider: 'openai', model: 'gpt-5.6-terra', perm: 'acceptEdits' });
+  assert.equal(s.wizard.values.prompt, '');
+  assert.equal(s.wizard.values.when, '');
+  assert.equal(s.wizard.values.target, '');
+  assert.equal(s.wizard.values.dir, '');
+  saveLaunchDefaults();
+});
+
 test('applyEffect edit: changes the job, and emptying a field clears it', () => {
   saveQueue([]);
   const j = addJob({ prompt: 'old', target: 'fixes', at: '+2h' });
@@ -333,6 +461,26 @@ test('applyEffect delete: deletes that job', () => {
   assert.equal(loadQueue().length, 0);
 });
 
+test('space selects pending jobs and m applies one engine selection to all of them', () => {
+  saveQueue([]);
+  const a = addJob({ prompt: 'one' }); const b = addJob({ prompt: 'two' });
+  let st = fresh();
+  st = reduce(st, 'space').state;
+  st = reduce(st, 'down').state;
+  st = reduce(st, 'space').state;
+  assert.deepEqual(st.selectedIds, [a.id, b.id]);
+  st = reduce(st, 'm').state;
+  assert.equal(st.wizard.mode, 'bulk-engine');
+  const effect = press(st, ['right', 'right', 'enter', ...'google', 'enter', ...'gemini-2.5-flash', 'enter']).effect;
+  assert.equal(effect.type, 'bulk-engine');
+  applyEffect(effect);
+  for (const job of loadQueue()) {
+    assert.equal(job.adapter, 'opencode');
+    assert.equal(job.provider, 'google');
+    assert.equal(job.model, 'gemini-2.5-flash');
+  }
+});
+
 test('applyEffect: an error shows up in the bar, it does not kill the GUI', () => {
   saveQueue([]);
   const line = applyEffect({ type: 'edit', id: 'does-not-exist', values: { prompt: 'x', perm: 'bypass' } });
@@ -346,14 +494,14 @@ test('render: tabs, jobs, the shortcut bar and the selection marker', () => {
   const out = view(fresh());
 
   assert.match(out, /kaip/);
-  assert.match(out, /Queue \(1\).*Chats.*Projects.*Help/s, 'the four views');
+  assert.match(out, /Queue \(1\).*Chats.*Projects.*Usage.*Help/s, 'the five views');
   assert.match(out, new RegExp(j.id));
   assert.match(out, /review the PR/);
   assert.match(out, /▸/, 'the selected row is marked');
   assert.match(out, /a add · e edit/, 'the shortcut bar');
   assert.match(out, /d — delete ONLY this one/);
   // "out" and "chat" said nothing about how they differ. The bar says what you GET.
-  assert.match(out, /o answer · c conversation · y JOIN chat/, 'the three depths, named by what they give you');
+  assert.match(out, /space select · m change engine/, 'bulk engine selection is discoverable');
 });
 
 test('BOTH deletes appear together and spelled out: they are astonishingly easy to confuse', () => {
@@ -403,7 +551,7 @@ test('"r" is still the only thing that runs the queue by hand', () => {
 
 test('the wizard queues, it does not send: no key in the add flow fires a launch', () => {
   saveQueue([]);
-  const keys = [...'a', ...'hello', 'enter', ...'+2h', 'enter', 'enter', 'enter', 'enter'];
+  const keys = [...'a', ...'hello', 'down', ...'+2h', 'enter'];
   let state = fresh(); let effect = null;
   for (const k of keys) {
     ({ state, effect } = reduce(state, k));
@@ -481,10 +629,11 @@ test('render: with more jobs than rows, the selection stays on screen', () => {
 test('render: the wizard is painted with its steps and the help hint', () => {
   const s = press(fresh(), ['a', ...'hello']).state;
   const out = view(s);
-  assert.match(out, /new launch · step 1\/5/);
+  assert.match(out, /new launch · step 1\/7/);
+  assert.doesNotMatch(out, /Provider:/, 'Claude has no provider field');
   assert.match(out, /Prompt:/);
   assert.match(out, /hello/);
-  assert.match(out, /enter: next · esc: cancel/);
+  assert.match(out, /↑\/↓: field · ←\/→: choose/);
 });
 
 test('refresh: if the queue shrinks, the selection is not left dangling', () => {
@@ -499,8 +648,42 @@ test('refresh: if the queue shrinks, the selection is not left dangling', () => 
   assert.ok(selected(s), 'and it still points at something');
 });
 
-test('VIEWS: the four views, in order', () => {
-  assert.deepEqual(VIEWS, ['queue', 'sessions', 'projects', 'help']);
+test('VIEWS: the five views, in order', () => {
+  assert.deepEqual(VIEWS, ['queue', 'sessions', 'projects', 'usage', 'help']);
+});
+
+test('usage view switches Claude, Codex, and OpenCode providers through shared reports', () => {
+  const jobs = [
+    { id: 'usage-claude', adapter: 'claude', target: 'alpha', sessionId: 'claude-session' },
+    { id: 'usage-codex', adapter: 'codex', target: 'beta', sessionId: 'codex-session' },
+    { id: 'usage-openai', adapter: 'opencode', provider: 'openai', target: 'gamma', sessionId: 'openai-session' },
+  ];
+  saveQueue(jobs);
+  fs.writeFileSync(historyPath('usage-claude'), JSON.stringify({ type: 'attempt-end', engine: 'claude', sessionId: 'claude-session', usage: { input_tokens: 10, output_tokens: 4 } }) + '\n');
+  fs.writeFileSync(historyPath('usage-codex'), JSON.stringify({ type: 'attempt-end', engine: 'codex', sessionId: 'codex-session' }) + '\n');
+  fs.writeFileSync(historyPath('usage-openai'), JSON.stringify({ type: 'attempt-end', engine: 'opencode', provider: 'openai', sessionId: 'openai-session', usage: { input: 8, output: 2, total: 10 }, cost: 0.01 }) + '\n');
+
+  const entered = reduce(fresh(), 'u');
+  assert.deepEqual(entered.effect, { type: 'load-usage' });
+  let state = loadUsageData(entered.state);
+  assert.equal(state.view, 'usage');
+  assert.match(view(state), /Usage · Claude/);
+  assert.match(view(state), /alpha.*14 tok · 10 in · 4 out/s);
+
+  state = reduce(state, 'down').state;
+  assert.match(view(state), /Usage · Codex/);
+  assert.match(view(state), /beta.*usage unavailable/s);
+
+  state = reduce(state, 'down').state;
+  const narrow = render(state, { cols: 52, rows: 18 }).map(strip);
+  assert.match(narrow.join('\n'), /Usage · OpenCode \/ openai/);
+  assert.match(narrow.join('\n'), /gamma/);
+  assert.match(narrow.join('\n'), /\$0.0100/);
+  assert.match(narrow.join('\n'), /10 tokens total/);
+  assert.ok(narrow.every((line) => line.length <= 52), 'narrow usage rows stay within the terminal');
+
+  state = reduce(state, 'right').state;
+  assert.equal(state.view, 'help', 'left and right remain available for section navigation');
 });
 
 // --- the unattended path cannot be broken --------------------------------------
@@ -526,9 +709,16 @@ test('with no TTY, a bare "kaip" prints the help and does NOT open the GUI', () 
 // resize the terminal swallowed) leaves debris on screen, and there was no way to get a
 // clean frame back short of quitting.
 
-test('R asks to restart the interface', () => {
+test('R asks to refresh data and the model catalog', () => {
   const { effect } = reduce(refresh(initialState()), 'R');
-  assert.deepEqual(effect, { type: 'restart' });
+  assert.deepEqual(effect, { type: 'refresh' });
+});
+
+test('Ctrl+L only repaints and never refreshes', () => {
+  assert.deepEqual(reduce(fresh(), 'ctrl-l').effect, { type: 'repaint' });
+  const wizard = reduce(fresh(), 'a').state;
+  assert.deepEqual(reduce(wizard, 'ctrl-l').effect, { type: 'repaint' });
+  assert.equal(reduce(wizard, 'ctrl-l').state.wizard.buffer, '');
 });
 
 test('R inside the wizard does NOT restart: there it is a letter you are typing', () => {
@@ -538,27 +728,46 @@ test('R inside the wizard does NOT restart: there it is a letter you are typing'
   assert.ok(next.wizard.buffer.endsWith('R'), 'it is typed into the prompt');
 });
 
+test('Help is complete, scrollable, and stays within a narrow short terminal', () => {
+  let state = reduce(fresh(), '?').state;
+  const first = render(state, { cols: 44, rows: 12 }).map(strip);
+  assert.ok(first.every((line) => line.length <= 44));
+  assert.ok(first.length <= 12, `short terminal received ${first.length} lines`);
+  assert.match(first.join('\n'), /Help .* of .*scroll/);
+  state = reduce(state, 'down').state;
+  assert.equal(state.helpScroll, 1);
+  const all = render({ ...state, helpScroll: 999 }, { cols: 44, rows: 12 }).map(strip).join('\n');
+  assert.match(all, /Adding\s+never sends/);
+});
+
+test('U opens only a known update URL', () => {
+  assert.equal(reduce(fresh(), 'U').effect, null);
+  const state = { ...fresh(), update: { latest: '99.0.0', url: 'https://example.test/release' } };
+  assert.deepEqual(reduce(state, 'U').effect, { type: 'open-update', url: 'https://example.test/release' });
+  assert.match(strip(render(state, DIMS).join('\n')), /U open release/);
+});
+
 // --- suggested conversations ---------------------------------------------------
 // Reusing a target resumes a session that ALREADY has the context loaded: it is the biggest
 // token saving in the tool. Which is why the wizard offers them.
 
-test('the wizard suggests the existing conversations, and ↑↓ picks one', () => {
+test('the wizard suggests existing conversations, and ←→ picks one', () => {
   saveQueue([]);
   saveSessions({ fixes: { sessionId: 'sess-abcdef12', adapter: 'claude', updatedAt: Date.now() } });
 
-  // add → prompt → when → we land on the "target" step
+  // add → prompt, then ↓ twice to land on the target field
   let st = refresh(initialState());
   st = reduce(st, 'a').state;
   for (const ch of 'something') st = reduce(st, ch).state;
-  st = reduce(st, 'enter').state;                              // prompt done
-  st = reduce(st, 'enter').state;                              // empty when → sequential
+  st = reduce(st, 'down').state;
+  st = reduce(st, 'down').state;
 
   assert.equal(st.wizard.step, 2, 'we are on the target step');
 
   const screen = render(st).map(strip).join('\n');
   assert.ok(screen.includes('fixes'), 'the existing session is offered on screen');
 
-  st = reduce(st, 'down').state;                               // pick it with the arrow
+  st = reduce(st, 'right').state;                              // pick it with the arrow
   assert.equal(st.wizard.buffer, 'fixes');
   assert.equal(st.wizard.pick, 0);
 });
@@ -570,9 +779,9 @@ test('typing over a suggestion drops it (it is your value, not its)', () => {
   let st = refresh(initialState());
   st = reduce(st, 'a').state;
   for (const ch of 'something') st = reduce(st, ch).state;
-  st = reduce(st, 'enter').state;
-  st = reduce(st, 'enter').state;
-  st = reduce(st, 'down').state;                               // takes "fixes"
+  st = reduce(st, 'down').state;
+  st = reduce(st, 'down').state;
+  st = reduce(st, 'right').state;                              // takes "fixes"
   assert.equal(st.wizard.pick, 0);
 
   st = reduce(st, 'X').state;                                  // and types over it
@@ -585,9 +794,9 @@ test('with no saved sessions, the arrows do not break the wizard', () => {
   let st = refresh(initialState());
   st = reduce(st, 'a').state;
   for (const ch of 'something') st = reduce(st, ch).state;
-  st = reduce(st, 'enter').state;
-  st = reduce(st, 'enter').state;
-  const { state: next } = reduce(st, 'down');
+  st = reduce(st, 'down').state;
+  st = reduce(st, 'down').state;
+  const { state: next } = reduce(st, 'right');
   assert.ok(next.wizard, 'the wizard is still standing');
 });
 
@@ -639,7 +848,7 @@ test('cancelling the confirmation with "n" deletes nothing', () => {
 // --- "y": walking into the Claude Code chat ------------------------------------
 test('"y" on a job asks to walk into its conversation', () => {
   saveQueue([]);
-  const j = addJob({ prompt: 'x', adapter: 'mock' });
+  const j = addJob({ prompt: 'x', adapter: 'mock', session: 'session-1' });
   const { effect } = reduce(refresh(initialState()), 'y');
   assert.deepEqual(effect, { type: 'resume', ref: j.id });
 });
@@ -667,4 +876,15 @@ test('"y" with nothing selected does nothing', () => {
   saveQueue([]);
   const { effect } = reduce(refresh(initialState()), 'y');
   assert.equal(effect, null);
+});
+
+test('the output footer resumes OpenCode with OpenCode, never Claude', () => {
+  saveQueue([]);
+  const j = addJob({
+    prompt: 'x', adapter: 'opencode', provider: 'openai', model: 'gpt-5', session: 'ses-open', dir: TMP,
+  });
+  fs.writeFileSync(path.join(TMP, 'out', `${j.id}.txt`), 'answer');
+  const output = strip(readOutput(j.id));
+  assert.match(output, /opencode --session ses-open --model openai\/gpt-5/);
+  assert.doesNotMatch(output, /claude --resume/);
 });

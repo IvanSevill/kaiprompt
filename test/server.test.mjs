@@ -7,25 +7,33 @@
 
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
+import { fileURLToPath } from 'node:url';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-server-'));
 process.env.KAIP_HOME = TMP;
 
-const { patchJob, saveQueue, saveSessions } = await import('../lib/store.mjs');
+const { historyPath, outPath, patchJob, saveQueue, saveSessions } = await import('../lib/store.mjs');
 const { addJob } = await import('../lib/queue.mjs');
 const { executeJob } = await import('../lib/runner.mjs');
+const { emitLive } = await import('../lib/live-events.mjs');
 const {
-  addresses, createServer, pairingPayload, publish, resetToken, serverConfig, saveServerConfig,
-  BOOTED_AT, clientList, forgetClients, pairedThisSession, stateDTO,
+  addresses, createServer, noteClient, pairingPayload, publish, resetToken, serverConfig, saveServerConfig,
+  BOOTED_AT, chatDTO, clientList, conversationStatus, forgetClients, pairedThisSession, stateDTO, targetsDTO,
 } = await import('../lib/server.mjs');
 
 const PORT = 7899;
 let server;
 let token;
+const openCodeExports = new Map();
+const openCodeRun = (_bin, args) => {
+  const data = openCodeExports.get(args[1]);
+  return data ? { status: 0, stdout: JSON.stringify(data) } : { status: 1, stdout: '' };
+};
 
 const get = (p, opts = {}) => fetch(`http://127.0.0.1:${PORT}${p}`, {
   headers: opts.noAuth ? {} : { authorization: `Bearer ${opts.token ?? token}` },
@@ -48,8 +56,8 @@ const rawGet = (p, headers = {}) => new Promise((resolve, reject) => {
 
 before(async () => {
   token = serverConfig().token;
-  server = createServer({ port: PORT });
-  await new Promise((r) => setTimeout(r, 200));
+  server = createServer({ port: PORT, loadChat: (ref) => chatDTO(ref, { openCodeRun }) });
+  await server.ready;
 });
 
 after(() => server?.close());
@@ -123,6 +131,22 @@ test('/api/state: if a linked job\'s file is gone, it says so — it does not go
   assert.match(s.jobs[0].promptError, /gone/i);
 });
 
+test('/api/usage: exposes shared historical aggregation without delaying state', async () => {
+  saveQueue([]);
+  const claude = addJob({ prompt: 'count this', adapter: 'claude', target: 'alpha', session: 'claude-session' });
+  const codex = addJob({ prompt: 'unknown usage', adapter: 'codex', target: 'beta', session: 'codex-session' });
+  const openai = addJob({ prompt: 'costed', adapter: 'opencode', provider: 'openai', model: 'gpt', session: 'openai-session' });
+  fs.writeFileSync(historyPath(claude.id), JSON.stringify({ type: 'attempt-end', engine: 'claude', sessionId: 'claude-session', usage: { input_tokens: 10, output_tokens: 4 } }) + '\n');
+  fs.writeFileSync(historyPath(codex.id), JSON.stringify({ type: 'attempt-end', engine: 'codex', sessionId: 'codex-session' }) + '\n');
+  fs.writeFileSync(historyPath(openai.id), JSON.stringify({ type: 'attempt-end', engine: 'opencode', provider: 'openai', sessionId: 'openai-session', usage: { input: 8, output: 2, total: 10 }, cost: 0.01 }) + '\n');
+
+  const usage = await (await get('/api/usage')).json();
+  assert.deepEqual(usage.scopes.map((scope) => scope.key), ['claude', 'codex', 'opencode:openai']);
+  assert.equal(usage.scopes[0].sessions[0].usage.total.value, 14);
+  assert.equal(usage.scopes[1].sessions[0].usage.total, null, 'missing Codex usage remains unavailable');
+  assert.equal(usage.scopes[2].totals.cost.value, 0.01);
+});
+
 // --- the output and the conversation -------------------------------------------
 test('/api/job/:id: the job with its final answer', async () => {
   saveQueue([]);
@@ -153,6 +177,49 @@ test('/api/targets: the conversations, grouped — several jobs share one chat',
   assert.equal(t.jobs.length, 2, 'both jobs hang off the same conversation');
 });
 
+test('/api/targets: enriched summaries preserve legacy fields and never use prompt text as a concept', () => {
+  saveQueue([]);
+  saveSessions({});
+  const pending = addJob({ prompt: 'secret prompt must not become a title', target: 'phase-six', adapter: 'opencode', provider: 'openai', model: 'gpt-5' });
+  const failed = addJob({ prompt: 'also private', target: 'phase-six', adapter: 'opencode', provider: 'openai', model: 'gpt-5' });
+  patchJob({ ...pending, pausedUntil: Date.now() + 60_000 });
+  patchJob({ ...failed, status: 'error', finishedAt: Date.now() + 1 });
+
+  const [summary] = targetsDTO();
+  assert.equal(summary.ref, 'phase-six');
+  assert.equal(summary.concept, 'phase-six');
+  assert.equal(summary.status, 'quota', 'pending/quota outranks an error');
+  assert.equal(summary.currentJobId, pending.id);
+  assert.equal(summary.chatAvailable, true);
+  assert.equal(summary.target, 'phase-six', 'legacy target remains');
+  assert.equal(summary.sessionId, null, 'legacy sessionId remains');
+  assert.deepEqual(summary.jobs, [pending.id, failed.id]);
+  assert.doesNotMatch(JSON.stringify(summary), /secret prompt|also private/);
+});
+
+test('/api/targets: status precedence is running > pending > error > done > missed', () => {
+  const jobs = ['missed', 'done', 'error', 'pending', 'running'].map((status, index) => ({
+    id: status, status, createdAt: index,
+  }));
+  assert.equal(conversationStatus(jobs).id, 'running');
+  assert.equal(conversationStatus(jobs.filter((job) => job.status !== 'running')).id, 'pending');
+  assert.equal(conversationStatus(jobs.filter((job) => !['running', 'pending'].includes(job.status))).id, 'error');
+  assert.equal(conversationStatus(jobs.filter((job) => ['done', 'missed'].includes(job.status))).id, 'done');
+});
+
+test('/api/targets: an untargeted OpenCode conversation uses export metadata title and stable session ref', () => {
+  saveQueue([]);
+  saveSessions({});
+  const job = addJob({ prompt: 'never title from this', adapter: 'opencode', provider: 'openai', model: 'gpt-5', session: 'ses-titled' });
+  openCodeExports.set('ses-titled', { info: { id: 'ses-titled', title: 'Exported session title' }, messages: [] });
+
+  const [summary] = targetsDTO({ openCodeRun });
+  assert.equal(summary.ref, 'ses-titled');
+  assert.equal(summary.concept, 'Exported session title');
+  assert.equal(summary.currentJobId, job.id);
+  assert.equal(summary.chatAvailable, true);
+});
+
 test('/api/job/:id/chat with no transcript: a 404 with a reason, not a 500', async () => {
   saveQueue([]);
   const j = addJob({ prompt: 'x', adapter: 'mock' });
@@ -160,6 +227,130 @@ test('/api/job/:id/chat with no transcript: a 404 with a reason, not a 500', asy
   patchJob(j);                                           // the mock writes no transcript
   const r = await get(`/api/job/${j.id}/chat`);
   assert.equal(r.status, 404);
+});
+
+test('/api/job/:id/chat falls back to the prompt and output for OpenCode', async () => {
+  saveQueue([]);
+  const j = addJob({ prompt: 'ask OpenCode', adapter: 'opencode', provider: 'openai', model: 'gpt-5.6-terra' });
+  fs.writeFileSync(outPath(j.id), 'OpenCode answer');
+  patchJob({ ...j, status: 'done', output: `out/${j.id}.txt`, finishedAt: Date.now() });
+
+  const r = await get(`/api/job/${j.id}/chat`);
+  assert.equal(r.status, 200);
+  const chat = await r.json();
+  assert.equal(chat.adapter, 'opencode');
+  assert.equal(chat.provider, 'openai');
+  assert.equal(chat.model, 'gpt-5.6-terra');
+  assert.deepEqual(chat.turns.map((t) => t.blocks[0].text), ['ask OpenCode', 'OpenCode answer']);
+});
+
+test('/api/job/:id/chat is useful for pending and failed OpenCode jobs before a session exists', async () => {
+  saveQueue([]);
+  const pending = addJob({ prompt: 'waiting prompt', adapter: 'opencode', provider: 'openai', model: 'gpt-5' });
+  const failed = addJob({ prompt: 'failed prompt', adapter: 'opencode', provider: 'openai', model: 'gpt-5' });
+  patchJob({ ...failed, status: 'error', error: 'launch failed', finishedAt: Date.now() });
+
+  const waitingChat = await (await get(`/api/job/${pending.id}/chat`)).json();
+  assert.equal(waitingChat.sessionId, `job:${pending.id}`);
+  assert.equal(waitingChat.status, 'pending');
+  assert.equal(waitingChat.terminal, false);
+  assert.equal(waitingChat.turns[0].blocks[0].text, 'waiting prompt');
+
+  const failedChat = await (await get(`/api/job/${failed.id}/chat`)).json();
+  assert.equal(failedChat.status, 'error');
+  assert.equal(failedChat.terminal, true);
+  assert.deepEqual(failedChat.turns.map((turn) => turn.blocks[0].text), ['failed prompt', 'launch failed']);
+});
+
+test('/api/job/:id/chat returns every turn from the same OpenCode session', async () => {
+  saveQueue([]);
+  const a = addJob({ prompt: 'first question', target: 'shared', adapter: 'opencode', provider: 'openai', model: 'gpt-5.6-sol', session: 'ses-shared' });
+  const b = addJob({ prompt: 'second question', target: 'shared', adapter: 'opencode', provider: 'openai', model: 'gpt-5.6-sol', session: 'ses-shared' });
+  fs.writeFileSync(outPath(a.id), 'first answer');
+  fs.writeFileSync(outPath(b.id), 'second answer');
+  patchJob({ ...a, status: 'done', output: `out/${a.id}.txt`, finishedAt: Date.now() - 10 });
+  patchJob({ ...b, status: 'done', output: `out/${b.id}.txt`, finishedAt: Date.now() });
+
+  const chat = await (await get(`/api/job/${a.id}/chat`)).json();
+  assert.deepEqual(chat.turns.map((turn) => turn.blocks[0].text), [
+    'first question', 'first answer', 'second question', 'second answer',
+  ]);
+});
+
+test('/api/chat/:target uses the normalized OpenCode export after queue history is cleared', async () => {
+  saveQueue([]);
+  saveSessions({ exported: {
+    sessionId: 'ses-exported', adapter: 'opencode', provider: 'openai', model: 'gpt-5', dir: TMP, updatedAt: 1,
+  } });
+  openCodeExports.set('ses-exported', {
+    info: { id: 'ses-exported', directory: TMP },
+    messages: [
+      { info: { role: 'user', time: { created: 1 } }, parts: [{ type: 'text', text: 'persisted question' }] },
+      { info: { role: 'assistant', time: { created: 2 } }, parts: [{ type: 'reasoning', text: 'thought' }, { type: 'text', text: 'persisted answer' }] },
+    ],
+  });
+
+  const response = await get('/api/chat/exported');
+  assert.equal(response.status, 200);
+  const chat = await response.json();
+  assert.equal(chat.adapter, 'opencode');
+  assert.equal(chat.dir, TMP);
+  assert.deepEqual(chat.turns[1].blocks.map((block) => block.type), ['thinking', 'text']);
+});
+
+test('exported OpenCode camelCase Edit arguments produce canonical API diffs', async () => {
+  saveQueue([]);
+  saveSessions({ edits: {
+    sessionId: 'ses-edit-export', adapter: 'opencode', provider: 'openai', model: 'gpt-5', dir: TMP, updatedAt: 1,
+  } });
+  openCodeExports.set('ses-edit-export', {
+    info: { id: 'ses-edit-export', directory: TMP },
+    messages: [{ info: { role: 'assistant', time: { created: 1 } }, parts: [{
+      type: 'tool', toolName: 'edit', arguments: {
+        filePath: 'lib/example.mjs', oldString: 'before', newString: 'after',
+      },
+    }] }],
+  });
+
+  const chat = await (await get('/api/chat/edits')).json();
+  assert.deepEqual(chat.turns[0].blocks[0], {
+    type: 'tool', name: 'Edit', input: {
+      filePath: 'lib/example.mjs', oldString: 'before', newString: 'after',
+      file_path: 'lib/example.mjs', old_string: 'before', new_string: 'after',
+    },
+  });
+  assert.deepEqual(chat.turns[0].diffs, [{
+    file: 'lib/example.mjs', added: 1, removed: 1, diff: '-before\n+after',
+  }]);
+});
+
+test('OpenCode chat combines export and durable live events without duplicates and uses the requested job cursor', async () => {
+  saveQueue([]);
+  const current = addJob({ prompt: 'question', adapter: 'opencode', provider: 'openai', model: 'gpt-5', session: 'ses-live-export' });
+  const other = addJob({ prompt: 'other', adapter: 'opencode', provider: 'openai', model: 'gpt-5', session: 'ses-live-export' });
+  patchJob({ ...current, status: 'running', startedAt: Date.now() });
+  patchJob({ ...other, status: 'running', startedAt: Date.now() });
+  const duplicateStart = emitLive(current, { kind: 'text', text: 'already ' });
+  const duplicate = emitLive(current, { kind: 'text', text: 'exported' });
+  const thinking = emitLive(current, { kind: 'thinking', text: 'still working' });
+  const otherLast = emitLive(other, { kind: 'text', text: 'belongs to the other job' });
+  openCodeExports.set('ses-live-export', {
+    info: { id: 'ses-live-export', directory: TMP },
+    messages: [
+      { info: { role: 'user', time: { created: 1 } }, parts: [{ type: 'text', text: 'question' }] },
+      { info: { role: 'assistant', time: { created: 2 } }, parts: [{ type: 'text', text: 'already exported' }] },
+    ],
+  });
+
+  const chat = await (await get(`/api/job/${current.id}/chat`)).json();
+  const blocks = chat.turns.flatMap((turn) => turn.blocks);
+  assert.equal(blocks.filter((block) => block.text === 'already exported').length, 1);
+  assert.equal(blocks.find((block) => block.text === 'already exported').eventId, duplicate.id);
+  assert.equal(blocks.find((block) => block.text === 'still working').eventId, thinking.id);
+  assert.equal(chat.cursor, thinking.id, 'the cursor belongs to the requested job, not another job in its session');
+  assert.notEqual(chat.cursor, otherLast.id);
+  assert.ok(chat.eventIds.includes(chat.cursor), 'the cursor identifies an event represented in this snapshot');
+  assert.ok(chat.eventIds.includes(duplicateStart.id), 'every reconciled chunk remains known for replay deduplication');
 });
 
 // --- pairing --------------------------------------------------------------------
@@ -202,6 +393,50 @@ test('POST /api/device: the phone says where to knock (the PC → phone webhook)
   });
   assert.equal(r.status, 200);
   assert.ok(serverConfig().devices.some((d) => d.name === 'pixel'));
+});
+
+test('POST /api/device: a persistent id replaces only its own prior record', async () => {
+  const post = (body) => fetch(`http://127.0.0.1:${PORT}/api/device`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  const id = '4f86ce8f-a65f-4061-9c9a-022a18cf2a2a';
+  await post({ id, name: 'Pixel', url: 'http://10.0.0.1:8899/job-done' });
+  await post({ id, name: 'Renamed Pixel', url: 'http://10.0.0.2:8899/job-done' });
+
+  const own = serverConfig().devices.filter((d) => d.id === id);
+  assert.equal(own.length, 1);
+  assert.equal(own[0].name, 'Renamed Pixel');
+  assert.equal(own[0].url, 'http://10.0.0.2:8899/job-done');
+});
+
+test('DELETE /api/device/:id removes only that identified device and preserves legacy records', async () => {
+  const conf = serverConfig();
+  conf.devices = [
+    { id: 'device-a', name: 'first', url: null, pairedAt: Date.now() },
+    { id: 'device-b', name: 'second', url: null, pairedAt: Date.now() },
+    { name: 'old-client', url: null, pairedAt: Date.now() },
+  ];
+  saveServerConfig(conf);
+
+  const r = await fetch(`http://127.0.0.1:${PORT}/api/device/device-a`, {
+    method: 'DELETE', headers: { authorization: `Bearer ${token}` },
+  });
+  assert.equal(r.status, 200);
+  assert.deepEqual(await r.json(), { ok: true, removed: 1, devices: 2, mode: 'pairing' });
+  assert.deepEqual(serverConfig().devices.map((d) => d.id ?? d.name), ['device-b', 'old-client']);
+
+  const state = await (await get('/api/state')).json();
+  assert.equal(state.server.devices.length, 2, 'the state count reflects unpairing immediately');
+  const pairing = await (await get('/api/pairing/device-a')).json();
+  assert.deepEqual(pairing, { ok: true, registered: false, mode: 'pairing', protocol: 2 });
+});
+
+test('DELETE /api/device/:id demands the pairing token', async () => {
+  const r = await fetch(`http://127.0.0.1:${PORT}/api/device/device-b`, { method: 'DELETE' });
+  assert.equal(r.status, 401);
 });
 
 // This used to be a 400: "with no address there is nobody to knock on". True — but it followed
@@ -281,6 +516,35 @@ test('/api/events: SSE, and whatever the runner publishes reaches the phone', as
 
   assert.match(got, /"type":"job"/);
   assert.match(got, /"status":"running"/);
+});
+
+test('/api/events replays missed live chat events after a cursor', async () => {
+  const job = { id: `live-${Date.now()}`, attemptId: 'attempt-1', target: 'chat' };
+  const first = emitLive(job, { kind: 'text', text: 'one' });
+  emitLive(job, { kind: 'text', text: 'two' });
+  const ctrl = new AbortController();
+  const r = await fetch(`http://127.0.0.1:${PORT}/api/events?token=${token}&job=${job.id}&since=${encodeURIComponent(first.id)}`, { signal: ctrl.signal });
+  const reader = r.body.getReader();
+  let got = '';
+  const deadline = Date.now() + 3000;
+  while (!got.includes('"text":"two"') && Date.now() < deadline) {
+    const { value } = await reader.read();
+    got += new TextDecoder().decode(value ?? new Uint8Array());
+  }
+  ctrl.abort();
+  assert.doesNotMatch(got, /"text":"one"/);
+  assert.match(got, /id: attempt-1:2/);
+});
+
+test('/api/events delivers a terminal status and then closes the job stream cleanly', async () => {
+  const job = { id: `terminal-${Date.now()}`, attemptId: 'attempt-terminal', target: 'chat' };
+  emitLive(job, { kind: 'text', text: 'last words' });
+  const ended = emitLive(job, { kind: 'status', status: 'done' });
+  const r = await fetch(`http://127.0.0.1:${PORT}/api/events?token=${token}&job=${job.id}`);
+  const body = await r.text();
+  assert.match(body, /"text":"last words"/);
+  assert.match(body, /"status":"done"/);
+  assert.match(body, new RegExp(`id: ${ended.id}`));
 });
 
 // --- what Cloudflare sees --------------------------------------------------------
@@ -434,6 +698,11 @@ test('the QR comes down on pairing EVEN IF the phone was already on the list fro
   assert.ok(live, 'the QR HAS to come down: it has just paired');
   assert.equal(live.name, 'pixel');
 
+  c2.devices.push({ url: 'http://192.168.1.45:8899/job-done', name: 'tablet', pairedAt: Date.now() });
+  saveServerConfig(c2);
+  assert.equal(pairedThisSession(booted, 3), null, 'the requested number of devices has not paired yet');
+  assert.equal(pairedThisSession(booted, 2).devices, 2, 'two fresh devices close a --device 2 QR');
+
   c2.devices = [];
   saveServerConfig(c2);
 });
@@ -443,6 +712,90 @@ test('our own requests do not count: a curl from the PC is not a phone', async (
   await get('/api/state');                       // from 127.0.0.1
   assert.equal(clientList().length, 0, 'loopback is not a connected device');
   assert.equal(pairedThisSession(BOOTED_AT), null, 'and the QR does not come down');
+});
+
+test('explicit mobile unpair returns pairing state to QR while the server stays up', async () => {
+  forgetClients();
+  const since = Date.now() - 100;
+  const conf = serverConfig();
+  conf.devices = [{ id: 'leaving-phone', name: 'pixel', url: null, pairedAt: Date.now() }];
+  delete conf.pairingResetAt;
+  saveServerConfig(conf);
+  noteClient({ socket: { remoteAddress: '192.168.1.77' } });
+  assert.ok(pairedThisSession(since), 'the connected panel is showing');
+
+  const response = await fetch(`http://127.0.0.1:${PORT}/api/device/leaving-phone`, {
+    method: 'DELETE', headers: { authorization: `Bearer ${token}` },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(pairedThisSession(since), null, 'the explicit farewell puts the UI back on its QR');
+  assert.equal((await fetch(`http://127.0.0.1:${PORT}/api/ping`)).status, 200, 'serve itself remains alive');
+
+  await new Promise((resolve) => setTimeout(resolve, 2));
+  noteClient({ socket: { remoteAddress: '192.168.1.88' } });
+  assert.ok(pairedThisSession(since), 'another authorized phone can still make the panel current');
+});
+
+test('an authenticated unpair resets pairing even when that device record was already lost', async () => {
+  forgetClients();
+  const since = Date.now() - 100;
+  const conf = serverConfig();
+  conf.devices = [];
+  delete conf.pairingResetAt;
+  saveServerConfig(conf);
+  noteClient({ socket: { remoteAddress: '192.168.1.99' } });
+  assert.ok(pairedThisSession(since));
+
+  const response = await fetch(`http://127.0.0.1:${PORT}/api/device/missing-phone`, {
+    method: 'DELETE', headers: { authorization: `Bearer ${token}` },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(pairedThisSession(since), null);
+});
+
+test('real serve process transitions QR → connected → QR and only stops explicitly', { timeout: 15_000 }, async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kaip-serve-cycle-'));
+  const port = await new Promise((resolve, reject) => {
+    const probe = http.createServer();
+    probe.once('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const chosen = probe.address().port;
+      probe.close((error) => error ? reject(error) : resolve(chosen));
+    });
+  });
+  const cli = fileURLToPath(new URL('../kaip.mjs', import.meta.url));
+  const child = spawn(process.execPath, [cli, 'serve', '--wifi', '--port', String(port)], {
+    cwd: path.dirname(cli), env: { ...process.env, KAIP_HOME: home }, windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let output = '';
+  child.stdout.on('data', (chunk) => { output += chunk; });
+  child.stderr.on('data', (chunk) => { output += chunk; });
+  const waitFor = async (predicate, message) => {
+    const until = Date.now() + 8_000;
+    while (Date.now() < until) {
+      if (predicate()) return;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert.fail(`${message}\n${output.slice(-2000)}`);
+  };
+
+  try {
+    await waitFor(() => output.includes('scan this FROM the app'), 'serve never showed its QR');
+    const conf = JSON.parse(fs.readFileSync(path.join(home, 'data', 'server.json'), 'utf8'));
+    const headers = { authorization: `Bearer ${conf.token}`, 'content-type': 'application/json' };
+    await fetch(`http://127.0.0.1:${port}/api/device`, {
+      method: 'POST', headers, body: JSON.stringify({ id: 'phone-e2e', name: 'test phone', url: null }),
+    });
+    await waitFor(() => output.includes('test phone paired'), 'serve never switched to its connected panel');
+
+    await fetch(`http://127.0.0.1:${port}/api/device/phone-e2e`, { method: 'DELETE', headers });
+    await waitFor(() => output.split('scan this FROM the app').length >= 3, 'serve never returned to the QR');
+    assert.equal((await fetch(`http://127.0.0.1:${port}/api/ping`)).status, 200, 'the HTTP server must still be alive');
+    assert.equal(child.exitCode, null, 'only an explicit stop may end serve');
+  } finally {
+    child.kill();
+  }
 });
 
 // --- BUG 6: "waiting for quota" vs "stalled", and the other three -----------------

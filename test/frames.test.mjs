@@ -20,7 +20,7 @@ process.env.KAIP_HOME = TMP;
 
 const { saveQueue } = await import('../lib/store.mjs');
 const { addJob } = await import('../lib/queue.mjs');
-const { clockFrame, runningFrame } = await import('../lib/frames.mjs');
+const { clockFrame, completionFrame, quotaLines, quotaWaitFrame, runningFrame } = await import('../lib/frames.mjs');
 const { strip } = await import('../lib/ui.mjs');
 
 // With no TTY, size() falls back to 80x24; force something roomy so the box does not cut.
@@ -35,6 +35,18 @@ const promptFile = (name, content) => {
   fs.writeFileSync(f, content);
   return f;
 };
+
+test('completion tabs stay within the terminal and keep the selected provider visible', () => {
+  process.stdout.columns = 48;
+  const scopes = ['Claude', 'Codex', 'OpenCode/openai', 'OpenCode/anthropic', 'OpenCode/google'].map((label) => ({
+    label, engine: label === 'Claude' ? 'claude' : label === 'Codex' ? 'codex' : 'opencode',
+    report: { totals: {} },
+  }));
+  const frame = completionFrame({ completed: 1, errors: 0, elapsed: '1s' }, scopes, 4);
+  assert.ok(frame.every((line) => strip(line).length <= 48));
+  assert.match(text(frame), /\[OpenCode\/google\]/);
+  process.stdout.columns = 100;
+});
 
 // --- an ordinary job (the text lives in the queue) ---------------------------
 test('folded: one line of the prompt, and the hint says how many there are', () => {
@@ -152,4 +164,68 @@ test('the clock (a scheduled job) uses the same card: it shows the file too', ()
 
   const out = text(clockFrame(job, Date.now() + 7200_000, [job], Date.now(), { expanded: true }));
   assert.match(out, /the 3am job/, 'the prompt of the job about to go out has to be visible');
+});
+
+test('the clock keeps the large digits when the wait includes days', () => {
+  saveQueue([]);
+  const job = addJob({ prompt: 'later', at: '+2d', adapter: 'mock' });
+
+  const out = text(clockFrame(job, Date.now() + 2 * 86400_000, [job], Date.now()));
+  assert.match(out, /██/, 'days, hours, minutes and seconds stay in the large clock');
+});
+
+test('the runner card identifies the engine, provider and model', () => {
+  saveQueue([]);
+  const job = addJob({ prompt: 'run it', adapter: 'opencode', provider: 'openai', model: 'gpt-5.6-terra' });
+
+  const out = card(job);
+  assert.match(out, /engine opencode\/openai\/gpt-5\.6-terra/);
+});
+
+test('an OpenCode job does not display Claude usage as its quota', () => {
+  const lines = text(quotaLines(100, { adapter: 'opencode' }));
+  assert.match(lines, /opencode is checked when this job launches/);
+  assert.doesNotMatch(lines, /session|week/);
+});
+
+test('the quota wait frame identifies a weekly limit', () => {
+  const job = { prompt: 'resume this', adapter: 'mock' };
+  const out = text(quotaWaitFrame(job, Date.now() + 3600_000, [job], Date.now(), {}, 'weekly'));
+  assert.match(out, /cupo semanal agotado/);
+});
+
+test('the completion screen switches token totals across every engine scope', () => {
+  const scopes = [
+    { label: 'Claude', engine: 'claude', report: { totals: { input: { value: 100 }, output: { value: 20 }, total: { value: 120 } } } },
+    { label: 'Codex', engine: 'codex', report: { totals: { input: { value: 2000 }, output: { value: 30 }, total: { value: 2030 } } } },
+    { label: 'OpenCode/openai', engine: 'opencode', report: { totals: { input: { value: 3000 }, output: { value: 40 }, total: { value: 3040 } } } },
+  ];
+  const codex = text(completionFrame({ completed: 2, errors: 0, elapsed: '3s' }, scopes, 1));
+  assert.match(codex, /\[Codex\]/);
+  assert.match(codex, /2\.0k tokens.*2\.0k in.*30 out/s);
+  assert.match(codex, /←\/→ engine · Enter\/q close/);
+});
+
+test('running info keeps the kaip job box and TODO appears only when present', () => {
+  saveQueue([]);
+  const job = addJob({ prompt: 'ship it', adapter: 'mock' });
+  const plain = text(runningFrame(job, [], Date.now(), 0, { info: true }));
+  assert.match(plain, /kaip job/);
+  assert.match(plain, /[╭╰]/);
+  assert.doesNotMatch(plain, /TODO/);
+
+  const withTodos = text(runningFrame(job, [], Date.now(), 0, {
+    todos: [{ content: 'run tests', status: 'in_progress' }],
+  }));
+  assert.match(withTodos, /TODO/);
+  assert.match(withTodos, /run tests/);
+});
+
+test('running diff details obey the d toggle and empty mode explains itself', () => {
+  saveQueue([]);
+  const job = addJob({ prompt: 'change it', adapter: 'mock' });
+  const lines = ['Edit(file)', { diff: true, lines: ['- before', '+ after'] }];
+  assert.doesNotMatch(text(runningFrame(job, lines, Date.now(), 0)), /before/);
+  assert.match(text(runningFrame(job, lines, Date.now(), 0, { showDiff: true })), /before/);
+  assert.match(text(runningFrame(job, [], Date.now(), 0, { showDiff: true })), /no changes captured yet/);
 });

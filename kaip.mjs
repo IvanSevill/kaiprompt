@@ -13,16 +13,19 @@ import path from 'node:path';
 
 import {
   loadProjects, loadQueue, loadSessions,
-  outPath, preview, rememberSession, saveProjects,
+  historyPath, outPath, preview, rememberSession, saveProjects,
 } from './lib/store.mjs';
 import { fmt } from './lib/time.mjs';
 import { reapStale, runQueue } from './lib/runner.mjs';
-import { renderChat } from './lib/chat.mjs';
+import { renderChat, resumeCommand } from './lib/chat.mjs';
 import { editJob } from './lib/edit.mjs';
-import { addJob, clearFinished, jobDetails, removeJobs } from './lib/queue.mjs';
+import { addJob, clearFinished, jobDetails, removeJobs, retryJob } from './lib/queue.mjs';
 import { jobPreview } from './lib/prompt.mjs';
 import { COMMANDS, ENGINES } from './lib/commands.mjs';
+import { discoverOpenCodeModels, engineNames } from './lib/engines.mjs';
+import { applyEngineMigration, inspectEngineMigration } from './lib/migrate.mjs';
 import { c, isTTY } from './lib/ui.mjs';
+import { aggregateUsage } from './lib/usage.mjs';
 
 // --- argument parsing --------------------------------------------------------
 function parseArgs(argv) {
@@ -47,6 +50,16 @@ async function cmdAdd({ flags, pos, engine }) {
   const prompt = from ? null : ((pos.join(' ').trim())
     || (typeof flags.file === 'string' ? fs.readFileSync(flags.file, 'utf8') : ''));
 
+  const chosenEngine = engine || (typeof flags.engine === 'string' ? flags.engine : (typeof flags.adapter === 'string' ? flags.adapter : null));
+  if (chosenEngine === 'opencode' && typeof flags.provider === 'string' && flags.model === undefined) {
+    const provider = flags.provider.trim().toLowerCase();
+    const models = discoverOpenCodeModels(provider);
+    if (!models.length) throw new Error(`no OpenCode models found for ${provider}`);
+    console.log(models.map((m) => m.id).join('\n'));
+    console.log(c.muted(`\nchoose one with: kaip opencode add "..." --provider ${provider} --model <name>`));
+    return;
+  }
+
   if (!from && !prompt) {
     throw new Error('missing prompt.\n  usage: kaip add "your message" | --from <path/to/prompt.md>'
       + '\n         [--target name] [--at HH:MM|+30m] [--dir project] [--perm mode] [--first]');
@@ -66,6 +79,7 @@ async function cmdAdd({ flags, pos, engine }) {
     return flags.model.trim();
   })();
 
+  if (!chosenEngine) throw new Error('choose an engine: --engine claude | codex | opencode');
   const job = addJob({
     prompt,
     from,
@@ -73,7 +87,8 @@ async function cmdAdd({ flags, pos, engine }) {
     at: typeof flags.at === 'string' ? flags.at : null,
     dir: typeof flags.dir === 'string' ? flags.dir : null,
     perm: typeof flags.perm === 'string' ? flags.perm : null,       // null → bypass
-    adapter: typeof flags.adapter === 'string' ? flags.adapter : (engine || 'claude'),
+    adapter: chosenEngine,
+    provider: typeof flags.provider === 'string' ? flags.provider : null,
     model,
     session: typeof flags.session === 'string' ? flags.session : null,
     priority: Boolean(flags.first),
@@ -114,6 +129,28 @@ async function cmdAdd({ flags, pos, engine }) {
   if (line.hint) console.log(c.muted('    ') + c.accent(line.hint));
 }
 
+function cmdEngines({ pos, flags }) {
+  const sub = pos[0] || 'list';
+  if (sub === 'list') return console.log(engineNames().map((name) => `  ${name}${name === 'opencode' ? '  (provider + model required)' : ''}`).join('\n'));
+  if (sub === 'models') {
+    const provider = typeof flags.provider === 'string' ? flags.provider : null;
+    if (!provider) throw new Error('usage: kaip engines models --provider <provider>');
+    const models = discoverOpenCodeModels(provider);
+    if (!models.length) return console.log(`no OpenCode models found for ${provider}`);
+    return console.log(models.map((m) => m.id).join('\n'));
+  }
+  throw new Error('usage: kaip engines [list|models --provider <provider>]');
+}
+
+function cmdMigrate({ pos }) {
+  if (pos[0] !== 'engines') throw new Error('usage: kaip migrate engines [--apply]');
+  const report = process.argv.includes('--apply') ? applyEngineMigration() : inspectEngineMigration();
+  console.log(`${report.jobs} jobs · ${report.sessions} targets`);
+  for (const issue of report.issues) console.log(`  ${issue.type}: ${issue.id || issue.target} — ${issue.message}`);
+  if (!process.argv.includes('--apply')) console.log('  inspect only; run: kaip migrate engines --apply');
+  else console.log(`  migrated; backups stamped ${report.backup}`);
+}
+
 function cmdList({ flags, pos }) {
   // A job whose runner died still says "running" until someone closes it out, and this
   // is the screen you actually read — a status that lies here is the worst place for it.
@@ -142,6 +179,11 @@ function cmdShow({ flags, pos }) {
   if (!job) return console.log(`no job found with id "${pos[0]}"`);
 
   console.log(jobDetails(job));
+  if (fs.existsSync(historyPath(job.id))) {
+    const attempts = fs.readFileSync(historyPath(job.id), 'utf8').trim().split('\n').filter(Boolean).map((line) => { try { return JSON.parse(line); } catch { return null; } }).filter(Boolean);
+    const latest = attempts.filter((entry) => entry.type === 'attempt-end').at(-1);
+    if (latest) console.log(`\n  last attempt: ${latest.engine}${latest.provider ? '/' + latest.provider : ''}${latest.model ? '/' + latest.model : ''} · ${latest.durationMs}ms${latest.cost != null ? ' · $' + latest.cost : ''}`);
+  }
 
   // The details are only half the story. Once a launch has run, what you actually want
   // to see is the CONVERSATION it had — not the prompt you already know you wrote.
@@ -174,8 +216,39 @@ function cmdRm({ pos }) {
   console.log(`removed ${removeJobs(pos)}`);
 }
 
+function cmdRetry({ pos }) {
+  if (pos.length !== 1) throw new Error('usage: kaip retry <id>');
+  const job = retryJob(pos[0]);
+  console.log(`↻ ${job.id}  pending again${job.sessionId ? ' · resumes its existing session' : ''}`);
+}
+
 function cmdClear() {
   console.log(`cleared ${clearFinished()} finished entries`);
+}
+
+function usageValue(value, label = '') {
+  if (!value) return label ? `${label} unknown` : 'unknown';
+  return `${label}${value.value}${value.partial ? ' (partial)' : ''}`;
+}
+
+function cmdUsage({ flags }) {
+  const filters = {};
+  for (const key of ['engine', 'provider', 'target', 'session']) {
+    if (flags[key] !== undefined) {
+      if (typeof flags[key] !== 'string' || !flags[key].trim()) throw new Error(`--${key} needs a value`);
+      filters[key] = flags[key].trim();
+    }
+  }
+  const report = aggregateUsage(filters);
+  if (!report.sessions.length) return console.log('(no usage data)');
+  for (const row of report.sessions) {
+    const scope = [row.engine, row.provider, row.target && `target ${row.target}`].filter(Boolean).join(' / ');
+    console.log(`${row.session ?? `unknown session (${row.jobId})`}  [${scope}]`);
+    console.log(`  tokens: ${usageValue(row.usage.input, 'input ')} · ${usageValue(row.usage.output, 'output ')} · ${usageValue(row.usage.total, 'total ')}`);
+    if (row.usage.cost) console.log(`  cost: $${usageValue(row.usage.cost)}`);
+  }
+  console.log(`totals\n  tokens: ${usageValue(report.totals.input, 'input ')} · ${usageValue(report.totals.output, 'output ')} · ${usageValue(report.totals.total, 'total ')}`);
+  if (report.totals.cost) console.log(`  cost: $${usageValue(report.totals.cost)}`);
 }
 
 function cmdOut({ pos }) {
@@ -188,7 +261,7 @@ function cmdOut({ pos }) {
   if (job.dir) console.log(`   folder: ${job.dir}`);
   if (job.sessionId) {
     console.log(`   session: ${job.sessionId}`);
-    console.log(`   resume:  cd "${job.dir || '.'}" && claude --resume ${job.sessionId}`);
+    try { console.log(`   resume:  ${resumeCommand(job)}`); } catch { /* unsupported adapter */ }
   }
   const f = outPath(job.id);                    // the file is always out/<id>.txt under HOME
   if (job.output && fs.existsSync(f)) console.log('\n' + fs.readFileSync(f, 'utf8').trimEnd());
@@ -367,6 +440,8 @@ async function cmdServe({ flags }) {
   const { DEFAULT_PORT, addresses, createServer, resetToken, serverConfig } = await import('./lib/server.mjs');
   const { installCleanup, setTitle } = await import('./lib/ui.mjs');
   const port = Number(flags.port) || DEFAULT_PORT;
+  const devices = flags.device === undefined ? 1 : Number(flags.device);
+  if (!Number.isInteger(devices) || devices < 1) throw new Error('--device needs a positive whole number');
 
   // "I lost my phone." The token and the KEY are both thrown away and every paired device
   // is dropped, so the lost phone is locked out from the next request on. The ability was
@@ -383,7 +458,26 @@ async function cmdServe({ flags }) {
   // trade is that it only works while you are on the same wifi.
   const wifiOnly = !!flags.wifi || !!flags.local || !!flags['no-tunnel'] || flags.tunnel === false;
 
-  createServer({ port });
+  // A previous `kaip serve` is still the same pairing session: its token, key and tunnel
+  // live in the shared config. Reuse it and print its QR again instead of making the person
+  // hunt down a terminal just to recover an already-working phone connection.
+  const existing = await fetch(`http://127.0.0.1:${port}/api/ping`, { signal: AbortSignal.timeout(500) })
+    .then(async (r) => r.ok ? await r.json() : null)
+    .catch(() => false);
+  if (existing) {
+    console.log(c.ok(`kaip serve already running on port ${port}`));
+    if ((existing.protocol ?? 0) < 2) {
+      console.log(c.err('  that process is an older Kaiprompt server and cannot restore pairing reliably.'));
+      console.log(c.muted('  close its original window with Ctrl+C, then run kaip serve again.'));
+      return;
+    }
+    console.log(c.muted('  restored the existing pairing session; showing its QR again.'));
+    await showPairing(port, devices, { attached: true });
+    return;
+  }
+
+  const server = createServer({ port });
+  await server.ready;
   console.log(c.bold('kaip serve') + c.muted(`  ·  port ${port}`));
 
   // The window title says whether the phone is actually on the other end — the one thing you
@@ -443,7 +537,7 @@ async function cmdServe({ flags }) {
   // starting the server — and with a quick tunnel you need it EVERY time, because the URL
   // changes on each run. Making that a separate command you must remember to type was
   // friction with no upside.
-  await showPairing(port);
+  await showPairing(port, devices);
 
   console.log(c.muted('\n  Ctrl+C to stop.  (the tunnel dies with this window)'));
 }
@@ -466,7 +560,7 @@ async function cmdServe({ flags }) {
  *
  * Now the signal is time, not identity: has anyone talked to THIS server since it started?
  */
-async function showPairing(port) {
+async function showPairing(port, devices = 1, { attached = false } = {}) {
   const { pairingCompact, serverConfig, BOOTED_AT, pairedThisSession } = await import('./lib/server.mjs');
   const { render } = await import('./lib/qr.mjs');
   const { hardClear } = await import('./lib/ui.mjs');
@@ -475,29 +569,37 @@ async function showPairing(port) {
   // ends up a couple of centimetres across and the camera has to resolve every module out of
   // that. Sixty bytes off the payload is two QR versions off the grid, and that is the
   // difference between "scans" and "worked yesterday, doesn't today".
-  const p = pairingCompact(port, serverConfig().publicUrl || null);
+  const drawQR = () => {
+    const p = pairingCompact(port, serverConfig().publicUrl || null);
+    console.log('\n' + c.bold('  scan this FROM the app') + c.muted(`  — ${devices === 1 ? 'to pair it with this PC' : `waiting for ${devices} devices`}\n`));
+    console.log(render(JSON.stringify(p)).replace(/^/gm, '  '));
+    console.log(c.muted('\n  camera not picking it up? open it BIG in the browser:'));
+    console.log('  ' + c.accent(`http://localhost:${port}/pair`));
+    console.log(c.muted('\n  the encryption key travels INSIDE that code, not through the tunnel:'));
+    console.log(c.muted('  you scan it off your own screen, so Cloudflare never sees it.'));
+    console.log(c.muted('\n  no app yet? → ') + c.accent('kaip mobile'));
+    console.log(c.muted('\n  Ctrl+C to stop the server.'));
+  };
 
-  console.log('\n' + c.bold('  scan this FROM the app') + c.muted('  — to pair it with this PC\n'));
-  console.log(render(JSON.stringify(p)).replace(/^/gm, '  '));
-
-  // And the escape hatch, because a terminal QR is always going to be the hard way to read
-  // one: the same code in a browser, ten times the size, scans every time.
-  console.log(c.muted('\n  camera not picking it up? open it BIG in the browser:'));
-  console.log('  ' + c.accent(`http://localhost:${port}/pair`));
-
-  // The key is why the tunnel is safe, and why it must go by QR and not down the wire.
-  console.log(c.muted('\n  the encryption key travels INSIDE that code, not through the tunnel:'));
-  console.log(c.muted('  you scan it off your own screen, so Cloudflare never sees it.'));
-  console.log(c.muted('\n  no app yet? → ') + c.accent('kaip mobile'));
-
-  const timer = setInterval(async () => {
-    const paired = pairedThisSession(BOOTED_AT);
-    if (!paired) return;
-
-    clearInterval(timer);
-    await livePanel(port, paired);
+  let mode = 'pairing';
+  drawQR();
+  setInterval(async () => {
+    const paired = attached
+      ? await fetch(`http://127.0.0.1:${port}/api/pairing`, {
+          headers: { authorization: `Bearer ${serverConfig().token}` }, signal: AbortSignal.timeout(800),
+        }).then((r) => r.json()).then((state) => state.mode === 'connected' ? { name: null } : null).catch(() => null)
+      : pairedThisSession(BOOTED_AT, devices);
+    if (!paired) {
+      if (mode !== 'pairing') {
+        mode = 'pairing';
+        hardClear();
+        drawQR();
+      }
+      return;
+    }
+    mode = 'connected';
+    drawLivePanel(port, paired);
   }, 1000);
-  timer.unref?.();
 }
 
 /**
@@ -505,7 +607,7 @@ async function showPairing(port) {
  * answer to "what is happening?" — the same five states the phone shows, from the same
  * derivation, so the two screens cannot tell you different stories.
  */
-async function livePanel(port, paired) {
+async function drawLivePanel(port, paired) {
   const { stateDTO } = await import('./lib/server.mjs');
   const { hardClear } = await import('./lib/ui.mjs');
   const { fmt, humanDur } = await import('./lib/time.mjs');
@@ -518,40 +620,35 @@ async function livePanel(port, paired) {
     idle: () => c.ok('✓ nothing pending'),
   };
 
-  const draw = () => {
-    const s = stateDTO();
-    const a = s.activity;
+  const s = stateDTO();
+  const a = s.activity;
 
-    hardClear();
-    console.log(c.bold(c.accent('  ✦ kaip')) + c.muted('  ·  server up\n'));
-    console.log(c.ok(`  ✓ ${paired.name ?? 'a phone'} paired`) + c.muted('  — the QR is done with.\n'));
+  hardClear();
+  console.log(c.bold(c.accent('  ✦ kaip')) + c.muted('  ·  server up\n'));
+  console.log(c.ok(`  ✓ ${paired.name ?? 'a phone'} paired`) + c.muted('  — the QR is done with.\n'));
 
-    console.log('  ' + (LABEL[a.state] ?? LABEL.idle)());
+  console.log('  ' + (LABEL[a.state] ?? LABEL.idle)());
 
     // The detail under each state is the thing you would have to go and look up otherwise.
-    if (a.state === 'running') {
+  if (a.state === 'running') {
       console.log(c.muted(`     ${a.preview ?? a.jobId}`));
       if (a.since) console.log(c.muted(`     for ${humanDur(Date.now() - a.since)}`));
-    } else if (a.state === 'quota') {
+  } else if (a.state === 'quota') {
       // The whole point of telling these two apart: this one is NOT broken. It comes back.
       console.log(c.muted(`     back at ${fmt(a.until)}`) + c.muted(`  ·  ${a.pending} queued`));
-    } else if (a.state === 'stalled') {
+  } else if (a.state === 'stalled') {
       console.log(c.err(`     ${a.pending} in the queue and nothing to launch them.`));
       console.log(c.muted('     start it:  ') + c.accent('kaip daemon start'));
-    } else if (a.state === 'queued') {
+  } else if (a.state === 'queued') {
       console.log(c.muted(`     ${a.pending} queued`) + (a.next ? c.muted(`  ·  next at ${fmt(a.next)}`) : ''));
-    }
+  }
 
-    if (s.server.tunnel) console.log(c.muted(`\n  tunnel:  ${s.server.tunnel}`));
-    const ips = s.server.clients.map((x) => x.ip).join(', ');
-    if (ips) console.log(c.muted(`  from:    ${ips}`));
+  if (s.server.tunnel) console.log(c.muted(`\n  tunnel:  ${s.server.tunnel}`));
+  const ips = s.server.clients.map((x) => x.ip).join(', ');
+  if (ips) console.log(c.muted(`  from:    ${ips}`));
 
-    console.log(c.muted('\n  it will notify your phone when a launch ends.'));
-    console.log(c.muted('  Ctrl+C to stop.'));
-  };
-
-  draw();
-  setInterval(draw, 2000).unref?.();
+  console.log(c.muted('\n  unpairing returns to the QR; the server stays up.'));
+  console.log(c.muted('  Ctrl+C to stop.'));
 }
 
 
@@ -596,8 +693,8 @@ Usage:
   <engine> = claude | codex | opencode   (optional; defaults to claude)
 
 Queue:
-  add "<prompt>"              queue a launch  [--at <when>] [--target <n>] [--dir <project>]
-                              [--perm <mode>] [--model <name>] [--session <id>] [--first]
+   add "<prompt>"              queue a launch  --engine <claude|codex|opencode>
+                               [--provider <name>] [--model <name>] [--at <when>] [--target <n>]
   add --from <path>           the prompt lives in a FILE, read at launch — keep editing it
                               until the second it goes out  (--file pastes it in NOW instead)
   add ... --first             jump the queue: runs before everything, as soon as there is
@@ -605,7 +702,8 @@ Queue:
   list [--full|-f]            the queue, with status
   show <id>                   the job AND the whole conversation it had
   edit <id>                   change a pending job (--prompt --from --at --target --dir --perm --model)
-  rm <id> [<id>...]           remove jobs
+   rm <id> [<id>...]           remove jobs
+   retry <id>                  put an error job back in the queue
   clear                       clear finished/error entries
 
 Running:
@@ -621,10 +719,12 @@ Running:
 Seeing what happened:
   out [<id>]                  the ANSWER — just the last thing Claude said
   chat <id|target|session>    the CONVERSATION — every turn  [--last N] [--full] [--raw]
+   usage                       tokens by session and totals [--engine E] [--provider P] [--target T] [--session S]
 
 The phone:
   serve                       the API + a Cloudflare tunnel, and the pairing QR.
                               Works from any network; no VPN, no ports opened.
+     --device N               keep the QR until N devices pair (default: 1)
      --wifi                   no tunnel, no Cloudflare, no third party. Your network only.
      --reset                  "I lost my phone": new token and new key, every paired
                               device dropped. They are locked out from the next request.
@@ -635,7 +735,9 @@ Setup:
   sessions                    saved sessions (name → session-id)
   sessions set <t> <id>       assign a session-id to a target by hand
   projects                    folders/projects available for --dir
-  projects <alias> <path>     register a folder alias
+   projects <alias> <path>     register a folder alias
+   engines [list|models]       list engines or OpenCode models for a provider
+   migrate engines [--apply]    inspect or migrate persisted engine/session data
   help
 
 Scheduling vs running — the one thing to understand:
@@ -670,10 +772,10 @@ Notes:
              everything (thinking + tool results), --raw for the transcript as-is.
   edit       only PENDING jobs (a running/finished one is already history). Same flags
              as "add"; --target/--dir/--perm accept "none" to clear them.
-  gui        views: Queue · Chats · Projects · Help. Keys: ↑↓ move · ←→/tab/1-4 view ·
-             enter detail · a add (guided) · e edit · d delete · D daemon on/off ·
-             r run now · o output · c chat · ? help · q quit. The header tells you
-             whether the daemon is up — if it isn't, nothing you schedule will fire.
+  gui        views: Queue · Chats · Projects · Usage · Help. Keys: ↑↓ move · ←→/tab/1-5 view ·
+              enter detail · a add (guided) · e edit · d delete · D daemon on/off ·
+              r run now · o output · c chat · R refresh · Ctrl+L repaint · U update ·
+              ? help · q quit. The header tells you whether anything will fire the queue.
              Adding a launch never sends it. Without a terminal it prints this help.
 
 Examples:
@@ -692,6 +794,7 @@ let av = process.argv.slice(2);
 let engine = null;
 if (ENGINES.includes(av[0])) { engine = av[0]; av = av.slice(1); }
 const [cmd, ...rest] = av;
+process.title = cmd === 'run' ? 'kaip run' : cmd === 'daemon' ? 'kaip daemon' : 'kaip';
 const parsed = parseArgs(rest);
 parsed.engine = engine;
 
@@ -712,11 +815,15 @@ try {
       watch: !parsed.flags.once && parsed.flags.watch !== false && !parsed.flags['no-watch'],
     }); break;
     case 'rm': cmdRm(parsed); break;
+    case 'retry': cmdRetry(parsed); break;
     case 'clear': cmdClear(); break;
     case 'out': cmdOut(parsed); break;
     case 'chat': cmdChat(parsed); break;
     case 'edit': cmdEdit(parsed); break;
+    case 'usage': cmdUsage(parsed); break;
     case 'projects': case 'project': cmdProjects(parsed); break;
+    case 'engines': cmdEngines(parsed); break;
+    case 'migrate': cmdMigrate(parsed); break;
     case 'sessions': cmdSessions(parsed); break;
     case 'daemon': await cmdDaemon(parsed); break;
     case 'app': await cmdApp(parsed); break;

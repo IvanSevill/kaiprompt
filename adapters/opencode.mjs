@@ -1,22 +1,98 @@
-// opencode adapter — NOT IMPLEMENTED (stub).
-//
-// When it is implemented, the contract is identical to claude.mjs:
-//   run({ prompt, sessionId, dryRun }) -> { ok, sessionId, output, error }
-//
-// The intended plan (to be confirmed against whatever the opencode CLI looks like by then):
-//   new:     opencode run "<prompt>"                    → capture the session id it returns
-//   resume:  opencode run --session <id> "<prompt>"     (or whatever the equivalent flag is)
-// The queue (queue.json) and the session store (sessions.json) do NOT change: only this
-// file does. That is why moving to opencode does not mean rebuilding anything else.
-export const name = 'opencode';
+import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { normalizeSelection, qualifiedModel } from '../lib/engines.mjs';
+import { normalizeOpenCodePart } from '../lib/opencode-normalize.mjs';
 
-export async function run({ prompt, sessionId, dryRun }) {
-  const shown = `opencode run "${String(prompt).split('\n')[0]}"${sessionId ? ' (--session ' + sessionId + ')' : ''}`;
-  if (dryRun) return { ok: true, sessionId, output: `[dry-run] ${shown}  ← adapter not implemented yet` };
+export const name = 'opencode';
+// npm's Windows shim forwards through cmd.exe, which both interprets prompt characters and
+// imposes an 8191-character command limit. Its sibling executable accepts argv directly.
+const BIN = process.platform === 'win32'
+  ? path.join(process.env.APPDATA || '', 'npm', 'node_modules', 'opencode-ai', 'bin', 'opencode.exe')
+  : 'opencode';
+const SHELL = process.platform === 'win32' && !fs.existsSync(BIN);
+
+export function buildArgs({ sessionId, provider, model, dir }) {
+  const fullModel = qualifiedModel(normalizeSelection({ adapter: 'opencode', provider, model }, { required: true }));
+  const args = ['run', '--format', 'json', '--auto', '--print-logs', '--log-level', 'ERROR'];
+  if (dir) args.push('--dir', dir);
+  args.push('-m', fullModel);
+  if (sessionId) args.push('-s', sessionId);
+  return args;
+}
+
+/** Translate OpenCode's tool part into the Claude-shaped event the live renderer consumes. */
+export function toolEvent(evt, sessionId) {
+  const block = normalizeOpenCodePart(evt, { output: false }).find((item) => item.type === 'tool_use');
+  if (!block) return null;
   return {
-    ok: false,
-    sessionId,
-    output: '',
-    error: 'the opencode adapter is not implemented yet. Implement run() in adapters/opencode.mjs, following the contract in adapters/claude.mjs.',
+    type: 'assistant', session_id: sessionId,
+    message: { content: [block] },
   };
+}
+
+/** Translate every user-visible OpenCode part into the shared adapter event shape. */
+export function liveEvent(evt, sessionId) {
+  const block = normalizeOpenCodePart(evt, { output: false })[0];
+  return block ? { type: 'assistant', session_id: sessionId, message: { content: [block] } } : null;
+}
+
+export async function run({ prompt, sessionId, dryRun, dir, provider, model, onEvent, spawnProcess = spawn }) {
+  const args = buildArgs({ sessionId, provider, model, dir: dir && fs.existsSync(dir) ? dir : null });
+  const unattended = `${prompt}\n\n---\nUNATTENDED LAUNCH: nobody can answer questions. Do not ask for confirmation, offer choices, or wait. Make the safest reversible decision, continue, and record assumptions in your final answer. If blocked by a secret, external access, or an irreversible decision, complete everything else and report the blocker without waiting.`;
+  const shown = `${BIN} ${args.join(' ')} ${JSON.stringify(unattended)}`;
+  if (dryRun) return { ok: true, sessionId, output: `[dry-run] ${shown}` };
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawnProcess(SHELL ? 'opencode.cmd' : BIN, [...args, unattended], {
+        stdio: ['ignore', 'pipe', 'pipe'], shell: SHELL,
+        windowsHide: true,
+        env: { ...process.env, OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: '1' },
+      });
+    }
+    catch (e) { resolve({ ok: false, sessionId, output: '', error: `could not launch ${BIN}: ${e.message}` }); return; }
+    let stderr = '', buffer = '', sid = sessionId, output = '';
+    let usage = null, cost = null, sawError = false, eventError = null;
+    const seenTools = new Set();
+    const handle = (evt) => {
+      const eventSession = evt.sessionID ?? evt.sessionId ?? evt.session_id ?? evt.part?.sessionID;
+      if (eventSession && eventSession !== sid) {
+        sid = eventSession;
+        try { onEvent?.({ type: 'system', subtype: 'init', session_id: sid }); } catch { /* rendering cannot stop a launch */ }
+      }
+      if (evt.type === 'error') {
+        sawError = true;
+        eventError = evt.error?.data?.message ?? evt.error?.message ?? eventError;
+      }
+      const normalized = liveEvent(evt, sid);
+      if (normalized?.message?.content?.[0]?.type === 'text') output += normalized.message.content[0].text;
+      if (normalized) {
+        const block = normalized.message.content[0];
+        const signature = block.type === 'tool_use'
+          ? (evt.part?.id ? `id:${evt.part.id}` : JSON.stringify(block))
+          : null;
+        if (signature == null || !seenTools.has(signature)) {
+          if (signature != null) seenTools.add(signature);
+          try { onEvent?.(normalized); } catch { /* rendering cannot stop a launch */ }
+        }
+      }
+      if (evt.type === 'step_finish') {
+        const t = evt.part?.tokens;
+        if (t) usage = { input: t.input ?? null, output: t.output ?? null, reasoning: t.reasoning ?? null, total: t.total ?? null, cacheRead: t.cache?.read ?? null, cacheWrite: t.cache?.write ?? null };
+        if (Number.isFinite(evt.part?.cost)) cost = evt.part.cost;
+      }
+    };
+    child.stderr.on('data', (d) => { stderr += d; });
+    child.stdout.on('data', (d) => {
+      buffer += String(d); let nl;
+      while ((nl = buffer.indexOf('\n')) !== -1) { const line = buffer.slice(0, nl).trim(); buffer = buffer.slice(nl + 1); if (line) { try { handle(JSON.parse(line)); } catch { /* diagnostic line */ } } }
+    });
+    child.on('error', (e) => resolve({ ok: false, sessionId: sid, output, error: `could not launch ${BIN}: ${e.message}`, usage, cost }));
+    child.on('close', (code) => {
+      if (buffer.trim()) { try { handle(JSON.parse(buffer)); } catch { /* ignored */ } }
+      const ok = code === 0 && !sawError;
+      resolve({ ok, sessionId: sid, output, error: ok ? null : (eventError || stderr || `opencode exited with code ${code}`), usage, cost });
+    });
+  });
 }

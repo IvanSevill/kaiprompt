@@ -32,7 +32,7 @@ export async function run({ prompt, sessionId, dryRun, dir, model, onEvent }) {
 
   if (dryRun) return { ok: true, sessionId, output: `[dry-run] ${shown}\n--- prompt ---\n${prompt}` };
 
-  const spawnOpts = { stdio: ['pipe', 'pipe', 'pipe'] };
+  const spawnOpts = { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true };
   if (cwd) spawnOpts.cwd = cwd;
 
   return await new Promise((resolve) => {

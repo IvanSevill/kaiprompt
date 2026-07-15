@@ -106,22 +106,27 @@ class ListenerService : Service() {
         val store = Store(this)
         val id = event.optString("id")
         if (id.isBlank() || id in store.announced) return   // never say the same thing twice
-        store.announced = store.announced + id
 
-        Notifier(this).jobFinished(
+        val delivered = Notifier(this).jobFinished(
             id = id,
             ok = event.optString("status") == "done",
-            what = event.optString("preview").ifBlank { "un lanzamiento" },
+            what = event.optString("preview").ifBlank {
+                Store(this).language.localizedContext(this).getString(R.string.notification_default_job)
+            },
             detail = event.optStringOrNull("error"),
         )
+        if (delivered) store.announced = store.announced + id
     }
 
     private fun ongoing(): Notification =
-        NotificationCompat.Builder(this, Notifier.CHANNEL_LIVE)
+        NotificationCompat.Builder(this, Notifier.CHANNEL_LIVE).let { builder ->
+            val strings = Store(this).language.localizedContext(this)
+            builder
             .setSmallIcon(android.R.drawable.stat_notify_sync)
-            .setContentTitle("Kaiprompt")
-            .setContentText("esperando avisos del PC")
+            .setContentTitle(strings.getString(R.string.app_name))
+            .setContentText(strings.getString(R.string.notification_waiting))
             .setPriority(NotificationCompat.PRIORITY_MIN)     // as quiet as Android allows
             .setOngoing(true)
             .build()
+        }
 }

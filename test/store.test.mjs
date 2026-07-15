@@ -8,8 +8,8 @@ import path from 'node:path';
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-store-'));
 process.env.KAIP_HOME = TMP;
 const {
-  loadQueue, loadSessions, nid, patchJob, preview,
-  resolveDir, saveProjects, saveQueue, saveSessions,
+  loadLaunchDefaults, loadQueue, loadSessions, nid, patchJob, preview,
+  readJSON, resolveDir, saveLaunchDefaults, saveProjects, saveQueue, saveSessions, writeJSON,
 } = await import('../lib/store.mjs');
 
 const job = (over = {}) => ({
@@ -37,6 +37,34 @@ test('patchJob actualiza solo ese job', () => {
 test('sesiones: round-trip', () => {
   saveSessions({ fixes: { sessionId: 'abc', adapter: 'claude', updatedAt: 1 } });
   assert.equal(loadSessions().fixes.sessionId, 'abc');
+});
+
+test('JSON: only a missing file uses the fallback; corruption is reported with its path', () => {
+  const missing = path.join(TMP, 'missing.json');
+  assert.deepEqual(readJSON(missing, { safe: true }), { safe: true });
+
+  const corrupt = path.join(TMP, 'corrupt.json');
+  fs.writeFileSync(corrupt, '{not valid JSON');
+  assert.throws(() => readJSON(corrupt, {}), (error) => {
+    assert.match(error.message, /cannot read JSON/);
+    assert.match(error.message, /corrupt\.json/);
+    return true;
+  });
+});
+
+test('JSON: replacement leaves a complete file and no temporary sibling', () => {
+  const file = path.join(TMP, 'atomic.json');
+  writeJSON(file, { version: 1 });
+  writeJSON(file, { version: 2, values: [1, 2, 3] });
+  assert.deepEqual(readJSON(file), { version: 2, values: [1, 2, 3] });
+  assert.deepEqual(fs.readdirSync(TMP).filter((name) => name.startsWith('atomic.json.')), []);
+});
+
+test('launch defaults persist only the engine selection and permissions', () => {
+  saveLaunchDefaults({ engine: 'opencode', provider: 'openai', model: 'gpt-5.6-terra', perm: 'acceptEdits', prompt: 'do not save me' });
+  assert.deepEqual(loadLaunchDefaults(), {
+    engine: 'opencode', provider: 'openai', model: 'gpt-5.6-terra', perm: 'acceptEdits',
+  });
 });
 
 test('nid: ids únicos aunque se generen miles en el mismo milisegundo', () => {

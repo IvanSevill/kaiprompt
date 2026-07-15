@@ -1,5 +1,39 @@
 # Ideas
 
+## Follow-ups after the OpenCode reliability pass
+
+These issues were discovered during verification and deliberately deferred so they did not
+interrupt the approved work:
+
+- Resolve the remaining Android lint warnings: runtime locale bundle configuration, plural
+  resources, stale dependencies and unused strings. The current report has zero errors and 25
+  warnings; none is related to the launcher icon or the OpenCode/live-chat changes.
+- Rename the two Kotlin test cases whose display names contain characters Gradle warns can be
+  troublesome on Windows.
+- Exercise stream switching, offline unpair and adaptive/themed launcher rendering on physical
+  Android devices. Unit tests cover state transitions, but OEM networking and launcher behavior
+  require device testing.
+
+## Follow-ups after v1.3.5
+
+These are non-blocking improvements. The automated Node and Android suites cover the release,
+including a real `kaip serve` process going from QR to connected and back to QR.
+
+- Run the notification and unpair flows on physical Android devices from at least two vendors.
+  This environment has no device attached through ADB, so OEM battery restrictions and channel
+  settings cannot be reproduced here.
+- Add a multi-device screen to show exactly which phone is connected. The server already keeps
+  independent installation IDs, but the terminal panel intentionally remains a compact summary.
+- Exercise the final usage screen in a small pseudo-terminal matrix (Windows Terminal, conhost,
+  and a narrow SSH terminal). Width behavior is unit-tested, but visual rendering varies by font.
+
+## Implemented Since This Note
+
+This is a historical product note, not a current backlog. These items are now implemented and
+should not be planned again: provider/model selection per job, OpenCode execution, quota details in
+the UI, saved usage/cost data, and manual retry of failed jobs (`kaip retry <id>` or `t` in the
+guided UI). Remaining sections are proposals only and may describe an older implementation.
+
 Nada de esto está implementado. Es una lista para decidir, no un backlog para ejecutar.
 
 La pregunta que la ordena no es "¿qué molaría?", sino **"¿qué sabe ya la herramienta y no está
@@ -225,7 +259,7 @@ la última vez cada `--target` y lo proponga por defecto. Cero adivinación, cer
 
 ---
 
-### 10. Reintento con criterio
+### 10. Reintento con criterio — implemented as a manual retry
 
 **Problema real:** un job falló porque los tests estaban en rojo. Reintentarlo tal cual es
 **repetir el error, y pagarlo otra vez**.
@@ -238,8 +272,8 @@ juzgarla**.
 vez, una llamada al modelo. Gastas cupo para decidir si gastar cupo. Y la respuesta correcta
 casi siempre es **no reintentar y enseñarte el error**, que es exactamente lo que ya hace.
 
-**No lo haría.** Lo que sí haría —gratis— es lo de la idea nº 3: que las estadísticas te enseñen
-**qué targets fallan siempre**. Ahí decides tú, que es lo que quieres.
+The tool now exposes the safe version: the user decides. `kaip retry <id>` and the guided UI's `t`
+put an error job back in the queue without discarding its existing session.
 
 ---
 

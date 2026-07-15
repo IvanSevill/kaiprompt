@@ -28,10 +28,16 @@ class Store(context: Context) {
                 tunnel = prefs.getBoolean("tunnel", false),
             )
         }
+
         set(p) {
             prefs.edit().apply {
                 if (p == null) {
-                    clear()
+                    remove("url")
+                    remove("lan")
+                    remove("token")
+                    remove("key")
+                    remove("tunnel")
+                    remove("host")
                 } else {
                     putString("url", p.url)
                     putString("lan", p.lan)
@@ -46,6 +52,12 @@ class Store(context: Context) {
             }.apply()
         }
 
+    /** Kept separately from pairing credentials so explicit unpairing does not change identity. */
+    val deviceId: String
+        get() = prefs.getString("device_id", null) ?: DeviceId.new().also {
+            prefs.edit().putString("device_id", it).apply()
+        }
+
     /**
      * Which finished jobs the phone has already told you about.
      *
@@ -56,6 +68,20 @@ class Store(context: Context) {
     var announced: Set<String>
         get() = prefs.getStringSet("announced", emptySet()) ?: emptySet()
         set(v) = prefs.edit().putStringSet("announced", v.take(200).toSet()).apply()
+
+    /** The first poll establishes a baseline; old jobs are history, not new notifications. */
+    var notificationBaselineReady: Boolean
+        get() = prefs.getBoolean("notification_baseline_ready", false)
+        set(v) = prefs.edit().putBoolean("notification_baseline_ready", v).apply()
+
+    /** Version whose welcome screen has already been read. */
+    var seenVersion: String?
+        get() = prefs.getString("seen_version", null)
+        set(v) = prefs.edit().putString("seen_version", v).apply()
+
+    var language: AppLanguage
+        get() = AppLanguage.fromPreference(prefs.getString("language", null))
+        set(v) = prefs.edit().putString("language", v.preference).apply()
 
     val paired get() = pairing != null
 }

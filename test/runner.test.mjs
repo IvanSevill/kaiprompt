@@ -8,6 +8,7 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-run-'));
 process.env.KAIP_HOME = TMP;
 const { loadQueue, loadSessions, nid, outPath, rememberSession, saveQueue, saveSessions } = await import('../lib/store.mjs');
 const { executeJob, requeue, runQueue, settle } = await import('../lib/runner.mjs');
+const { liveEvents, recordAdapterEvent } = await import('../lib/live-events.mjs');
 
 const job = (over = {}) => ({
   id: nid(), prompt: 'do something', target: null, adapter: 'mock', when: null,
@@ -21,6 +22,7 @@ const job = (over = {}) => ({
 // `error` and nobody ever picked it up again.
 
 const LIMIT = "You've hit your session limit · resets 1:30pm (Europe/Madrid)";
+const WEEKLY_LIMIT = "You've hit your weekly limit · resets Jul 18, 11pm (Europe/Madrid)";
 
 test('settle: a launch that went fine is simply done', () => {
   assert.deepEqual(settle(job(), { ok: true }), { action: 'done' });
@@ -30,6 +32,12 @@ test('settle: cut off by the quota → back in the queue, NOT marked as an error
   const s = settle(job(), { ok: false, output: LIMIT, error: 'claude exited with code 1' });
   assert.equal(s.action, 'requeue');
   assert.ok(s.waitUntil > Date.now(), 'with a resume time in the future');
+});
+
+test('settle: preserves the weekly quota kind so the waiting UI identifies it', () => {
+  const s = settle(job(), { ok: false, output: WEEKLY_LIMIT, error: 'claude exited with code 1' });
+  assert.equal(s.action, 'requeue');
+  assert.equal(s.kind, 'weekly');
 });
 
 test('settle: a REAL failure is still an error (it is not retried forever)', () => {
@@ -57,6 +65,7 @@ test('requeue: back to pending, and it does NOT touch "when" — that is what ke
   assert.equal(back.status, 'pending', 'back in the queue');
   assert.equal(back.when, 1000, 'its time does NOT change');
   assert.equal(back.quotaRetries, 1);
+  assert.ok(['session', 'weekly'].includes(back.quotaKind), 'an active usage window may be more limiting than the error text');
   assert.ok(back.pausedUntil > Date.now());
   assert.equal(back.finishedAt, null, 'it does not count as finished');
 
@@ -64,6 +73,19 @@ test('requeue: back to pending, and it does NOT touch "when" — that is what ke
   const pending = q.filter((j) => j.status === 'pending').sort((a, b) => a.when - b.when);
   assert.equal(pending[0].id, first.id);
   assert.equal(pending[1].id, second.id);
+});
+
+test('requeue: keeps the weekly pause and its quota kind', () => {
+  const j = job();
+  saveQueue([j]);
+
+  const s = settle(j, { ok: false, output: WEEKLY_LIMIT, error: 'x' });
+  requeue(j, s);
+
+  const back = loadQueue().find((queued) => queued.id === j.id);
+  assert.equal(back.status, 'pending');
+  assert.equal(back.quotaKind, 'weekly');
+  assert.ok(back.pausedUntil > Date.now());
 });
 
 test('executeJob: marks it done, writes the output and saves the target session', async () => {
@@ -144,10 +166,27 @@ test('executeJob: emits live events when onEvent is passed', async () => {
   assert.ok(seen.includes('result'), 'the final event');
 });
 
-test('executeJob: with no onEvent there is NO streaming (the one-shot mode)', async () => {
+test('executeJob: persists live events even when no terminal renderer is attached', async () => {
   const j = job();
-  const res = await executeJob(j);          // it must neither break nor hang
+  const res = await executeJob(j);
   assert.equal(res.ok, true);
+  assert.ok(liveEvents(j.id).some((event) => event.kind === 'text'));
+});
+
+test('the first observed session is durable with engine metadata before the adapter returns', () => {
+  const j = job({
+    adapter: 'opencode', target: 'durable', provider: 'openai', model: 'gpt-5', dir: TMP,
+  });
+  saveQueue([j]); saveSessions({});
+  recordAdapterEvent(j, { type: 'system', session_id: 'ses-durable' });
+  const first = loadSessions().durable;
+
+  assert.equal(loadQueue()[0].sessionId, 'ses-durable');
+  assert.deepEqual({
+    adapter: first.adapter, provider: first.provider, model: first.model, dir: first.dir,
+  }, { adapter: 'opencode', provider: 'openai', model: 'gpt-5', dir: TMP });
+  recordAdapterEvent(j, { type: 'assistant', session_id: 'ses-durable', message: { content: [] } });
+  assert.equal(loadSessions().durable.updatedAt, first.updatedAt, 'later events do not rewrite the session');
 });
 
 test('runQueue (with no TTY): processes the sequential ones in order', async () => {
@@ -180,6 +219,16 @@ test('runQueue --dry-run: runs nothing', async () => {
   await runQueue({ dryRun: true });
   assert.equal(loadQueue()[0].status, 'pending', 'still pending: nothing was launched');
   assert.ok(!fs.existsSync(outPath(j.id)), 'and it writes no output');
+});
+
+test('runQueue --dry-run passes OpenCode provider and model to the adapter', async () => {
+  const j = job({ adapter: 'opencode', provider: 'google', model: 'gemini-2.5-flash' });
+  saveQueue([j]);
+  const lines = [];
+  const original = console.log;
+  console.log = (...args) => lines.push(args.join(' '));
+  try { await runQueue({ dryRun: true }); } finally { console.log = original; }
+  assert.match(lines.join('\n'), /-m google\/gemini-2\.5-flash/);
 });
 
 test('runQueue: an empty queue does not break it', async () => {
@@ -239,6 +288,22 @@ test('lock: it is released on the way out', async () => {
   saveQueue([]);
   await runQueue({ once: true });
   assert.equal(fs.existsSync(path.join(TMP, 'data', 'runner.lock')), false, 'it must not be left hanging');
+});
+
+test('lock: acquisition is exclusive and release cannot delete another owner', async () => {
+  const { acquireLock } = await import('../lib/lock.mjs');
+  const lock = path.join(TMP, 'data', 'runner.lock');
+  fs.rmSync(lock, { force: true });
+
+  const release = acquireLock();
+  assert.equal(typeof release, 'function');
+  assert.equal(acquireLock(), null, 'exclusive creation permits only one owner');
+
+  const replacement = { pid: process.pid, at: Date.now(), owner: 'replacement' };
+  fs.writeFileSync(lock, JSON.stringify(replacement));
+  release();
+  assert.equal(fs.existsSync(lock), true, 'the old owner must not remove a replacement lock');
+  fs.rmSync(lock, { force: true });
 });
 
 // --- jobs left hanging in "running" ------------------------------------------

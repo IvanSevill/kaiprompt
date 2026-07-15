@@ -1,8 +1,16 @@
 package com.kaiprompt.app
 
+import android.content.Context
 import java.io.BufferedReader
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.job
+
+enum class LiveStreamEnd { EOF, TERMINAL }
 
 /**
  * Talking to your PC.
@@ -13,10 +21,10 @@ import java.net.URL
  * Every call asks for a sealed answer (`x-kaip-enc: 1`), so what crosses Cloudflare is an
  * envelope they have no key to. The unsealing happens here, at the edge of the app.
  */
-class Api(private val pairing: Pairing) {
+class Api(private val pairing: Pairing, private val context: Context) {
 
-    class Down(message: String) : Exception(message)
-    class Unauthorized : Exception("el PC no reconoce este móvil. Vuelve a emparejar.")
+    class Down(message: String, val statusCode: Int? = null) : Exception(message)
+    class Unauthorized(context: Context) : Exception(context.getString(R.string.api_unauthorized))
 
     /**
      * The tunnel first, the home address as a fallback.
@@ -30,9 +38,19 @@ class Api(private val pairing: Pairing) {
 
     fun state(): State = State.parse(get("/api/state"))
 
+    /** New servers enrich /api/targets; a missing endpoint falls back to the state snapshot. */
+    fun conversations(state: State): List<ConversationSummary> = try {
+        ConversationSummary.parse(get("/api/targets"), state)
+    } catch (cause: Down) {
+        if (cause.statusCode == 404) ConversationSummary.derive(state) else throw cause
+    }
+
+    /** Optional historical telemetry. Older PCs do not have this endpoint yet. */
+    fun usage(): Usage = Usage.parse(get("/api/usage"))
+
     fun job(id: String): String = get("/api/job/$id")
 
-    fun chat(ref: String): Chat = Chat.parse(get("/api/job/$ref/chat"))
+    fun chat(ref: String): Chat = Chat.parse(get("/api/chat/${URLEncoder.encode(ref, "UTF-8").replace("+", "%20")}"))
 
     /**
      * Introduce this phone to the PC: its NAME, and — if we have one — where to knock.
@@ -47,10 +65,15 @@ class Api(private val pairing: Pairing) {
      * the PC never even registered that it existed. Now the name goes up regardless; a phone
      * with no callback still gets its news from the 15-minute catch-up poll.
      */
-    fun registerDevice(url: String?, name: String) {
+    fun registerDevice(url: String?, name: String, id: String) {
         val u = if (url == null) "null" else quote(url)
-        post("/api/device", """{"url":$u,"name":${quote(name)}}""")
+        post("/api/device", """{"url":$u,"name":${quote(name)},"id":${quote(id)}}""")
     }
+
+    /** Best-effort farewell used only by the explicit Unpair action. */
+    fun deleteDevice(id: String): PairingState = PairingState.parse(delete("/api/device/${URLEncoder.encode(id, "UTF-8")}"))
+
+    fun pairingState(id: String): PairingState = PairingState.parse(get("/api/pairing/${URLEncoder.encode(id, "UTF-8")}"))
 
     /** Wipe everything that has already run. The one destructive thing the phone can do. */
     fun clearFinished() {
@@ -89,6 +112,12 @@ class Api(private val pairing: Pairing) {
         readBody(c)
     }
 
+    private fun delete(path: String): String = attempt { base ->
+        val c = open("$base$path")
+        c.requestMethod = "DELETE"
+        readBody(c)
+    }
+
     /** Try each address in turn; only give up when they have all failed. */
     private fun <T> attempt(block: (String) -> T): T {
         var last: Exception? = null
@@ -113,13 +142,12 @@ class Api(private val pairing: Pairing) {
         // likely reason a working app suddenly stops working is simply that: it is knocking
         // on a door that no longer exists.
         val hint = if (pairing.tunnel) {
-            "El túnel cambia de dirección cada vez que reinicias «kaip serve». " +
-                "Vuelve a escanear el QR."
+            context.getString(R.string.api_tunnel_hint)
         } else {
-            "Tienes que estar en la misma wifi que el PC."
+            context.getString(R.string.api_wifi_hint)
         }
 
-        throw Down("No llego al PC.\n\nProbé:\n$tried\n\n$hint\n\n$why".trim())
+        throw Down(context.getString(R.string.api_unreachable, tried, hint, why).trim())
     }
 
     private fun open(url: String, auth: Boolean = true): HttpURLConnection =
@@ -134,13 +162,15 @@ class Api(private val pairing: Pairing) {
 
     private fun readBody(c: HttpURLConnection): String {
         val code = c.responseCode
-        if (code == 401) throw Unauthorized()
+        if (code == 401) throw Unauthorized(context)
 
         val stream = if (code in 200..299) c.inputStream else c.errorStream
         val body = stream?.bufferedReader()?.use(BufferedReader::readText).orEmpty()
         c.disconnect()
 
-        if (code !in 200..299) throw Down("el PC respondió $code: ${body.take(200)}")
+        if (code !in 200..299) {
+            throw Down(context.getString(R.string.api_response_error, code, body.take(200)), code)
+        }
 
         // The 401 above is deliberately NOT sealed by the server, so the reason is readable.
         // Everything else is, and this is where it stops being Cloudflare's business.
@@ -151,20 +181,63 @@ class Api(private val pairing: Pairing) {
      * The live feed. One line at a time, blocking — the caller runs it off the main thread
      * and closes it by cancelling the coroutine.
      */
-    fun events(onEvent: (String) -> Unit) {
-        val base = bases.first()
-        val c = open("$base/api/events?token=${pairing.token}&enc=1")
-        c.readTimeout = 0                                // an SSE stream is meant to go quiet
-
-        c.inputStream.bufferedReader().use { reader ->
-            while (true) {
-                val line = reader.readLine() ?: break
-                if (!line.startsWith("data:")) continue  // ':' comments are keep-alives
-                val payload = line.removePrefix("data:").trim()
-                if (payload.isEmpty()) continue
-                onEvent(if (Crypto.isSealed(payload)) Crypto.open(payload, pairing.key) else payload)
+    suspend fun events(
+        jobId: String,
+        since: String?,
+        onConnected: () -> Unit = {},
+        onEvent: (LiveEvent) -> Unit,
+    ): LiveStreamEnd {
+        var last: Exception? = null
+        for (base in bases) {
+            currentCoroutineContext().ensureActive()
+            val query = buildString {
+                append("?job=").append(URLEncoder.encode(jobId, "UTF-8"))
+                if (since != null) append("&since=").append(URLEncoder.encode(since, "UTF-8"))
+            }
+            val c = open("$base/api/events$query")
+            c.readTimeout = 45_000
+            val cancellation = currentCoroutineContext().job.invokeOnCompletion { c.disconnect() }
+            try {
+                val code = c.responseCode
+                if (code == 401) throw Unauthorized(context)
+                if (code !in 200..299) {
+                    val body = c.errorStream?.bufferedReader()?.use(BufferedReader::readText).orEmpty()
+                    throw Down(context.getString(R.string.api_response_error, code, body.take(200)), code)
+                }
+                onConnected()
+                var eventId: String? = null
+                c.inputStream.bufferedReader().use { reader ->
+                    while (true) {
+                        currentCoroutineContext().ensureActive()
+                        val line = reader.readLine() ?: break
+                        if (line.startsWith("id:")) eventId = line.removePrefix("id:").trim()
+                        if (!line.startsWith("data:")) continue
+                        val payload = line.removePrefix("data:").trim()
+                        if (payload.isEmpty()) continue
+                        val opened = if (Crypto.isSealed(payload)) Crypto.open(payload, pairing.key) else payload
+                        val parsed = LiveEvent.parse(opened)
+                        val event = if (parsed.id == null && eventId != null) parsed.copy(id = eventId) else parsed
+                        onEvent(event)
+                        if (isTerminalStatus(event.status)) return LiveStreamEnd.TERMINAL
+                    }
+                }
+                return LiveStreamEnd.EOF
+            } catch (cause: Unauthorized) {
+                throw cause
+            } catch (cause: CancellationException) {
+                throw cause
+            } catch (cause: Exception) {
+                currentCoroutineContext().ensureActive()
+                last = cause
+            } finally {
+                cancellation.dispose()
+                c.disconnect()
             }
         }
+        val tried = bases.joinToString("\n") { "  · $it" }
+        val hint = if (pairing.tunnel) context.getString(R.string.api_tunnel_hint)
+        else context.getString(R.string.api_wifi_hint)
+        throw Down(context.getString(R.string.api_unreachable, tried, hint, last?.message.orEmpty()).trim())
     }
 
     private fun quote(s: String) = "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
