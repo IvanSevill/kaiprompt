@@ -51,18 +51,21 @@ class CatchUpWorker(context: Context, params: WorkerParameters) : CoroutineWorke
         val finished = state.jobs.filter { it.finishedAt != null }
         if (!store.notificationBaselineReady) {
             // Installing or updating the app must not replay the whole queue as alerts.
-            store.announced = store.announced + finished.map { it.id }
+            store.announced = newestNotificationIds(
+                store.announced,
+                finished.sortedByDescending { it.finishedAt }.map { it.id },
+            )
             store.notificationBaselineReady = true
             return Result.success()
         }
 
-        val unseen = finished.filter { it.id !in store.announced }
+        val unseen = finished.filter { it.id !in store.announced }.sortedByDescending { it.finishedAt }
         if (unseen.isEmpty()) return Result.success()
 
         // Only suppress an alert after Android accepted it. A denied permission or disabled
         // channel must remain recoverable on the next wake-up rather than losing the event.
         val delivered = Notifier(applicationContext).jobsFinished(unseen)
-        store.announced = store.announced + delivered
+        store.announced = newestNotificationIds(store.announced, delivered)
         return Result.success()
     }
 }

@@ -3,11 +3,13 @@
 // the same thing `add` creates.
 
 import {
-  loadProjects, loadQueue, loadSessions, nid, nowMs, rememberSession, saveQueue, resolveDir,
-} from './store.mjs';
+  loadProjects, loadQueue, loadSessions, mutateQueue, nowMs, rememberSession, resolveDir,
+} from '../storage/repositories.mjs';
+import { nid } from './identity.mjs';
 import { fmt, parseWhen } from './time.mjs';
 import { isLinked, linkPrompt, resolvePrompt } from './prompt.mjs';
 import { normalizeSelection } from './engines.mjs';
+import { newConversationId } from './conversations.mjs';
 
 /**
  * Create a pending job and push it onto the queue. `at`/`dir` take the same input as `add`.
@@ -30,6 +32,17 @@ export function addJob({
   const selection = normalizeSelection({ adapter, engine, provider, model }, { required: true });
   if (!promptFile && !text) throw new Error('missing prompt');
 
+  const queue = loadQueue();
+  const sessions = loadSessions();
+  const laneId = target && (
+    sessions[target]?.engines?.[selection.adapter]?.conversationId
+    ?? (sessions[target]?.adapter === selection.adapter ? sessions[target].conversationId : null)
+    ?? queue.find((candidate) => candidate.target === target && candidate.adapter === selection.adapter)?.conversationId
+  );
+  const sessionId = session || null;
+  const sessionConversationId = sessionId && queue.find((candidate) =>
+    candidate.adapter === selection.adapter && candidate.sessionId === sessionId)?.conversationId;
+  const conversationId = laneId || sessionConversationId || newConversationId();
   const job = {
     id: nid(),
     prompt: promptFile ? null : text,
@@ -43,13 +56,24 @@ export function addJob({
     permMode: perm || null,                 // null → bypass
     status: 'pending',
     createdAt: nowMs(),
-    sessionId: session || null,
+    sessionId,
+    conversationId,
     output: null,
     ...(priority ? { priority: true } : {}),
     ...(continuation ? { continuation: true } : {}),
   };
 
-  const q = loadQueue(); q.push(job); saveQueue(q);
+  mutateQueue((q) => {
+    job.conversationId = (
+      target && q.find((candidate) => candidate.target === target
+        && candidate.adapter === selection.adapter)?.conversationId
+    ) || (
+      sessionId && q.find((candidate) => candidate.adapter === selection.adapter
+        && candidate.sessionId === sessionId)?.conversationId
+    ) || job.conversationId;
+    q.push(job);
+    return q;
+  });
 
   // With a session + a target, that target now points at this session.
   if (job.sessionId && job.target) {
@@ -57,6 +81,7 @@ export function addJob({
       provider: job.provider,
       model: job.model,
       dir: job.dir,
+      conversationId: job.conversationId,
     });
   }
   return job;
@@ -122,34 +147,43 @@ export function suggestDirs() {
 /** Drop jobs by id. Returns how many actually went. */
 export function removeJobs(ids) {
   const set = new Set(ids);
-  const q = loadQueue();
-  const kept = q.filter((j) => !set.has(j.id));
-  saveQueue(kept);
-  return q.length - kept.length;
+  let removed = 0;
+  mutateQueue((q) => {
+    const kept = q.filter((j) => !set.has(j.id));
+    removed = q.length - kept.length;
+    return kept;
+  });
+  return removed;
 }
 
 /** Put one failed launch back in line without losing its prompt, engine or conversation. */
 export function retryJob(id) {
-  const q = loadQueue();
-  const job = q.find((j) => j.id === id);
-  if (!job) throw new Error(`no job found with id "${id}"`);
-  if (job.status !== 'error') throw new Error(`job ${id} is ${job.status}: only error jobs can be retried`);
-  job.status = 'pending';
-  delete job.error;
-  delete job.startedAt;
-  delete job.finishedAt;
-  delete job.output;
-  job.retriedAt = nowMs();
-  saveQueue(q);
-  return job;
+  let updated;
+  mutateQueue((q) => {
+    const job = q.find((j) => j.id === id);
+    if (!job) throw new Error(`no job found with id "${id}"`);
+    if (job.status !== 'error') throw new Error(`job ${id} is ${job.status}: only error jobs can be retried`);
+    job.status = 'pending';
+    delete job.error;
+    delete job.startedAt;
+    delete job.finishedAt;
+    delete job.output;
+    job.retriedAt = nowMs();
+    updated = job;
+    return q;
+  });
+  return updated;
 }
 
 /** Drop everything that ended (done/error/missed), keep pending and running. */
 export function clearFinished() {
-  const q = loadQueue();
-  const kept = q.filter((j) => j.status === 'pending' || j.status === 'running');
-  saveQueue(kept);
-  return q.length - kept.length;
+  let removed = 0;
+  mutateQueue((q) => {
+    const kept = q.filter((j) => j.status === 'pending' || j.status === 'running');
+    removed = q.length - kept.length;
+    return kept;
+  });
+  return removed;
 }
 
 /** One job, spelled out — used by `show`, `list --full`, `edit` and the GUI's detail view. */

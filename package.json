@@ -4,6 +4,9 @@
   "description": "Queue, schedule and launch prompts to Claude Code, with persistent sessions",
   "bin": { "kaip": "./kaip.mjs" },
   "type": "module",
-  "scripts": { "test": "node --test test/*.test.mjs" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "check:architecture": "node scripts/check-architecture.mjs"
+  },
   "license": "MIT"
 }

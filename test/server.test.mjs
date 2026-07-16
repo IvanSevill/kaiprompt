@@ -17,10 +17,11 @@ import { fileURLToPath } from 'node:url';
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-server-'));
 process.env.KAIP_HOME = TMP;
 
-const { historyPath, outPath, patchJob, saveQueue, saveSessions } = await import('../lib/store.mjs');
-const { addJob } = await import('../lib/queue.mjs');
-const { executeJob } = await import('../lib/runner.mjs');
-const { emitLive } = await import('../lib/live-events.mjs');
+const { historyPath, outPath } = await import('../src/storage/paths.mjs');
+const { patchJob, saveQueue, saveSessions } = await import('../src/storage/repositories.mjs');
+const { addJob } = await import('../src/core/jobs.mjs');
+const { executeJob } = await import('../src/runner/index.mjs');
+const { emitLive, recordAdapterEvent } = await import('../src/events/live.mjs');
 const {
   addresses, createServer, noteClient, pairingPayload, publish, resetToken, serverConfig, saveServerConfig,
   BOOTED_AT, chatDTO, clientList, conversationStatus, forgetClients, pairedThisSession, stateDTO, targetsDTO,
@@ -29,6 +30,7 @@ const {
 const PORT = 7899;
 let server;
 let token;
+const quotaCalls = [];
 const openCodeExports = new Map();
 const openCodeRun = (_bin, args) => {
   const data = openCodeExports.get(args[1]);
@@ -56,7 +58,18 @@ const rawGet = (p, headers = {}) => new Promise((resolve, reject) => {
 
 before(async () => {
   token = serverConfig().token;
-  server = createServer({ port: PORT, loadChat: (ref) => chatDTO(ref, { openCodeRun }) });
+  server = createServer({
+    port: PORT,
+    loadChat: (ref) => chatDTO(ref, { openCodeRun }),
+    loadQuota: async (provider) => {
+      quotaCalls.push(provider);
+      return {
+        provider, status: 'unavailable', source: { kind: null, official: null },
+        freshness: { observedAt: null, stale: null }, limits: {}, plan: null, credits: null,
+        error: { code: 'auth-unavailable', message: null },
+      };
+    },
+  });
   await server.ready;
 });
 
@@ -220,6 +233,33 @@ test('/api/targets: an untargeted OpenCode conversation uses export metadata tit
   assert.equal(summary.chatAvailable, true);
 });
 
+test('/api/quota selects a provider and returns unavailable as structured HTTP 200', async () => {
+  const response = await get('/api/quota?provider=codex');
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.provider, 'codex');
+  assert.equal(body.status, 'unavailable');
+  assert.equal(body.error.code, 'auth-unavailable');
+  assert.equal(quotaCalls.at(-1), 'codex');
+});
+
+test('/api/quota rejects unknown providers without invoking the collector', async () => {
+  const before = quotaCalls.length;
+  const response = await get('/api/quota?provider=other');
+  assert.equal(response.status, 400);
+  assert.equal(quotaCalls.length, before);
+});
+
+test('/api/targets and chat expose conversationId and the stable route remains directly addressable', async () => {
+  saveQueue([]); saveSessions({});
+  const job = addJob({ prompt: 'stable', adapter: 'opencode', provider: 'openai', model: 'gpt' });
+  const [summary] = await (await get('/api/targets')).json();
+  assert.equal(summary.conversationId, job.conversationId);
+  const response = await get(`/api/conversations/${encodeURIComponent(summary.conversationId)}`);
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).conversationId, summary.conversationId);
+});
+
 test('/api/job/:id/chat with no transcript: a 404 with a reason, not a 500', async () => {
   saveQueue([]);
   const j = addJob({ prompt: 'x', adapter: 'mock' });
@@ -319,9 +359,12 @@ test('exported OpenCode camelCase Edit arguments produce canonical API diffs', a
       file_path: 'lib/example.mjs', old_string: 'before', new_string: 'after',
     },
   });
-  assert.deepEqual(chat.turns[0].diffs, [{
-    file: 'lib/example.mjs', added: 1, removed: 1, diff: '-before\n+after',
-  }]);
+  const [diff] = chat.turns[0].diffs;
+  assert.equal(diff.file, 'lib/example.mjs');
+  assert.equal(diff.added, 1); assert.equal(diff.removed, 1);
+  assert.deepEqual(diff.lines, ['-before', '+after']);
+  assert.match(diff.id, /^diff-/);
+  assert.equal(diff.truncated, false);
 });
 
 test('OpenCode chat combines export and durable live events without duplicates and uses the requested job cursor', async () => {
@@ -425,13 +468,15 @@ test('DELETE /api/device/:id removes only that identified device and preserves l
     method: 'DELETE', headers: { authorization: `Bearer ${token}` },
   });
   assert.equal(r.status, 200);
-  assert.deepEqual(await r.json(), { ok: true, removed: 1, devices: 2, mode: 'pairing' });
+  assert.deepEqual(await r.json(), {
+    ok: true, removed: 1, registered: false, devices: 2, mode: 'connected', protocol: 2,
+  });
   assert.deepEqual(serverConfig().devices.map((d) => d.id ?? d.name), ['device-b', 'old-client']);
 
   const state = await (await get('/api/state')).json();
   assert.equal(state.server.devices.length, 2, 'the state count reflects unpairing immediately');
   const pairing = await (await get('/api/pairing/device-a')).json();
-  assert.deepEqual(pairing, { ok: true, registered: false, mode: 'pairing', protocol: 2 });
+  assert.deepEqual(pairing, { ok: true, registered: false, mode: 'connected', protocol: 2 });
 });
 
 test('DELETE /api/device/:id demands the pairing token', async () => {
@@ -804,7 +849,7 @@ test('real serve process transitions QR → connected → QR and only stops expl
 // is moving — and they mean the opposite. One comes back on its own; the other is never going
 // to happen.
 test('the five states of "what is happening right now"', async () => {
-  const { activityState } = await import('../lib/activity.mjs');
+  const { activityState } = await import('../src/core/activity.mjs');
   const now = Date.now();
 
   const running = activityState({
@@ -844,7 +889,7 @@ test('the five states of "what is happening right now"', async () => {
 });
 
 test('stalled beats waiting-for-quota: if the runner died, that "back at 15:42" is a lie', async () => {
-  const { activityState } = await import('../lib/activity.mjs');
+  const { activityState } = await import('../src/core/activity.mjs');
   const now = Date.now();
 
   // The job says "I resume at 15:42". It was written by a runner that is no longer there. At
@@ -857,7 +902,7 @@ test('stalled beats waiting-for-quota: if the runner died, that "back at 15:42" 
 });
 
 test('a pausedUntil that has already passed does not leave the state stuck on "waiting for quota"', async () => {
-  const { activityState } = await import('../lib/activity.mjs');
+  const { activityState } = await import('../src/core/activity.mjs');
   const now = Date.now();
   const st = activityState({
     jobs: [{ id: 'a', status: 'pending', pausedUntil: now - 1000, when: now + 5000 }],
@@ -877,7 +922,7 @@ test('/api/state carries the status strip and the Settings bits (tunnel, IPs, ve
 });
 
 test('the job carries pausedUntil: without it the phone cannot tell "waiting" from "broken"', async () => {
-  const { addJob } = await import('../lib/queue.mjs');
+  const { addJob } = await import('../src/core/jobs.mjs');
   const j = addJob({ prompt: 'cut off by the quota' });
   j.pausedUntil = Date.now() + 3_600_000;               // exactly what launch.mjs writes
   patchJob(j);
@@ -887,8 +932,8 @@ test('the job carries pausedUntil: without it the phone cannot tell "waiting" fr
 });
 
 test('DELETE /api/finished: clears what has run and does NOT touch what is pending', async () => {
-  const { addJob } = await import('../lib/queue.mjs');
-  const { loadQueue } = await import('../lib/store.mjs');
+  const { addJob } = await import('../src/core/jobs.mjs');
+  const { loadQueue } = await import('../src/storage/repositories.mjs');
 
   const ran = addJob({ prompt: 'already ran' });
   ran.status = 'done';
@@ -909,4 +954,63 @@ test('DELETE /api/finished: clears what has run and does NOT touch what is pendi
 test('DELETE /api/finished demands a token: the queue is not emptied without credentials', async () => {
   const r = await fetch(`http://127.0.0.1:${PORT}/api/finished`, { method: 'DELETE' });
   assert.equal(r.status, 401);
+});
+
+test('POST /api/device rejects malformed or unsafe callback URL shapes', async () => {
+  for (const url of ['file:///tmp/job-done', 'http://phone/job-done?token=x', 'http://phone/other']) {
+    const response = await fetch(`http://127.0.0.1:${PORT}/api/device`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 'bad-url', name: 'phone', url }),
+    });
+    assert.equal(response.status, 400);
+  }
+  assert.ok(!serverConfig().devices.some((device) => device.id === 'bad-url'));
+});
+
+test('historical DTO reconciles a durable live diff by diff ID and keeps its replay event ID', async () => {
+  saveQueue([]); saveSessions({});
+  const job = addJob({ prompt: 'edit', adapter: 'opencode', provider: 'openai', model: 'gpt', session: 'ses-diff-replay' });
+  patchJob({ ...job, status: 'running', startedAt: Date.now() });
+  const records = recordAdapterEvent(job, { type: 'assistant', message: { content: [{
+    type: 'tool_use', name: 'Edit', input: { file_path: 'same.js', old_string: 'old', new_string: 'new' },
+  }] } });
+  const replayedRecords = recordAdapterEvent(job, { type: 'assistant', message: { content: [{
+    type: 'tool_use', name: 'Edit', input: { file_path: 'same.js', old_string: 'old', new_string: 'new' },
+  }] } });
+  openCodeExports.set('ses-diff-replay', {
+    info: { id: 'ses-diff-replay', directory: TMP },
+    messages: [{ info: { role: 'assistant', time: { created: 1 } }, parts: [{
+      type: 'tool', tool: 'edit', state: { input: { file_path: 'same.js', old_string: 'old', new_string: 'new' } },
+    }] }],
+  });
+
+  const chat = await (await get(`/api/job/${job.id}/chat`)).json();
+  const diffs = chat.turns.flatMap((turn) => turn.diffs);
+  assert.equal(diffs.length, 1);
+  assert.deepEqual(diffs[0].lines, ['-old', '+new']);
+  assert.equal(diffs[0].eventId, records[1].id);
+  assert.ok(chat.eventIds.includes(records[0].id));
+  assert.ok(chat.eventIds.includes(records[1].id));
+  assert.ok(chat.eventIds.includes(replayedRecords[1].id));
+  assert.equal(chat.cursor, replayedRecords[1].id);
+});
+
+test('POST hide-finished hides only terminal conversations and keeps jobs and old delete behavior intact', async () => {
+  const { loadQueue } = await import('../src/storage/repositories.mjs');
+  saveQueue([]); saveSessions({});
+  const done = addJob({ prompt: 'done', target: 'finished', adapter: 'claude' });
+  const active = addJob({ prompt: 'active', target: 'active', adapter: 'claude' });
+  patchJob({ ...done, status: 'done', finishedAt: Date.now() });
+  const response = await fetch(`http://127.0.0.1:${PORT}/api/conversations/hide-finished`, {
+    method: 'POST', headers: { authorization: `Bearer ${token}` },
+  });
+  const result = await response.json();
+  assert.equal(result.hidden, 1);
+  assert.ok(result.activeRetained >= 1);
+  assert.ok(loadQueue().some((job) => job.id === done.id));
+  assert.ok(loadQueue().some((job) => job.id === active.id));
+  const summaries = await (await get('/api/targets')).json();
+  assert.equal(summaries.find((row) => row.target === 'finished').hidden, true);
+  assert.equal(summaries.find((row) => row.target === 'active').hidden, false);
 });

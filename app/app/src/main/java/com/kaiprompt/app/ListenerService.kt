@@ -1,12 +1,9 @@
 package com.kaiprompt.app
 
-import android.app.Notification
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import android.os.IBinder
-import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -20,13 +17,9 @@ import java.net.Socket
  * The phone's half of the notification story.
  *
  * The PC knocks: when a launch finishes it POSTs here, and the notification appears at once.
- * No Firebase, no Google, nothing in the cloud. It works because a *foreground* service is
- * exempt from Doze's network restrictions — an ordinary background service would be
- * suspended at 3am, which is exactly when the interesting launches finish.
- *
- * The permanent notification in the shade is what Android charges for that, and there is no
- * way around it. Pretending otherwise would just mean the notifications quietly stop working
- * after a week, which is worse.
+ * No Firebase, no Google, nothing in the cloud. Android 15 has no honest foreground-service
+ * type for an indefinite local callback socket, so this fast path is active only while the app
+ * is foregrounded. CatchUpWorker is the durable background path.
  *
  * A knock that never lands (phone off, no signal, service killed) is covered by CatchUpWorker.
  * The webhook is the fast path, not the only one.
@@ -35,12 +28,8 @@ class ListenerService : Service() {
 
     companion object {
         const val PORT = 8899
-        private const val ONGOING_ID = 1
-
         fun start(context: Context) {
-            val i = Intent(context, ListenerService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(i)
-            else context.startService(i)
+            context.startService(Intent(context, ListenerService::class.java))
         }
 
         fun stop(context: Context) = context.stopService(Intent(context, ListenerService::class.java))
@@ -56,12 +45,10 @@ class ListenerService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        Notifier.ensureChannels(this)
-        startForeground(ONGOING_ID, ongoing())
         listen()
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_NOT_STICKY
 
     override fun onDestroy() {
         scope.cancel()
@@ -83,23 +70,33 @@ class ListenerService : Service() {
      * a line of JSON would be more code than the thing it replaced.
      */
     private fun handle(client: Socket) = client.use { c ->
-        val reader = c.getInputStream().bufferedReader()
-
-        var length = 0
-        var line = reader.readLine()
-        while (!line.isNullOrBlank()) {
-            if (line.startsWith("Content-Length:", ignoreCase = true)) {
-                length = line.substringAfter(':').trim().toIntOrNull() ?: 0
-            }
-            line = reader.readLine()
+        c.soTimeout = 5_000
+        val pairing = Store(this).pairing ?: return@use respond(c, 401)
+        if (!NotificationRequest.sourceAllowed(c.inetAddress, pairing)) return@use respond(c, 403)
+        val request = try {
+            NotificationRequest.parse(c.getInputStream(), pairing.token)
+        } catch (error: NotificationRequestError) {
+            return@use respond(c, error.status)
+        } catch (_: Exception) {
+            return@use respond(c, 400)
         }
+        val event = try {
+            JSONObject(Crypto.open(request.sealedBody, pairing.key))
+        } catch (_: Exception) {
+            return@use respond(c, 400)
+        }
+        respond(c, 204)
+        announce(event)
+    }
 
-        val body = if (length > 0) {
-            CharArray(length).let { buf -> reader.read(buf, 0, length); String(buf) }
-        } else ""
-
-        c.getOutputStream().write("HTTP/1.1 204 No Content\r\n\r\n".toByteArray())
-        runCatching { announce(JSONObject(body)) }
+    private fun respond(client: Socket, status: Int) {
+        val reason = when (status) {
+            204 -> "No Content"; 400 -> "Bad Request"; 401 -> "Unauthorized"
+            403 -> "Forbidden"; 404 -> "Not Found"; 411 -> "Length Required"
+            413 -> "Payload Too Large"; 415 -> "Unsupported Media Type"; 431 -> "Request Header Fields Too Large"
+            else -> "Bad Request"
+        }
+        runCatching { client.getOutputStream().write("HTTP/1.1 $status $reason\r\nConnection: close\r\n\r\n".toByteArray()) }
     }
 
     private fun announce(event: JSONObject) {
@@ -115,18 +112,6 @@ class ListenerService : Service() {
             },
             detail = event.optStringOrNull("error"),
         )
-        if (delivered) store.announced = store.announced + id
+        if (delivered) store.announced = newestNotificationIds(store.announced, listOf(id))
     }
-
-    private fun ongoing(): Notification =
-        NotificationCompat.Builder(this, Notifier.CHANNEL_LIVE).let { builder ->
-            val strings = Store(this).language.localizedContext(this)
-            builder
-            .setSmallIcon(android.R.drawable.stat_notify_sync)
-            .setContentTitle(strings.getString(R.string.app_name))
-            .setContentText(strings.getString(R.string.notification_waiting))
-            .setPriority(NotificationCompat.PRIORITY_MIN)     // as quiet as Android allows
-            .setOngoing(true)
-            .build()
-        }
 }

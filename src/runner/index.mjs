@@ -13,21 +13,21 @@
 // Non-TTY (Task Scheduler, background, piped output) → plain log, no TUI.
 // That path must never break: the unattended 3am batch depends on it.
 
-import { loadQueue, loadSessions, nowMs } from './store.mjs';
-import { fmt, sleep } from './time.mjs';
+import { loadQueue, loadSessions, nowMs } from '../storage/repositories.mjs';
+import { fmt, sleep } from '../core/time.mjs';
 import { acquireLock } from './lock.mjs';
-import { nextScheduledAt, nextUp, reapMissed, reapStale } from './schedule.mjs';
-import { loadAdapter } from './launch.mjs';
-import { runPlain } from './run-plain.mjs';
-import { runTUI } from './run-tui.mjs';
-import { runParallel } from './run-parallel.mjs';
-import { isTTY } from './ui.mjs';
+import { nextScheduledAt, nextUp, reapMissed, reapStale } from '../core/schedule.mjs';
+import { loadAdapter } from './lifecycle.mjs';
+import { runPlain } from './plain.mjs';
+import { runTUI } from '../../lib/run-tui.mjs';
+import { runParallel } from './parallel.mjs';
+import { isTTY } from '../../lib/ui.mjs';
 
 // The surface the CLI, the TUI and the tests import from here. The code moved; the door
 // did not.
 export { lockIsHeld } from './lock.mjs';
-export { GRACE_MS, laneOf, reapMissed, reapStale, startable } from './schedule.mjs';
-export { executeJob, requeue, settle } from './launch.mjs';
+export { GRACE_MS, laneOf, reapMissed, reapStale, startable } from '../core/schedule.mjs';
+export { executeJob, requeue, settle } from './lifecycle.mjs';
 
 // --- dry run ------------------------------------------------------------------
 async function dryRunPreview() {

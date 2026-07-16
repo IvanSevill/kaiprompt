@@ -17,7 +17,7 @@ import path from 'node:path';
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-rst-'));
 process.env.KAIP_HOME = TMP;
 
-const { runnerLine, runnerStatus } = await import('../lib/runner-status.mjs');
+const { runnerLine, runnerStatus } = await import('../src/runner/coordination.mjs');
 
 const LOCK = path.join(TMP, 'data', 'runner.lock');
 const takeLock = (pid) => {

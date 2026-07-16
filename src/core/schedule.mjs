@@ -4,7 +4,8 @@
 // answers "which job is up?". Every runner (plain, TUI, parallel) asks the same
 // questions, so they all ask them here.
 
-import { alive, loadQueue, nowMs, saveQueue } from './store.mjs';
+import { alive } from '../storage/json.mjs';
+import { loadQueue, mutateQueue, nowMs } from '../storage/repositories.mjs';
 import { fmt, humanDur } from './time.mjs';
 
 /** Everything still waiting, read fresh off disk — not a snapshot. */
@@ -114,17 +115,18 @@ export const GRACE_MS = 12 * 60 * 60 * 1000;
 
 /** Jobs so overdue that firing them would be a surprise, not a catch-up. */
 export function reapMissed(graceMs = GRACE_MS, t = nowMs()) {
-  const q = loadQueue();
   let n = 0;
-  for (const j of q) {
-    if (j.status !== 'pending' || !j.when || j.when > t - graceMs) continue;
-    j.status = 'missed';
-    j.finishedAt = t;
-    j.error = `missed: its time (${fmt(j.when)}) passed more than ${humanDur(graceMs)} ago; `
-      + 'nothing was running then. Reschedule it with "edit" if you still want it';
-    n++;
-  }
-  if (n) saveQueue(q);
+  mutateQueue((q) => {
+    for (const j of q) {
+      if (j.status !== 'pending' || !j.when || j.when > t - graceMs) continue;
+      j.status = 'missed';
+      j.finishedAt = t;
+      j.error = `missed: its time (${fmt(j.when)}) passed more than ${humanDur(graceMs)} ago; `
+        + 'nothing was running then. Reschedule it with "edit" if you still want it';
+      n++;
+    }
+    return q;
+  });
   return n;
 }
 
@@ -134,19 +136,20 @@ export function reapMissed(graceMs = GRACE_MS, t = nowMs()) {
  * never written. On every start we close those out as errors.
  */
 export function reapStale() {
-  const q = loadQueue();
   let n = 0;
-  for (const j of q) {
-    if (j.status !== 'running') continue;
+  mutateQueue((q) => {
+    for (const j of q) {
+      if (j.status !== 'running') continue;
     // No pid at all means nobody can ever vouch for it: either it predates runnerPid, or
     // it was killed before the field was written. Left alone it sits at `running`
     // forever — which is exactly what happened to the launch that got cancelled.
-    if (j.runnerPid && alive(j.runnerPid)) continue;
-    j.status = 'error';
-    j.finishedAt = nowMs();
-    j.error = 'interrupted: the runner died while this was running';
-    n++;
-  }
-  if (n) saveQueue(q);
+      if (j.runnerPid && alive(j.runnerPid)) continue;
+      j.status = 'error';
+      j.finishedAt = nowMs();
+      j.error = 'interrupted: the runner died while this was running';
+      n++;
+    }
+    return q;
+  });
   return n;
 }

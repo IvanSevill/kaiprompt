@@ -11,7 +11,7 @@ process.env.KAIP_HOME = TMP;
 process.env.CLAUDE_CONFIG_DIR = path.join(TMP, 'claude');
 process.env.KAIP_NO_DAEMON = '1';          // a test leaves no background processes alive
 
-const { loadQueue, saveQueue } = await import('../lib/store.mjs');
+const { loadQueue, saveQueue } = await import('../src/storage/repositories.mjs');
 const { strip } = await import('../lib/ui.mjs');
 const { dismissed } = await import('../lib/cutshort.mjs');
 const { applyEffect, initialState, reduce, refresh, render } = await import('../lib/tui.mjs');

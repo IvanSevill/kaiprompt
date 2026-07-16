@@ -9,12 +9,13 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-chat-'));
 process.env.KAIP_HOME = TMP;
 process.env.CLAUDE_CONFIG_DIR = path.join(TMP, 'claude');
 
-const { nid, saveQueue, saveSessions } = await import('../lib/store.mjs');
+const { nid } = await import('../src/core/identity.mjs');
+const { saveQueue, saveSessions } = await import('../src/storage/repositories.mjs');
 const {
   encodeDir, findTranscript, loadOpenCodeTranscript, normalizeOpenCodeExport, parseTranscript,
   projectsRoot, renderChat, resolveRef, resumeCommand, resumeSpec,
 } = await import('../lib/chat.mjs');
-const { clearFinished } = await import('../lib/queue.mjs');
+const { clearFinished } = await import('../src/core/jobs.mjs');
 
 const DIR = 'C:\\proj\\app';
 const SID = 'ff679ec5-531d-4424-aba3-7341b2fcaa38';

@@ -13,11 +13,11 @@ import path from 'node:path';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-prompt-'));
 process.env.KAIP_HOME = TMP;
-const { loadQueue, saveQueue } = await import('../lib/store.mjs');
-const { addJob } = await import('../lib/queue.mjs');
-const { editJob } = await import('../lib/edit.mjs');
-const { executeJob } = await import('../lib/runner.mjs');
-const { isLinked, jobPreview, linkPrompt, resolvePrompt } = await import('../lib/prompt.mjs');
+const { loadQueue, saveQueue } = await import('../src/storage/repositories.mjs');
+const { addJob } = await import('../src/core/jobs.mjs');
+const { editJob } = await import('../src/core/edit.mjs');
+const { executeJob } = await import('../src/runner/index.mjs');
+const { isLinked, jobPreview, linkPrompt, resolvePrompt } = await import('../src/core/prompt.mjs');
 
 const write = (name, body) => {
   const f = path.join(TMP, name);
@@ -160,8 +160,8 @@ test('edit --from pointing at something that does not exist is refused (the queu
 // again makes it START OVER: it pays for all that context a second time and may undo the work.
 
 test('a job cut off by the quota, WITH a session, resumes with "carry on" and not with the prompt', async () => {
-  const { CONTINUATION, isContinuation } = await import('../lib/prompt.mjs');
-  const { requeue, settle } = await import('../lib/launch.mjs');
+  const { CONTINUATION, isContinuation } = await import('../src/core/prompt.mjs');
+  const { requeue, settle } = await import('../src/runner/lifecycle.mjs');
 
   saveQueue([]);
   const j = addJob({ prompt: 'an enormous prompt with all the context', adapter: 'mock' });
@@ -184,8 +184,8 @@ test('a job cut off by the quota, WITH a session, resumes with "carry on" and no
 test('with no session, the launch never started: the ORIGINAL prompt is sent', async () => {
   // There is nothing to continue here. Sending "carry on" to a conversation that does not
   // exist would be sending Claude a message with no context at all.
-  const { isContinuation } = await import('../lib/prompt.mjs');
-  const { requeue, settle } = await import('../lib/launch.mjs');
+  const { isContinuation } = await import('../src/core/prompt.mjs');
+  const { requeue, settle } = await import('../src/runner/lifecycle.mjs');
 
   saveQueue([]);
   const j = addJob({ prompt: 'the original', adapter: 'mock' });   // sessionId null

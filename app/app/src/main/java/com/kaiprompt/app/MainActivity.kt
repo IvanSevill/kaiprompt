@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -58,6 +59,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.net.NetworkInterface
 
@@ -68,6 +71,8 @@ class MainActivity : ComponentActivity() {
     private var pairing by mutableStateOf<Pairing?>(null)
     private var queue by mutableStateOf(QueueContent())
     private var usageContent by mutableStateOf(UsageContent())
+    private var quotaContent by mutableStateOf(QuotaContent())
+    private var quotaProvider by mutableStateOf("claude")
     private var chatDisplay by mutableStateOf(ChatDisplay())
     private var destination by mutableStateOf<Destination>(Destination.Queue)
     private var update by mutableStateOf<Update.Available?>(null)
@@ -85,6 +90,11 @@ class MainActivity : ComponentActivity() {
     private var updateCheckRunning = false
     private lateinit var pairingScope: CoroutineScope
     private var pairingGeneration = 0L
+    private var refreshGeneration = 0L
+    private var showHiddenConversations by mutableStateOf(false)
+    private var lastAnnouncementAt = 0L
+    private var lastAnnouncedPairing: Pairing? = null
+    private val announcementMutex = Mutex()
 
     private data class QueueContent(
         val state: State? = null,
@@ -95,6 +105,12 @@ class MainActivity : ComponentActivity() {
 
     private data class UsageContent(
         val data: Usage? = null,
+        val loading: Boolean = false,
+        val failed: Boolean = false,
+    )
+
+    private data class QuotaContent(
+        val data: ProviderQuota? = null,
         val loading: Boolean = false,
         val failed: Boolean = false,
     )
@@ -120,8 +136,8 @@ class MainActivity : ComponentActivity() {
                 store.pairing = p
                 pairing = p
                 queue = queue.copy(error = null)
-                announceSelf(p)
                 ListenerService.start(this)
+                announceSelf(p, force = true)
                 CatchUpWorker.schedule(this)
                 refresh()
             }
@@ -139,6 +155,7 @@ class MainActivity : ComponentActivity() {
         pairingScope = newPairingScope()
         pairing = store.pairing
         language = store.language
+        showHiddenConversations = store.showHiddenConversations
         showWhatsNew = store.seenVersion != installedVersion()
         Notifier.ensureChannels(this)
         notificationsEnabled = notificationsAreEnabled()
@@ -147,7 +164,6 @@ class MainActivity : ComponentActivity() {
             askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         if (pairing != null) {
-            ListenerService.start(this)
             CatchUpWorker.schedule(this)
         }
 
@@ -190,7 +206,16 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         notificationsEnabled = notificationsAreEnabled()
         checkForUpdate()
-        if (pairing != null) refresh()
+        pairing?.let {
+            ListenerService.start(this)
+            announceSelf(it)
+            refresh()
+        }
+    }
+
+    override fun onStop() {
+        ListenerService.stop(this)
+        super.onStop()
     }
 
     override fun onDestroy() {
@@ -257,16 +282,15 @@ class MainActivity : ComponentActivity() {
     // --- talking to the PC ------------------------------------------------------
     private fun refresh() {
         if (pairing == null) return
+        val generation = ++refreshGeneration
         queue = queue.copy(loading = true)
         pairingRequest(
-            request = { api ->
-                val snapshot = api.state()
-                snapshot to api.conversations(snapshot)
-            },
+            request = Api::snapshot,
             apply = { result ->
+                if (!acceptsRefresh(generation, refreshGeneration)) return@pairingRequest
                 queue = result.fold(
-                    onSuccess = { (snapshot, summaries) ->
-                        QueueContent(snapshot, summaries, error = null, loading = false)
+                    onSuccess = { snapshot ->
+                        QueueContent(snapshot.state, snapshot.conversations, error = null, loading = false)
                     },
                     onFailure = { cause ->
                         queue.copy(
@@ -288,9 +312,19 @@ class MainActivity : ComponentActivity() {
      * all, so it never learnt its name and never counted it as paired. The pairing QR stayed
      * on screen and the device list showed nothing.
      */
-    private fun announceSelf(p: Pairing) = pairingScope.launch(Dispatchers.IO) {
-        val callback = localAddress()?.let { ListenerService.callbackUrl(it) }
-        runCatching { api(p).registerDevice(callback, deviceName(), store.deviceId) }
+    private fun announceSelf(p: Pairing, force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        if (!force && lastAnnouncedPairing == p && now - lastAnnouncementAt < 5_000) return
+        lastAnnouncedPairing = p
+        lastAnnouncementAt = now
+        val generation = pairingGeneration
+        pairingScope.launch(Dispatchers.IO) {
+            announcementMutex.withLock {
+                if (!isCurrentPairing(p, generation)) return@withLock
+                val callback = localAddress()?.let { ListenerService.callbackUrl(it) }
+                runCatching { api(p).registerDevice(callback, deviceName(), store.deviceId) }
+            }
+        }
     }
 
     /** What this phone is called. Never blank, and never "?" — the PC cannot work this out. */
@@ -308,9 +342,15 @@ class MainActivity : ComponentActivity() {
 
     private fun localAddress(): String? = runCatching {
         NetworkInterface.getNetworkInterfaces().toList()
-            .flatMap { it.inetAddresses.toList() }
-            .firstOrNull { !it.isLoopbackAddress && it.address.size == 4 }
-            ?.hostAddress
+            .filter { it.isUp && !it.isLoopback && !it.isVirtual }
+            .filterNot { it.name.lowercase().contains(Regex("tun|tap|vpn|docker|veth|virtual|vmnet|tailscale")) }
+            .flatMap { network -> network.inetAddresses.toList().map { network to it } }
+            .filter { (_, address) -> !address.isLoopbackAddress && address.address.size == 4 }
+            .sortedWith(compareByDescending<Pair<NetworkInterface, java.net.InetAddress>> { (network, address) ->
+                (if (address.isSiteLocalAddress) 10 else 0) +
+                    (if (network.name.lowercase().contains(Regex("wlan|wifi|eth"))) 2 else 0)
+            }.thenBy { it.first.name }.thenBy { it.second.hostAddress })
+            .firstOrNull()?.second?.hostAddress
     }.getOrNull()
 
     private fun openChat(summary: ConversationSummary) {
@@ -328,18 +368,21 @@ class MainActivity : ComponentActivity() {
                 adapter = summary.adapter, provider = summary.provider, model = summary.model,
                 dir = null, turns = emptyList(), status = summary.status,
                 terminal = isTerminalStatus(summary.status),
+                conversationId = summary.conversationId,
             ),
             loading = summary.chatAvailable,
         )
         chatLiveState = if (summary.status in setOf("pending", "quota")) "waiting" else "idle"
         if (!summary.chatAvailable) return
         pairingRequest(
-            request = { it.chat(summary.ref) },
+            request = { it.conversation(summary) },
             apply = applyChat@{ result ->
                 val current = destination as? Destination.Chat
-                if (chatGeneration != streamGeneration || current?.conversation?.ref != summary.ref) return@applyChat
+                if (chatGeneration != streamGeneration || current?.conversation?.conversationId != summary.conversationId) return@applyChat
                 result.onSuccess { loaded ->
-                    chatDisplay = ChatDisplay(chat = loaded)
+                    chatDisplay = ChatDisplay(chat = loaded.copy(
+                        conversationId = loaded.conversationId ?: summary.conversationId,
+                    ))
                     if (streamJobId != null) startLiveChat(summary, streamJobId, streamGeneration)
                     else chatLiveState = "finished"
                 }.onFailure { cause ->
@@ -438,15 +481,14 @@ class MainActivity : ComponentActivity() {
 
     private fun reloadChat(summary: ConversationSummary, jobId: String, streamGeneration: Long = chatGeneration) {
         pairingRequest(
-            request = { it.chat(summary.ref) },
+            request = { it.conversation(summary) },
             apply = applyReload@{ result ->
                 if (!isCurrentChat(jobId, streamGeneration)) return@applyReload
                 result.onSuccess { fresh ->
-                    val oldIds = chatDisplay.chat?.eventIds.orEmpty()
-                    chatDisplay = chatDisplay.copy(chat = fresh.copy(
-                        eventIds = fresh.eventIds + oldIds,
-                        cursor = fresh.cursor ?: chatDisplay.chat?.cursor,
-                    ))
+                    val normalized = fresh.copy(
+                        conversationId = fresh.conversationId ?: summary.conversationId,
+                    )
+                    chatDisplay = chatDisplay.copy(chat = mergeChatSnapshot(chatDisplay.chat, normalized))
                 }
             },
         )
@@ -461,6 +503,22 @@ class MainActivity : ComponentActivity() {
                 usageContent = result.fold(
                     onSuccess = { UsageContent(data = it) },
                     onFailure = { usageContent.copy(loading = false, failed = true) },
+                )
+            },
+        )
+    }
+
+    private fun refreshQuota() {
+        if (pairing == null) return
+        val requestedProvider = quotaProvider
+        quotaContent = QuotaContent(loading = true)
+        pairingRequest(
+            request = { it.quota(requestedProvider) },
+            apply = { result ->
+                if (quotaProvider != requestedProvider) return@pairingRequest
+                quotaContent = result.fold(
+                    onSuccess = { QuotaContent(data = it) },
+                    onFailure = { QuotaContent(failed = true) },
                 )
             },
         )
@@ -483,15 +541,9 @@ class MainActivity : ComponentActivity() {
             val attempt = withContext(Dispatchers.IO) {
                 try {
                     val client = api(p)
-                    var remote = client.deleteDevice(store.deviceId)
-                    repeat(40) {
-                        if (remote.mode == "pairing" && !remote.registered) {
-                            return@withContext UnpairAttempt(UnpairAttemptKind.REMOTE_SUCCESS)
-                        }
-                        Thread.sleep(500)
-                        remote = client.pairingState(store.deviceId)
-                    }
-                    UnpairAttempt(UnpairAttemptKind.TIMEOUT, localizedString(R.string.unpair_wait_timeout))
+                    val remote = client.deleteDevice(store.deviceId)
+                    if (!remote.registered) UnpairAttempt(UnpairAttemptKind.REMOTE_SUCCESS)
+                    else UnpairAttempt(UnpairAttemptKind.TIMEOUT, localizedString(R.string.unpair_wait_timeout))
                 } catch (cause: Api.Unauthorized) {
                     UnpairAttempt(UnpairAttemptKind.UNAUTHORIZED, cause.message)
                 } catch (cause: Api.Down) {
@@ -516,11 +568,12 @@ class MainActivity : ComponentActivity() {
     private fun clearPairing() {
         beginPairingSession()
         store.pairing = null
-        store.announced = emptySet()
+        store.announced = emptyList()
         store.notificationBaselineReady = false
         pairing = null
         queue = QueueContent()
         usageContent = UsageContent()
+        quotaContent = QuotaContent()
         chatDisplay = ChatDisplay()
         destination = Destination.Queue
         chatLiveState = "idle"
@@ -569,6 +622,11 @@ class MainActivity : ComponentActivity() {
                     Step(1, stringResource(R.string.pair_step_start), "kaip serve")
                     Spacer(Modifier.height(20.dp))
                     Step(2, stringResource(R.string.pair_step_scan), null)
+                }
+
+                update?.let {
+                    Spacer(Modifier.height(18.dp))
+                    UpdateNotice(it)
                 }
 
                 Spacer(Modifier.height(24.dp))
@@ -637,6 +695,7 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun QueueScreen() {
         val s = queue.state
+        val visibleConversations = if (showHiddenConversations) queue.conversations else queue.conversations.filterNot { it.hidden }
 
         Column(Modifier.fillMaxSize()) {
             TopBar(s)
@@ -652,8 +711,6 @@ class MainActivity : ComponentActivity() {
                 Alarm(stringResource(R.string.connection_alarm_title), queue.error ?: "", stringResource(R.string.connection_alarm_hint))
             }
 
-            s?.quota?.let { QuotaStrip(it) }
-
             when {
                 s == null && queue.loading -> Center { StateMessage(stringResource(R.string.connecting), loading = true) }
                 s == null -> Center {
@@ -664,14 +721,14 @@ class MainActivity : ComponentActivity() {
                         onAction = { refresh() },
                     )
                 }
-                queue.conversations.isEmpty() -> EmptyQueue()
+                visibleConversations.isEmpty() -> EmptyQueue()
                 else -> LazyColumn(
                     Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(14.dp, 8.dp, 14.dp, 28.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    item(key = "queue-heading") { QueueHeading(queue.conversations.size) }
-                    items(queue.conversations, key = { it.ref }) { summary ->
+                    item(key = "queue-heading") { QueueHeading(visibleConversations.size) }
+                    items(visibleConversations, key = { it.conversationId }) { summary ->
                         ConversationCard(summary) { openChat(summary) }
                     }
                 }
@@ -807,23 +864,6 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun QuotaStrip(q: Quota) {
-        val free = if (q.renewed) 100 else (q.freePct ?: return)
-        Column(Modifier.fillMaxWidth().padding(20.dp, 12.dp, 20.dp, 6.dp)) {
-            QuotaBar(
-                label = stringResource(R.string.quota_session),
-                free = free,
-                resetsAt = q.resetsAt,
-                renewed = q.renewed,
-            )
-            q.freePctWeek?.let {
-                Spacer(Modifier.height(10.dp))
-                QuotaBar(label = stringResource(R.string.quota_weekly), free = it, resetsAt = q.resetsAtWeek)
-            }
-        }
-    }
-
-    @Composable
     private fun UpdateNotice(u: Update.Available) {
         Column(
             Modifier.fillMaxWidth()
@@ -869,34 +909,6 @@ class MainActivity : ComponentActivity() {
                 }
             },
         )
-    }
-
-    @Composable
-    private fun QuotaBar(label: String, free: Int, resetsAt: Long?, renewed: Boolean = false) {
-        val colour = when {
-            free > 40 -> K.Ok
-            free > 15 -> K.Warn
-            else -> K.Err
-        }
-        Column(Modifier.fillMaxWidth()) {
-            Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
-                Text(label, color = K.Muted, fontSize = 11.sp)
-                Text(
-                    if (renewed) stringResource(R.string.quota_renewed) else stringResource(R.string.quota_free, free) +
-                        (resetsAt?.let { "  ·  ${stringResource(R.string.returns_relative, relative(LocalContext.current, it))}" } ?: ""),
-                    color = colour, fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
-                )
-            }
-            Spacer(Modifier.height(6.dp))
-            LinearProgressIndicator(
-                progress = { free / 100f },
-                modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)),
-                color = colour,
-                trackColor = K.Line,
-                gapSize = 0.dp,
-                drawStopIndicator = {},
-            )
-        }
     }
 
     @Composable
@@ -1004,6 +1016,7 @@ class MainActivity : ComponentActivity() {
     private fun SettingsScreen(onBack: () -> Unit) {
         val s = queue.state
         LaunchedEffect(Unit) { refreshUsage() }
+        LaunchedEffect(quotaProvider) { refreshQuota() }
 
         ScrollableScreen(stringResource(R.string.settings), onBack) {
 
@@ -1033,6 +1046,9 @@ class MainActivity : ComponentActivity() {
                 ) {
                     Text(stringResource(if (notificationsEnabled) R.string.notification_test else R.string.notification_open_settings))
                 }
+                Spacer(Modifier.height(26.dp))
+
+                QuotaPanel(quotaContent)
                 Spacer(Modifier.height(26.dp))
 
                 UsagePanel(usageContent.data, usageContent.loading, usageContent.failed)
@@ -1108,34 +1124,54 @@ class MainActivity : ComponentActivity() {
 
                 Spacer(Modifier.height(30.dp))
 
-                // --- the destructive half ------------------------------------------------
-                Group(stringResource(R.string.cleanup))
-                Text(
-                    stringResource(R.string.cleanup_description),
-                    color = K.Muted, fontSize = 12.sp, lineHeight = 17.sp,
-                )
-                Spacer(Modifier.height(12.dp))
+                // --- conversation visibility ---------------------------------------------
+                Group(stringResource(R.string.conversation_management))
+                Panel {
+                    Text(
+                        stringResource(R.string.cleanup_description),
+                        color = K.Muted, fontSize = 12.sp, lineHeight = 17.sp,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedButton(
+                        onClick = { confirmClear = true },
+                        modifier = Modifier.fillMaxWidth().height(46.dp),
+                        shape = RoundedCornerShape(11.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = K.Text),
+                    ) {
+                        Text(stringResource(R.string.clear_finished), fontSize = 14.sp)
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Row(
+                        Modifier.fillMaxWidth().clickable {
+                            showHiddenConversations = !showHiddenConversations
+                            store.showHiddenConversations = showHiddenConversations
+                        }.padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(stringResource(R.string.show_hidden), color = K.Text, modifier = Modifier.weight(1f))
+                        Switch(
+                            checked = showHiddenConversations,
+                            onCheckedChange = {
+                                showHiddenConversations = it
+                                store.showHiddenConversations = it
+                            },
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(24.dp))
                 OutlinedButton(
-                    onClick = { confirmClear = true },
-                    modifier = Modifier.fillMaxWidth().height(46.dp),
+                    onClick = { unpair() },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp),
                     shape = RoundedCornerShape(11.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, K.Err),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = K.Err),
                 ) {
-                    Text(stringResource(R.string.clear_finished), fontSize = 14.sp)
+                    Text(stringResource(R.string.unpair), fontSize = 14.sp, fontWeight = FontWeight.Bold)
                 }
-
-                Spacer(Modifier.height(14.dp))
-                TextButton(
-                    onClick = { unpair() },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(stringResource(R.string.unpair), color = K.Muted, fontSize = 13.sp)
-                }
-
-                Spacer(Modifier.height(50.dp))
         }
 
-        // Confirmation, because it is not undoable and there is no bin to fish it out of.
+        // Confirmation prevents an accidental bulk visibility change.
         if (confirmClear) {
             AlertDialog(
                 onDismissRequest = { confirmClear = false },
@@ -1148,8 +1184,8 @@ class MainActivity : ComponentActivity() {
                     )
                 },
                 confirmButton = {
-                    TextButton(onClick = { confirmClear = false; clearFinished() }) {
-                        Text(stringResource(R.string.clear), color = K.Err, fontWeight = FontWeight.Bold)
+                    TextButton(onClick = { confirmClear = false; hideFinished() }) {
+                        Text(stringResource(R.string.hide), color = K.Accent, fontWeight = FontWeight.Bold)
                     }
                 },
                 dismissButton = {
@@ -1161,12 +1197,19 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun clearFinished() {
+    private fun hideFinished() {
+        val generation = ++refreshGeneration
         pairingRequest(
-            request = { it.clearFinished() },
+            request = { it.hideFinished() },
             apply = { result ->
-                result.onSuccess { refresh() }
-                    .onFailure { queue = queue.copy(error = it.message ?: localizedString(R.string.error_clear)) }
+                if (!acceptsRefresh(generation, refreshGeneration)) return@pairingRequest
+                result.onSuccess {
+                    queue = queue.copy(conversations = queue.conversations.map { summary ->
+                        if (isTerminalStatus(summary.status)) summary.copy(hidden = true) else summary
+                    })
+                    refresh()
+                }
+                    .onFailure { queue = queue.copy(error = it.message ?: localizedString(R.string.error_clear), loading = false) }
             },
         )
     }
@@ -1205,6 +1248,110 @@ class MainActivity : ComponentActivity() {
             },
         )
     }
+
+    @Composable
+    private fun QuotaPanel(content: QuotaContent) {
+        Group(stringResource(R.string.quota))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("claude" to "Claude", "codex" to "Codex").forEach { (id, label) ->
+                FilterChip(
+                    selected = quotaProvider == id,
+                    onClick = { if (quotaProvider != id) quotaProvider = id },
+                    label = { Text(label) },
+                )
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+
+        val quota = content.data
+        if (quota == null) {
+            StateMessage(
+                title = stringResource(if (content.loading) R.string.quota_loading else R.string.quota_request_failed),
+                loading = content.loading,
+                actionLabel = if (content.failed) stringResource(R.string.retry) else null,
+                onAction = if (content.failed) ({ refreshQuota() }) else null,
+                compact = true,
+            )
+            return
+        }
+
+        val kind = quotaDisplayKind(quota)
+        val statusColour = when (kind) {
+            QuotaDisplayKind.AVAILABLE -> K.Ok
+            QuotaDisplayKind.STALE -> K.Warn
+            QuotaDisplayKind.UNAVAILABLE, QuotaDisplayKind.ERROR -> K.Err
+        }
+        val statusText = when (kind) {
+            QuotaDisplayKind.AVAILABLE -> stringResource(R.string.quota_available)
+            QuotaDisplayKind.STALE -> stringResource(R.string.quota_stale)
+            QuotaDisplayKind.UNAVAILABLE -> stringResource(R.string.quota_unavailable)
+            QuotaDisplayKind.ERROR -> stringResource(R.string.quota_error)
+        }
+        Text(statusText, color = statusColour, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        quota.error?.let {
+            Spacer(Modifier.height(4.dp))
+            Text(listOfNotNull(it.code, it.message).joinToString(": "), color = K.Muted, fontSize = 11.sp)
+        }
+
+        if (quota.limits.isEmpty() && kind in setOf(QuotaDisplayKind.AVAILABLE, QuotaDisplayKind.STALE)) {
+            Spacer(Modifier.height(8.dp))
+            Text(stringResource(R.string.quota_limits_unknown), color = K.Muted, fontSize = 12.sp)
+        }
+        quota.limits.forEach { limit ->
+            Spacer(Modifier.height(12.dp))
+            Text(limit.id, color = K.Text, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            limit.primary?.let { QuotaWindowRow(stringResource(R.string.quota_primary), it) }
+            limit.secondary?.let { QuotaWindowRow(stringResource(R.string.quota_secondary), it) }
+        }
+
+        val source = quota.source.kind?.let { kindLabel ->
+            if (quota.source.official == true) stringResource(R.string.quota_source_official, kindLabel)
+            else kindLabel
+        }
+        source?.let { Fact(stringResource(R.string.quota_source), it, modifier = Modifier.fillMaxWidth().padding(top = 12.dp)) }
+        quota.freshness.observedAt?.let {
+            Fact(stringResource(R.string.quota_observed), quotaResetLabel(it))
+        }
+        quota.plan?.let { Fact(stringResource(R.string.quota_plan), it) }
+        quota.credits?.let { credits ->
+            val values = listOfNotNull(
+                credits.balance?.let { stringResource(R.string.quota_credit_balance, quotaNumber(it) ?: "") },
+                credits.unlimited?.takeIf { it }?.let { stringResource(R.string.quota_credits_unlimited) },
+                credits.hasCredits?.let { stringResource(if (it) R.string.quota_credits_available else R.string.quota_credits_empty) },
+                credits.spendRemainingPercent?.let { stringResource(R.string.quota_credits_remaining, quotaNumber(it) ?: "") },
+                credits.resetAt?.let { stringResource(R.string.quota_resets, quotaResetLabel(it)) },
+            )
+            if (values.isNotEmpty()) Fact(stringResource(R.string.quota_credits), values.joinToString("  ·  "))
+        }
+    }
+
+    @Composable
+    private fun QuotaWindowRow(label: String, window: QuotaWindow) {
+        val percent = window.remainingPercent
+        val reset = window.resetAt?.let(::quotaResetLabel)
+        val details = listOfNotNull(
+            percent?.let { stringResource(R.string.quota_remaining, quotaNumber(it) ?: "") },
+            reset?.let { stringResource(R.string.quota_resets, it) },
+            window.durationMinutes?.let { stringResource(R.string.quota_window_minutes, quotaNumber(it) ?: "") },
+        )
+        Column(Modifier.fillMaxWidth().padding(top = 7.dp)) {
+            Text(label, color = K.Muted, fontSize = 11.sp)
+            if (details.isNotEmpty()) Text(details.joinToString("  ·  "), color = K.Text, fontSize = 11.sp)
+            percent?.let {
+                Spacer(Modifier.height(5.dp))
+                val colour = when { it > 40 -> K.Ok; it > 15 -> K.Warn; else -> K.Err }
+                LinearProgressIndicator(
+                    progress = { (it / 100.0).toFloat().coerceIn(0f, 1f) },
+                    modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)),
+                    color = colour, trackColor = K.Line, gapSize = 0.dp, drawStopIndicator = {},
+                )
+            }
+        }
+    }
+
+    private fun quotaResetLabel(value: String): String = runCatching {
+        relative(language.localizedContext(this), java.time.Instant.parse(value).toEpochMilli())
+    }.getOrDefault(value)
 
     @Composable
     private fun UsagePanel(data: Usage?, loading: Boolean, failed: Boolean) {
@@ -1266,10 +1413,22 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun UsageTotals(totals: UsageTotals, compact: Boolean = false) {
-        val input = totals.input?.let { stringResource(R.string.usage_input, it.value) }
-        val output = totals.output?.let { stringResource(R.string.usage_output, it.value) }
-        val total = totals.total?.let { stringResource(R.string.usage_total, it.value) }
-        val cost = totals.cost?.let { stringResource(R.string.usage_cost, it.value) }
+        val input = totals.input?.let {
+            val text = stringResource(R.string.usage_input, it.value)
+            if (it.partial) stringResource(R.string.usage_estimated, text) else text
+        }
+        val output = totals.output?.let {
+            val text = stringResource(R.string.usage_output, it.value)
+            if (it.partial) stringResource(R.string.usage_estimated, text) else text
+        }
+        val total = totals.total?.let {
+            val text = stringResource(R.string.usage_total, it.value)
+            if (it.partial) stringResource(R.string.usage_estimated, text) else text
+        }
+        val cost = totals.cost?.let {
+            val text = stringResource(R.string.usage_cost, it.value)
+            if (it.partial) stringResource(R.string.usage_estimated, text) else text
+        }
         val values = listOfNotNull(input, output, total, cost)
         if (values.isEmpty()) {
             Text(stringResource(R.string.usage_unavailable), color = K.Muted, fontSize = 12.sp)
@@ -1497,7 +1656,9 @@ class MainActivity : ComponentActivity() {
                 Modifier.align(Alignment.CenterHorizontally).widthIn(max = 840.dp).fillMaxSize(),
                 contentPadding = PaddingValues(16.dp, 18.dp, 20.dp, 44.dp),
             ) {
-                items(c.turns) { turn -> Turn(turn, assistantLabel) }
+                itemsIndexed(c.turns, key = { index, turn -> turnStableKey(turn, index) }) { _, turn ->
+                    Turn(turn, assistantLabel)
+                }
             }
         }
     }
@@ -1527,17 +1688,19 @@ class MainActivity : ComponentActivity() {
                 )
                 Spacer(Modifier.height(7.dp))
 
-                for (b in turn.blocks) when (b) {
-                    is Block.Text -> Text(
-                        b.text.trim(),
-                        color = K.Text, fontSize = 15.sp, lineHeight = 22.sp,
-                        modifier = Modifier.padding(bottom = 8.dp),
-                    )
-
-                    is Block.Thinking -> ThinkingBlock(b.text)
-
-                    is Block.Tool -> ToolLine(b)
-                    is Block.Todos -> TodoBlock(b)
+                turn.blocks.forEachIndexed { index, block ->
+                    key(blockStableKey(block, index)) {
+                        when (block) {
+                            is Block.Text -> Text(
+                                block.text.trim(),
+                                color = K.Text, fontSize = 15.sp, lineHeight = 22.sp,
+                                modifier = Modifier.padding(bottom = 8.dp),
+                            )
+                            is Block.Thinking -> ThinkingBlock(block.text)
+                            is Block.Tool -> ToolLine(block)
+                            is Block.Todos -> TodoBlock(block)
+                        }
+                    }
                 }
                 if (turn.diffs.isNotEmpty()) DiffToggle(turn.diffs)
             }
@@ -1593,7 +1756,7 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun DiffToggle(diffs: List<Diff>) {
-        var expanded by remember(diffs) { mutableStateOf(false) }
+        var expanded by remember(diffs.map(Diff::id)) { mutableStateOf(false) }
         val added = diffs.sumOf { it.added }
         val removed = diffs.sumOf { it.removed }
         TextButton(onClick = { expanded = !expanded }, contentPadding = PaddingValues(0.dp)) {
@@ -1603,28 +1766,65 @@ class MainActivity : ComponentActivity() {
                 color = K.Info, fontSize = 12.sp, fontFamily = FontFamily.Monospace,
             )
         }
-        if (expanded) {
-            Column(
-                Modifier.fillMaxWidth().heightIn(max = 260.dp).verticalScroll(rememberScrollState())
-                    .clip(RoundedCornerShape(10.dp)).background(K.Bg.copy(alpha = 0.65f)).padding(11.dp),
-            ) {
-                diffs.forEach { diff ->
-                    Text(diff.file, color = K.Muted, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-                    diff.diff.lines().forEach { line ->
-                        Text(
-                            line,
-                            color = when {
-                                line.startsWith("+") -> K.Ok
-                                line.startsWith("-") -> K.Err
-                                else -> K.Text
-                            },
-                            fontSize = 11.sp, lineHeight = 15.sp, fontFamily = FontFamily.Monospace,
-                        )
+        Column(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                .background(K.Bg.copy(alpha = 0.65f)).padding(11.dp),
+        ) {
+            var remaining = if (expanded) 120 else 6
+            diffs.forEach { diff ->
+                key(diff.id) {
+                    Text(
+                        "${diff.file}  +${diff.added} -${diff.removed}",
+                        color = K.Muted, fontSize = 11.sp, fontFamily = FontFamily.Monospace,
+                    )
+                    val lines = diffDisplayLines(diff, expanded).take(remaining.coerceAtLeast(0))
+                    lines.forEachIndexed { index, line ->
+                        key("${diff.id}:$index:${line.hashCode()}") {
+                            Text(
+                                line,
+                                color = when {
+                                    line.startsWith("+") -> K.Ok
+                                    line.startsWith("-") -> K.Err
+                                    else -> K.Text
+                                },
+                                fontSize = 11.sp, lineHeight = 15.sp, fontFamily = FontFamily.Monospace,
+                            )
+                        }
                     }
+                    remaining -= lines.size
+                    if (diff.truncated) Text(
+                        "[truncated: ${diff.truncationReason ?: "limit"}]",
+                        color = K.Muted, fontSize = 10.sp, fontFamily = FontFamily.Monospace,
+                    )
                     Spacer(Modifier.height(8.dp))
                 }
             }
+            val available = diffs.sumOf { it.lines.size }
+            val shown = (if (expanded) 120 else 6).coerceAtMost(available)
+            if (shown < available) Text(
+                "+${available - shown} lines", color = K.Muted,
+                fontSize = 10.sp, fontFamily = FontFamily.Monospace,
+            )
         }
+    }
+
+    private fun turnStableKey(turn: Turn, index: Int): String {
+        val identity = turn.diffs.firstOrNull()?.id ?: turn.blocks.firstNotNullOfOrNull { block ->
+            when (block) {
+                is Block.Text -> block.eventId ?: block.text.hashCode().toString()
+                is Block.Tool -> block.eventId ?: "${block.name}:${block.arg}"
+                is Block.Thinking -> block.eventId ?: block.text.hashCode().toString()
+                is Block.Todos -> block.eventId ?: block.items.hashCode().toString()
+            }
+        } ?: index.toString()
+        return "${turn.role}:${turn.at.orEmpty()}:$identity:$index"
+    }
+
+    private fun blockStableKey(block: Block, index: Int): String = when (block) {
+        is Block.Text -> block.eventId ?: "text:$index:${block.text.hashCode()}"
+        is Block.Tool -> block.eventId ?: "tool:$index:${block.name}:${block.arg}"
+        is Block.Thinking -> block.eventId ?: "thinking:$index:${block.text.hashCode()}"
+        is Block.Todos -> block.eventId ?: "todos:$index:${block.items.hashCode()}"
     }
 
     /** One tool call, on one line. There are dozens of these; they must not shout. */

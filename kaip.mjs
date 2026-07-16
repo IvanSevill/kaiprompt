@@ -12,20 +12,24 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import {
-  loadProjects, loadQueue, loadSessions,
-  historyPath, outPath, preview, rememberSession, saveProjects,
-} from './lib/store.mjs';
-import { fmt } from './lib/time.mjs';
-import { reapStale, runQueue } from './lib/runner.mjs';
+  loadProjects, loadQueue, loadSessions, rememberSession, saveProjects,
+} from './src/storage/repositories.mjs';
+import { historyPath, outPath } from './src/storage/paths.mjs';
+import { preview } from './src/core/identity.mjs';
+import { fmt } from './src/core/time.mjs';
+import { reapStale, runQueue } from './src/runner/index.mjs';
 import { renderChat, resumeCommand } from './lib/chat.mjs';
-import { editJob } from './lib/edit.mjs';
-import { addJob, clearFinished, jobDetails, removeJobs, retryJob } from './lib/queue.mjs';
-import { jobPreview } from './lib/prompt.mjs';
+import { editJob } from './src/core/edit.mjs';
+import { addJob, clearFinished, jobDetails, removeJobs, retryJob } from './src/core/jobs.mjs';
+import { jobPreview } from './src/core/prompt.mjs';
 import { COMMANDS, ENGINES } from './lib/commands.mjs';
-import { discoverOpenCodeModels, engineNames } from './lib/engines.mjs';
-import { applyEngineMigration, inspectEngineMigration } from './lib/migrate.mjs';
+import { engineNames } from './src/core/engines.mjs';
+import { discoverOpenCodeModels } from './src/adapters/engine-discovery.mjs';
+import {
+  applyConversationMigration, applyEngineMigration, inspectConversationMigration, inspectEngineMigration,
+} from './lib/migrate.mjs';
 import { c, isTTY } from './lib/ui.mjs';
-import { aggregateUsage } from './lib/usage.mjs';
+import { aggregateUsage } from './src/core/usage.mjs';
 
 // --- argument parsing --------------------------------------------------------
 function parseArgs(argv) {
@@ -109,7 +113,7 @@ async function cmdAdd({ flags, pos, engine }) {
     return;
   }
 
-  const { runnerLine, runnerStatus } = await import('./lib/runner-status.mjs');
+  const { runnerLine, runnerStatus } = await import('./src/runner/coordination.mjs');
 
   // Only arm the daemon if nothing is processing the queue. If a `run` is up, it will fire
   // this job perfectly well, and a daemon spawned now would just hit the lock and die —
@@ -117,7 +121,7 @@ async function cmdAdd({ flags, pos, engine }) {
   // process we then let die is the exact silent lie this tool exists to prevent.
   let st = runnerStatus();
   if (!st.willFire) {
-    const d = await import('./lib/daemon.mjs');
+    const d = await import('./src/runner/daemon.mjs');
     d.ensure();
     await new Promise((r) => setTimeout(r, 400));      // let it take the lock before we look
     st = runnerStatus();
@@ -143,11 +147,15 @@ function cmdEngines({ pos, flags }) {
 }
 
 function cmdMigrate({ pos }) {
-  if (pos[0] !== 'engines') throw new Error('usage: kaip migrate engines [--apply]');
-  const report = process.argv.includes('--apply') ? applyEngineMigration() : inspectEngineMigration();
-  console.log(`${report.jobs} jobs · ${report.sessions} targets`);
-  for (const issue of report.issues) console.log(`  ${issue.type}: ${issue.id || issue.target} — ${issue.message}`);
-  if (!process.argv.includes('--apply')) console.log('  inspect only; run: kaip migrate engines --apply');
+  if (!['engines', 'conversations'].includes(pos[0])) throw new Error('usage: kaip migrate engines|conversations [--apply]');
+  const apply = process.argv.includes('--apply');
+  const report = pos[0] === 'conversations'
+    ? (apply ? applyConversationMigration() : inspectConversationMigration())
+    : (apply ? applyEngineMigration() : inspectEngineMigration());
+  console.log(`${report.jobs} jobs · ${report.sessions ?? report.targets} targets`);
+  for (const issue of report.issues ?? []) console.log(`  ${issue.type}: ${issue.id || issue.target} — ${issue.message}`);
+  if (report.groups != null) console.log(`  ${report.groups} conversations · ${report.changedJobs} jobs + ${report.changedSessions} sessions need IDs`);
+  if (!apply) console.log(`  dry run; run: kaip migrate ${pos[0]} --apply`);
   else console.log(`  migrated; backups stamped ${report.backup}`);
 }
 
@@ -291,7 +299,7 @@ function cmdProjects({ pos }) {
 // The daemon is what makes a scheduled launch fire on its own. `run` is the loop
 // itself (what the detached child executes); the rest are controls around it.
 async function cmdDaemon({ flags, pos }) {
-  const d = await import('./lib/daemon.mjs');
+  const d = await import('./src/runner/daemon.mjs');
   const sub = pos[0] || 'status';
   const seq = Boolean(flags.seq);
 
@@ -396,7 +404,7 @@ async function saveLastUrl(url) {
 
 async function cmdApp({ pos }) {
   const { spawnSync } = await import('node:child_process');
-  const { ROOT } = await import('./lib/store.mjs');
+  const { ROOT } = await import('./src/storage/paths.mjs');
   const { apkPath } = await import('./lib/server.mjs');
   const appDir = path.join(ROOT, 'app');
 
@@ -610,7 +618,7 @@ async function showPairing(port, devices = 1, { attached = false } = {}) {
 async function drawLivePanel(port, paired) {
   const { stateDTO } = await import('./lib/server.mjs');
   const { hardClear } = await import('./lib/ui.mjs');
-  const { fmt, humanDur } = await import('./lib/time.mjs');
+  const { fmt, humanDur } = await import('./src/core/time.mjs');
 
   const LABEL = {
     running: () => c.accent('● running'),
@@ -720,6 +728,8 @@ Seeing what happened:
   out [<id>]                  the ANSWER — just the last thing Claude said
   chat <id|target|session>    the CONVERSATION — every turn  [--last N] [--full] [--raw]
    usage                       tokens by session and totals [--engine E] [--provider P] [--target T] [--session S]
+   quota                       current quota [--provider claude|codex] [--json] [--source auto|app-server|rollout]
+                               [--quiet] [--min N]; exits 0 available, 1 below limit, 2 unavailable
 
 The phone:
   serve                       the API + a Cloudflare tunnel, and the pairing QR.
@@ -737,7 +747,8 @@ Setup:
   projects                    folders/projects available for --dir
    projects <alias> <path>     register a folder alias
    engines [list|models]       list engines or OpenCode models for a provider
-   migrate engines [--apply]    inspect or migrate persisted engine/session data
+   migrate engines|conversations [--apply]
+                               inspect or migrate persisted engine/session/conversation data
   help
 
 Scheduling vs running — the one thing to understand:
@@ -821,6 +832,13 @@ try {
     case 'chat': cmdChat(parsed); break;
     case 'edit': cmdEdit(parsed); break;
     case 'usage': cmdUsage(parsed); break;
+    case 'quota': {
+      const { runClaudeUsage } = await import('./src/adapters/quota-client.mjs');
+      const result = await runClaudeUsage(rest);
+      if (result.status === 'unavailable') console.error(`Error: ${result.message}`);
+      process.exitCode = result.exitCode;
+      break;
+    }
     case 'projects': case 'project': cmdProjects(parsed); break;
     case 'engines': cmdEngines(parsed); break;
     case 'migrate': cmdMigrate(parsed); break;

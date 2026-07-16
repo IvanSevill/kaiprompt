@@ -92,6 +92,9 @@ Requirements:
 - A modern Node.js runtime. No minimum is declared in package metadata; Node 18 or newer is the
   practical baseline because the CLI uses built-in `fetch` and `AbortSignal.timeout`.
 - At least one installed and authenticated engine CLI: `claude`, `codex`, or `opencode`.
+- A separate `claude-usage` clone for `kaip quota` and the OpenCode `usage_metrics` plugin. Put it
+  beside this repository, set `CLAUDE_USAGE_PATH` for the CLI, and/or set `CLAUDE_USAGE_ROOT` for
+  installer loader generation.
 
 Clone the repository and run the dependency-free installer:
 
@@ -102,11 +105,13 @@ node install.mjs
 ```
 
 The installer asks for an optional projects folder, creates `projects.json`, and adds the
-`/prompt` and `/kaip-summary` commands plus a short note under `~/.claude`. It also installs an
-OpenCode `usage_metrics` tool under `~/.config/opencode/plugins`; the tool reports observed Codex
-quota headers and estimated context occupancy without reading prompts or making requests. The
-installer does not overwrite existing files or touch `settings.json`. It prints a shell shortcut
-for the actual clone path; add that shortcut to your profile. Restart OpenCode after installation.
+`/prompt` and `/kaip-summary` commands plus a short note under `~/.claude`. It also installs a tiny
+OpenCode loader under `~/.config/opencode/plugins` that points to the canonical plugin in the
+separate `claude-usage` repository. The loader defaults to a sibling `../claude-usage` clone;
+`CLAUDE_USAGE_ROOT` overrides that root. The installer does not copy quota code, validate or install
+that repository, overwrite user-owned plugin files, or touch `settings.json`. It prints a shell
+shortcut for the actual clone path; add that shortcut to your profile. Restart OpenCode after
+installation.
 
 The examples below assume the clone lives at `~/.claude/tools/kaiprompt`. Use the path printed by
 the installer if you cloned elsewhere.
@@ -176,6 +181,8 @@ kaip chat TARGET                   # conversation by target, job, or session
 kaip edit JOB_ID --at +1h          # edit a pending job
 kaip retry JOB_ID                  # retry an error in its existing session
 kaip usage --engine opencode --provider openai
+kaip quota --provider claude --json
+kaip quota --provider codex --source auto --json
 
 kaip engines list
 kaip engines models --provider openai
@@ -187,6 +194,11 @@ kaip mobile                        # Android download QR
 
 Times accept `HH:MM`, relative forms such as `+30m` and `+2h`, ISO date/time values, and English
 or Spanish forms such as `tomorrow 09:00`, `manana 09:00`, `mon 09:00`, and `lun 09:00`.
+
+`kaip quota` forwards its arguments, output, and exit code to external `claude-usage`. Discovery
+checks `CLAUDE_USAGE_PATH` first (a clone directory or `usage.mjs`), then a sibling
+`../claude-usage/usage.mjs`, then `claude-usage` on `PATH`. Kaiprompt never reads provider
+credentials. If the tool cannot be found, the command exits `2` with the expected install paths.
 
 ### From Claude Code
 
@@ -306,10 +318,12 @@ runner state, tunnel state, versions, and notification status. From the phone it
 finished/error/missed history; it cannot add, edit, retry, run, or delete individual pending jobs.
 Assistant turns are labeled with their actual engine and, for OpenCode, provider.
 
-The fast notification path is a direct callback from the PC to the phone and therefore requires
-the phone to be reachable on its local network. When that is unavailable, including on mobile
-data, Android uses a nominal 15-minute catch-up poll that the operating system may defer. The
-first poll after installation or update is silent so old completions are not replayed as new.
+The optional fast notification path is a direct callback from the PC to the phone while the app is
+in the foreground, and therefore requires the phone to be reachable on its local network. Android
+15 provides no compliant foreground-service type for an indefinite local callback socket; the app
+does not mislabel it as `dataSync`. Background delivery relies on a nominal 15-minute WorkManager
+catch-up poll that the operating system may defer. The first poll after installation or update is
+silent so old completions are not replayed as new.
 
 The UI can follow the system language or be set to Spanish or English. Update checks run when the
 app returns to the foreground and open the latest GitHub release. Settings shows notification
@@ -335,20 +349,20 @@ Pairing creates a bearer token and an AES-256-GCM key on the PC. Both reach the 
 shown on your screen. The Android app requests sealed JSON responses, so their contents cross the
 Cloudflare tunnel as encrypted envelopes whose AES key is not sent through that tunnel.
 
-That protection has a defined boundary: live SSE events are not AES-sealed, request bodies and
-authorization metadata are not payload-sealed, and authenticated API clients can request plain
-JSON. Cloudflare TLS still protects those paths in tunnel mode. Do not treat the tunnel as a fully
-zero-knowledge transport.
+That protection has a defined boundary: authenticated API clients can request plain JSON and
+authorization metadata is not payload-sealed. Android requests sealed API and live SSE payloads;
+the local notification callback also requires the pairing bearer token and an AES-GCM sealed body.
+Cloudflare TLS still protects tunnel metadata. Do not treat the tunnel as a fully zero-knowledge
+transport.
 
 `kaip serve --wifi` starts a new API server without a Cloudflare tunnel and connects over the local
 network. If a server is already active, `kaip serve` restores its screen instead of changing its
 mode; stop that server before restarting with `--wifi`. Wi-Fi mode does not stop engine traffic or
 update checks from using the internet. It uses local HTTP, so use it only on a network you trust.
 
-The fast notification callback is a separate local HTTP endpoint on the phone. It is not protected
-by the API bearer token or AES response sealing, and its payload includes job status, ID, target,
-prompt preview, and error text. A device that can reach that phone endpoint could read the local
-traffic or spoof a notification; keep this path on a trusted LAN.
+The fast notification callback is a separate local HTTP endpoint on the phone. It validates the
+request method, path, source, size and pairing bearer token, and accepts only AES-256-GCM sealed
+payloads. Keep the local network trusted even though forged and plaintext callbacks are rejected.
 
 If a phone is lost, `kaip serve --reset` rotates both the bearer token and encryption key and drops
 all paired devices. The old phone is rejected on its next request.

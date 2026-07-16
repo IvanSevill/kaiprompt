@@ -9,9 +9,10 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-cut-'));
 process.env.KAIP_HOME = TMP;
 process.env.CLAUDE_CONFIG_DIR = path.join(TMP, 'claude');
 
-const { loadQueue, saveQueue, saveSessions, writeJSON } = await import('../lib/store.mjs');
+const { loadQueue, saveQueue, saveSessions } = await import('../src/storage/repositories.mjs');
+const { writeJSON } = await import('../src/storage/json.mjs');
 const { encodeDir, projectsRoot } = await import('../lib/chat.mjs');
-const { CONTINUATION, isContinuation } = await import('../lib/prompt.mjs');
+const { CONTINUATION, isContinuation } = await import('../src/core/prompt.mjs');
 const {
   dismiss, dismissed, findCutShort, isQuotaError, MAX_AGE_MS, readCutShort, resumeCutShort,
 } = await import('../lib/cutshort.mjs');

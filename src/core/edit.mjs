@@ -3,7 +3,7 @@
 // Only `pending` jobs can be edited: a running job is already in the adapter's hands,
 // and a finished one is history — rewriting either would make the queue lie.
 
-import { loadQueue, patchJob, resolveDir } from './store.mjs';
+import { loadQueue, patchJob, resolveDir } from '../storage/repositories.mjs';
 import { parseWhen } from './time.mjs';
 import { linkPrompt } from './prompt.mjs';
 import { normalizeSelection } from './engines.mjs';

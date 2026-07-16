@@ -1,3 +1,5 @@
+import { normalizeToolInput } from '../events/tool-normalize.mjs';
+
 const TOOL_NAMES = {
   read: 'Read', edit: 'Edit', write: 'Write', multiedit: 'MultiEdit',
   bash: 'Bash', glob: 'Glob', grep: 'Grep', task: 'Task', todowrite: 'TodoWrite',
@@ -6,13 +8,7 @@ const TOOL_NAMES = {
 const normalizedType = (value) => String(value ?? '').toLowerCase().replace(/-/g, '_');
 const toolKey = (value) => String(value ?? '').toLowerCase().replace(/[^a-z]/g, '');
 
-export function normalizeOpenCodeInput(value) {
-  const input = value && typeof value === 'object' && !Array.isArray(value) ? { ...value } : {};
-  input.file_path ??= input.filePath ?? input.path ?? input.filename;
-  input.old_string ??= input.oldString ?? input.oldText ?? input.old;
-  input.new_string ??= input.newString ?? input.newText ?? input.new;
-  return input;
-}
+export const normalizeOpenCodeInput = normalizeToolInput;
 
 export function normalizeOpenCodePart(value, { output = true } = {}) {
   if (typeof value === 'string') return value.trim() ? [{ type: 'text', text: value }] : [];

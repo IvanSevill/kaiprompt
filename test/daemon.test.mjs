@@ -28,7 +28,7 @@ const ENV = { ...process.env, KAIP_HOME: TMP, KAIP_NO_DAEMON: '' };
 const cli = (...args) => spawnSync(process.execPath, [CLI, ...args], { env: ENV, encoding: 'utf8' });
 
 process.env.KAIP_HOME = TMP;            // whatever we import here looks at the same temp HOME
-const { isDaemonCmd, parsePosixProcs, parseWinProcs, unaccounted } = await import('../lib/daemon.mjs');
+const { isDaemonCmd, parsePosixProcs, parseWinProcs, unaccounted } = await import('../src/runner/daemon.mjs');
 
 const queue = () => JSON.parse(fs.readFileSync(QUEUE, 'utf8'));
 const job = (id) => queue().find((j) => j.id === id);

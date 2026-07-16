@@ -15,7 +15,7 @@ const REPO = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 // machine that built them; that is normal, which is why they are in .gitignore. Scanning them
 // only produces false alarms that teach people to ignore this test.
 const SKIP_DIRS = new Set([
-  '.git', 'node_modules', 'data', 'out', '.tasks',
+  '.git', 'node_modules', 'data', 'out', '.tasks', '.atl',
   'build', '.gradle',
 ]);
 // User data: it lives on disk but is in .gitignore and is not published.

@@ -22,7 +22,6 @@ import androidx.core.content.ContextCompat
 class Notifier(private val context: Context) {
 
     companion object {
-        const val CHANNEL_LIVE = "kaip_live"
         const val CHANNEL_DONE = "kaip_done"
 
         fun ensureChannels(context: Context) {
@@ -30,11 +29,6 @@ class Notifier(private val context: Context) {
             val nm = context.getSystemService(NotificationManager::class.java)
             val strings = Store(context).language.localizedContext(context)
 
-            nm.createNotificationChannel(
-                NotificationChannel(CHANNEL_LIVE, strings.getString(R.string.notification_channel_connection), NotificationManager.IMPORTANCE_MIN).apply {
-                    description = strings.getString(R.string.notification_channel_connection_description)
-                }
-            )
             nm.createNotificationChannel(
                 NotificationChannel(CHANNEL_DONE, strings.getString(R.string.notification_channel_jobs), NotificationManager.IMPORTANCE_HIGH).apply {
                     description = strings.getString(R.string.notification_channel_jobs_description)
@@ -82,7 +76,7 @@ class Notifier(private val context: Context) {
         }.getOrDefault(false)
     }
 
-    fun jobsFinished(jobs: List<Job>): Set<String> = jobs.mapNotNullTo(mutableSetOf()) { j ->
+    fun jobsFinished(jobs: List<Job>): List<String> = jobs.mapNotNull { j ->
         if (jobFinished(
                 id = j.id,
                 ok = j.status == "done",

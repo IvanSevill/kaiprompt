@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createModelCatalog, parseOpenCodeModels } from '../lib/model-catalog.mjs';
+import { createModelCatalog, parseOpenCodeModels } from '../src/adapters/model-catalog.mjs';
 
 test('one OpenCode result derives every provider and model and is cached', async () => {
   let calls = 0;

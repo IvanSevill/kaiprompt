@@ -14,10 +14,11 @@ import path from 'node:path';
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-notify-'));
 process.env.KAIP_HOME = TMP;
 
-const { saveQueue } = await import('../lib/store.mjs');
-const { addJob } = await import('../lib/queue.mjs');
+const { saveQueue } = await import('../src/storage/repositories.mjs');
+const { addJob } = await import('../src/core/jobs.mjs');
 const { notifyFinished } = await import('../lib/notify.mjs');
 const { saveServerConfig, serverConfig } = await import('../lib/server.mjs');
+const { open } = await import('../lib/crypto.mjs');
 
 // A fake phone: it listens just like the real one (a JSON POST).
 const received = [];
@@ -29,7 +30,15 @@ before(async () => {
     let body = '';
     req.on('data', (c) => { body += c; });
     req.on('end', () => {
-      received.push(JSON.parse(body || '{}'));
+      const conf = serverConfig();
+      received.push({
+        payload: open(JSON.parse(body || '{}'), conf.key),
+        authorization: req.headers.authorization,
+        encrypted: req.headers['x-kaip-enc'],
+        method: req.method,
+        path: req.url,
+        raw: body,
+      });
       res.writeHead(204).end();
     });
   });
@@ -58,9 +67,14 @@ test('a completed job makes the PC call the phone', async () => {
 
   assert.equal(r.sent, 1);
   assert.equal(received.length, 1);
-  assert.equal(received[0].id, j.id);
-  assert.equal(received[0].status, 'done');
-  assert.match(received[0].preview, /run the tests/);
+  assert.equal(received[0].payload.id, j.id);
+  assert.equal(received[0].payload.status, 'done');
+  assert.match(received[0].payload.preview, /run the tests/);
+  assert.equal(received[0].authorization, `Bearer ${serverConfig().token}`);
+  assert.equal(received[0].encrypted, '1');
+  assert.equal(received[0].method, 'POST');
+  assert.equal(received[0].path, '/job-done');
+  assert.doesNotMatch(received[0].raw, /run the tests/);
 });
 
 test('a FAILED job also notifies, including the reason', async () => {
@@ -73,8 +87,8 @@ test('a FAILED job also notifies, including the reason', async () => {
   j.finishedAt = Date.now();
 
   await notifyFinished(j);
-  assert.equal(received[0].status, 'error');
-  assert.equal(received[0].error, 'quota ran out');
+  assert.equal(received[0].payload.status, 'error');
+  assert.equal(received[0].payload.error, 'quota ran out');
 });
 
 test('without a paired phone nobody is called (and it does not crash)', async () => {
@@ -111,4 +125,13 @@ test('the phone is not UNPAIRED after failing to answer once', async () => {
 
   await notifyFinished(j);
   assert.equal(serverConfig().devices.length, 1, 'it remains paired');
+});
+
+test('a non-success callback response counts as a miss', async () => {
+  pair('http://phone.invalid/job-done');
+  const j = addJob({ prompt: 'x', adapter: 'mock' });
+  const result = await notifyFinished(j, {
+    fetchImpl: async () => ({ ok: false, status: 401 }),
+  });
+  assert.deepEqual(result, { sent: 0, dropped: 1 });
 });

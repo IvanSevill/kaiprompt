@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 const HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-usage-'));
 process.env.KAIP_HOME = HOME;
 
-const { aggregateUsage } = await import('../lib/usage.mjs');
+const { aggregateUsage } = await import('../src/core/usage.mjs');
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const history = path.join(HOME, 'data', 'history');
 fs.mkdirSync(history, { recursive: true });

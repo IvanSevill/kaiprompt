@@ -1,9 +1,4 @@
-// Engine metadata and selection validation live here so every front-end applies the same rules.
-import { spawnSync } from 'node:child_process';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { parseOpenCodeModels } from './model-catalog.mjs';
+// Pure engine metadata and selection validation shared by every front-end.
 
 export const ENGINES = Object.freeze({
   claude: { id: 'claude', requiresProvider: false, requiresModel: false },
@@ -13,19 +8,6 @@ export const ENGINES = Object.freeze({
 });
 
 export const engineNames = ({ includeInternal = false } = {}) => Object.values(ENGINES).filter((e) => includeInternal || !e.internal).map((e) => e.id);
-
-export const claudeModels = () => ['sonnet', 'opus', 'fable', 'haiku'];
-
-/** Codex maintains the account-specific model list locally after login. */
-export function discoverCodexModels(file = path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'models_cache.json')) {
-  try {
-    const models = JSON.parse(fs.readFileSync(file, 'utf8')).models ?? [];
-    return models
-      .filter((model) => model.visibility !== 'hide' && model.slug)
-      .sort((a, b) => (a.priority ?? 999) - (b.priority ?? 999))
-      .map((model) => model.slug);
-  } catch { return []; }
-}
 
 export function normalizeSelection({ adapter, engine, provider = null, model = null } = {}, { required = false } = {}) {
   const name = String(engine ?? adapter ?? '').trim();
@@ -50,21 +32,3 @@ export function normalizeSelection({ adapter, engine, provider = null, model = n
 
 export const qualifiedModel = ({ adapter, provider, model }) =>
   adapter === 'opencode' && provider && model ? `${provider}/${model}` : model || null;
-
-function command(bin, args, run) {
-  const r = run ? run(bin, args) : spawnSync(bin, args, { encoding: 'utf8', windowsHide: true, shell: process.platform === 'win32' });
-  if (r?.error || r?.status !== 0) return null;
-  return String(r.stdout || '');
-}
-
-/** Models are owned by OpenCode and can change without a Kaiprompt release. */
-const discovered = new Map();
-export function discoverOpenCodeModels(provider = null, { run } = {}) {
-  const key = provider?.toLowerCase() || '*';
-  if (!run && discovered.has(key)) return discovered.get(key);
-  const out = command(process.platform === 'win32' ? 'opencode.cmd' : 'opencode', ['models', ...(provider ? [provider] : [])], run);
-  if (out == null) return [];
-  const models = parseOpenCodeModels(out);
-  if (!run) discovered.set(key, models);
-  return models;
-}

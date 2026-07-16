@@ -2,7 +2,8 @@
 // every surface reports the same totals without teaching adapters' wire formats to UIs.
 import fs from 'node:fs';
 
-import { HISTORY, historyPath, loadQueue } from './store.mjs';
+import { HISTORY, historyPath } from '../storage/paths.mjs';
+import { loadQueue } from '../storage/repositories.mjs';
 
 const number = (value) => Number.isFinite(value) ? value : null;
 const firstNumber = (...values) => values.map(number).find((value) => value !== null) ?? null;

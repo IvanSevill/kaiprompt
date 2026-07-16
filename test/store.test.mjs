@@ -8,9 +8,11 @@ import path from 'node:path';
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-store-'));
 process.env.KAIP_HOME = TMP;
 const {
-  loadLaunchDefaults, loadQueue, loadSessions, nid, patchJob, preview,
-  readJSON, resolveDir, saveLaunchDefaults, saveProjects, saveQueue, saveSessions, writeJSON,
-} = await import('../lib/store.mjs');
+  loadHiddenConversations, loadLaunchDefaults, loadQueue, loadSessions, mutateHiddenConversations,
+  mutateQueue, patchJob, resolveDir, saveLaunchDefaults, saveProjects, saveQueue, saveSessions,
+} = await import('../src/storage/repositories.mjs');
+const { readJSON, writeJSON } = await import('../src/storage/json.mjs');
+const { nid, preview } = await import('../src/core/identity.mjs');
 
 const job = (over = {}) => ({
   id: nid(), prompt: 'hola', target: null, adapter: 'mock', when: null,
@@ -32,6 +34,20 @@ test('patchJob actualiza solo ese job', () => {
   const q = loadQueue();
   assert.equal(q.find((j) => j.id === a.id).status, 'pending');
   assert.equal(q.find((j) => j.id === b.id).status, 'done');
+});
+
+test('serialized repositories preserve prior queue and hidden fields during mutation', () => {
+  saveQueue([job({ id: 'existing' })]);
+  mutateQueue((queue) => [...queue, job({ id: 'added' })]);
+  assert.deepEqual(loadQueue().map((entry) => entry.id), ['existing', 'added']);
+
+  mutateHiddenConversations(() => ({ conversationIds: ['c1'], futureField: { keep: true } }));
+  mutateHiddenConversations((state) => ({
+    ...state, conversationIds: [...state.conversationIds, 'c2'],
+  }));
+  assert.deepEqual(loadHiddenConversations(), {
+    conversationIds: ['c1', 'c2'], futureField: { keep: true },
+  });
 });
 
 test('sesiones: round-trip', () => {

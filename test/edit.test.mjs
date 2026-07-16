@@ -6,8 +6,9 @@ import path from 'node:path';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-edit-'));
 process.env.KAIP_HOME = TMP;
-const { loadQueue, nid, saveProjects, saveQueue } = await import('../lib/store.mjs');
-const { applyEdits, editJob } = await import('../lib/edit.mjs');
+const { nid } = await import('../src/core/identity.mjs');
+const { loadQueue, saveProjects, saveQueue } = await import('../src/storage/repositories.mjs');
+const { applyEdits, editJob } = await import('../src/core/edit.mjs');
 
 const job = (over = {}) => ({
   id: nid(), prompt: 'do something', target: null, adapter: 'mock', when: null,

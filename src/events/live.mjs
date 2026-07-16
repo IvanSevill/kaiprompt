@@ -2,7 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-import { DATA, patchJob, rememberSession } from './store.mjs';
+import { DATA } from '../storage/paths.mjs';
+import { patchJob, rememberSession } from '../storage/repositories.mjs';
+import { compactToolInput, normalizeNativeDiffs, normalizeToolDiffs } from './tool-normalize.mjs';
 
 const DIR = path.join(DATA, 'live');
 const MAX_BYTES = 2 * 1024 * 1024;
@@ -73,19 +75,25 @@ export function recordAdapterEvent(job, event) {
       provider: job.provider ?? null,
       model: job.model ?? null,
       dir: job.dir ?? null,
+      conversationId: job.conversationId,
     });
   }
-  if (event?.type !== 'assistant') return [];
+  if (event?.type !== 'assistant') {
+    return normalizeNativeDiffs(event).map((diff) => emitLive(job, { kind: 'diff', diff }));
+  }
   return (event.message?.content ?? []).flatMap((block) => {
     if (block.type === 'text' && block.text) return [emitLive(job, { kind: 'text', text: block.text })];
     if (block.type === 'thinking' && block.thinking) return [emitLive(job, { kind: 'thinking', text: block.thinking })];
     if (block.type !== 'tool_use') return [];
     const input = block.input ?? {};
     if (block.name === 'TodoWrite') return [emitLive(job, { kind: 'todos', todos: Array.isArray(input.todos) ? input.todos : [] })];
-    const compact = Object.fromEntries(['file_path', 'command', 'pattern', 'path', 'url', 'query']
-      .filter((key) => input[key] != null)
-      .map((key) => [key, String(input[key]).slice(0, 4000)]));
-    return [emitLive(job, { kind: 'tool', name: block.name ?? 'tool', input: compact })];
+    const records = [emitLive(job, {
+      kind: 'tool', name: block.name ?? 'tool', input: compactToolInput(input),
+    })];
+    for (const diff of normalizeToolDiffs(block.name, input)) {
+      records.push(emitLive(job, { kind: 'diff', diff }));
+    }
+    return records;
   });
 }
 

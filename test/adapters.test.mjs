@@ -6,11 +6,11 @@ import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 
-import * as claude from '../adapters/claude.mjs';
-import * as codex from '../adapters/codex.mjs';
-import * as mock from '../adapters/mock.mjs';
-import * as opencode from '../adapters/opencode.mjs';
-import { claudeModels, discoverCodexModels } from '../lib/engines.mjs';
+import * as claude from '../src/adapters/claude.mjs';
+import * as codex from '../src/adapters/codex.mjs';
+import * as mock from '../src/adapters/mock.mjs';
+import * as opencode from '../src/adapters/opencode.mjs';
+import { claudeModels, discoverCodexModels } from '../src/adapters/engine-discovery.mjs';
 
 const dry = (over = {}) => claude.run({ prompt: 'p', dryRun: true, ...over });
 

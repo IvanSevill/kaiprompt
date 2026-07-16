@@ -2,6 +2,7 @@ package com.kaiprompt.app
 
 import android.content.Context
 import android.content.SharedPreferences
+import org.json.JSONArray
 
 /**
  * Where the pairing lives on the phone.
@@ -20,18 +21,22 @@ class Store(context: Context) {
             val token = prefs.getString("token", null) ?: return null
             val key = prefs.getString("key", null) ?: return null
             val url = prefs.getString("url", null) ?: return null
-            return Pairing(
+            return runCatching { Pairing(
                 url = url,
                 lan = prefs.getString("lan", null),
                 token = token,
                 key = key,
                 tunnel = prefs.getBoolean("tunnel", false),
-            )
+            ).copy(url = normalizeHttpBase(url), lan = prefs.getString("lan", null)?.let(::normalizeHttpBase)) }.getOrNull()
         }
 
         set(p) {
+            val normalized = p?.copy(
+                url = normalizeHttpBase(p.url),
+                lan = p.lan?.let(::normalizeHttpBase),
+            )
             prefs.edit().apply {
-                if (p == null) {
+                if (normalized == null) {
                     remove("url")
                     remove("lan")
                     remove("token")
@@ -39,15 +44,15 @@ class Store(context: Context) {
                     remove("tunnel")
                     remove("host")
                 } else {
-                    putString("url", p.url)
-                    putString("lan", p.lan)
-                    putString("token", p.token)
-                    putString("key", p.key)
+                    putString("url", normalized.url)
+                    putString("lan", normalized.lan)
+                    putString("token", normalized.token)
+                    putString("key", normalized.key)
                     // No `host`. It was the PC's hostname, the compact QR stopped carrying it,
                     // and what got persisted — and then painted on screen — was the literal
                     // string "?". The PC's name now comes from /api/state, which always has it.
                     remove("host")
-                    putBoolean("tunnel", p.tunnel)
+                    putBoolean("tunnel", normalized.tunnel)
                 }
             }.apply()
         }
@@ -65,9 +70,19 @@ class Store(context: Context) {
      * wakes, and a notification you have already read reappearing is how people turn
      * notifications off.
      */
-    var announced: Set<String>
-        get() = prefs.getStringSet("announced", emptySet()) ?: emptySet()
-        set(v) = prefs.edit().putStringSet("announced", v.take(200).toSet()).apply()
+    var announced: List<String>
+        get() {
+            val saved = prefs.getString("announced_ordered", null)
+            if (saved != null) return runCatching {
+                val array = JSONArray(saved)
+                (0 until array.length()).mapNotNull { array.optString(it).takeIf(String::isNotBlank) }
+            }.getOrDefault(emptyList())
+            return prefs.getStringSet("announced", emptySet()).orEmpty().sorted()
+        }
+        set(v) {
+            val ordered = newestNotificationIds(emptyList(), v)
+            prefs.edit().putString("announced_ordered", JSONArray(ordered).toString()).remove("announced").apply()
+        }
 
     /** The first poll establishes a baseline; old jobs are history, not new notifications. */
     var notificationBaselineReady: Boolean
@@ -82,6 +97,10 @@ class Store(context: Context) {
     var language: AppLanguage
         get() = AppLanguage.fromPreference(prefs.getString("language", null))
         set(v) = prefs.edit().putString("language", v.preference).apply()
+
+    var showHiddenConversations: Boolean
+        get() = prefs.getBoolean("show_hidden_conversations", false)
+        set(v) = prefs.edit().putBoolean("show_hidden_conversations", v).apply()
 
     val paired get() = pairing != null
 }

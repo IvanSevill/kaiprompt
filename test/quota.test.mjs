@@ -8,9 +8,14 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
-  MAX_QUOTA_RETRIES, isQuotaExhausted, parseResetAt, planRetry, quotaVerdict, readUsage,
-  resetFromUsage, sessionQuota,
-} from '../lib/quota.mjs';
+  MAX_QUOTA_RETRIES, isQuotaExhausted, parseResetAt, planRetry, quotaVerdict as policyVerdict,
+} from '../src/core/quota-retry.mjs';
+import { readUsage, resetFromUsage, sessionQuota } from '../src/adapters/claude-quota.mjs';
+
+const quotaVerdict = (text, { usageFile, ...options } = {}) => policyVerdict(text, {
+  ...options,
+  usage: readUsage(usageFile),
+});
 
 // The real message that killed last night's launch.
 const REAL = "You've hit your session limit · resets 1:30pm (Europe/Madrid)\n\n[ERROR] claude exited with code 1";

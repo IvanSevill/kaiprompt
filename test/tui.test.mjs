@@ -17,8 +17,9 @@ fs.writeFileSync(path.join(process.env.CODEX_HOME, 'models_cache.json'), JSON.st
 // cannot leave background processes alive. That it really does arm it is proved in
 // daemon.test.mjs.
 process.env.KAIP_NO_DAEMON = '1';
-const { historyPath, loadQueue, saveLaunchDefaults, saveQueue, saveProjects, saveSessions } = await import('../lib/store.mjs');
-const { addJob } = await import('../lib/queue.mjs');
+const { historyPath } = await import('../src/storage/paths.mjs');
+const { loadQueue, saveLaunchDefaults, saveQueue, saveProjects, saveSessions } = await import('../src/storage/repositories.mjs');
+const { addJob } = await import('../src/core/jobs.mjs');
 const { strip } = await import('../lib/ui.mjs');
 const {
   applyEffect, asPaste, decodeKey, initialState, keyReader, pasteText,

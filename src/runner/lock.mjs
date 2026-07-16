@@ -8,7 +8,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-import { alive, DATA } from './store.mjs';
+import { alive } from '../storage/json.mjs';
+import { DATA } from '../storage/paths.mjs';
 
 export const LOCK = path.join(DATA, 'runner.lock');
 const ACQUIRE = `${LOCK}.acquire`;

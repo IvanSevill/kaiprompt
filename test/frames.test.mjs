@@ -18,8 +18,8 @@ import path from 'node:path';
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-frames-'));
 process.env.KAIP_HOME = TMP;
 
-const { saveQueue } = await import('../lib/store.mjs');
-const { addJob } = await import('../lib/queue.mjs');
+const { saveQueue } = await import('../src/storage/repositories.mjs');
+const { addJob } = await import('../src/core/jobs.mjs');
 const { clockFrame, completionFrame, quotaLines, quotaWaitFrame, runningFrame } = await import('../lib/frames.mjs');
 const { strip } = await import('../lib/ui.mjs');
 

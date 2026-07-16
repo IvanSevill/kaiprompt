@@ -6,6 +6,7 @@ node_modules/
 
 # Notas y tareas locales (rutas personales)
 .tasks/
+.atl/
 
 # Android: cada maquina genera lo suyo
 app/local.properties

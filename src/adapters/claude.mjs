@@ -8,8 +8,8 @@
 // arrives, so the runner can show what Claude is doing live. Without it we keep
 // the plain one-shot JSON (used by --dry-run and by scripts).
 
-import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import { runChildProcess } from './child-process.mjs';
 
 export const name = 'claude';
 const BIN = process.platform === 'win32' ? 'claude.exe' : 'claude';
@@ -32,7 +32,7 @@ function buildArgs({ sessionId, permMode, streaming, model }) {
   return args;
 }
 
-export async function run({ prompt, sessionId, dryRun, dir, permMode, model, onEvent }) {
+export async function run({ prompt, sessionId, dryRun, dir, permMode, model, onEvent, spawnProcess }) {
   const streaming = typeof onEvent === 'function';
   const args = buildArgs({ sessionId, permMode, streaming, model });
   const cwd = dir && fs.existsSync(dir) ? dir : null;    // run claude inside the target project
@@ -51,59 +51,36 @@ export async function run({ prompt, sessionId, dryRun, dir, permMode, model, onE
   const spawnOpts = { stdio: ['pipe', 'pipe', 'pipe'], env, windowsHide: true };
   if (cwd) spawnOpts.cwd = cwd;
 
-  return await new Promise((resolve) => {
-    let child;
-    try {
-      child = spawn(BIN, args, spawnOpts);
-    } catch (e) {
-      return resolve({ ok: false, sessionId, output: '', error: `could not launch ${BIN}: ${e.message}` });
+  let sid = sessionId;
+  let result = null;
+  let usage = null;
+  let isError = false;
+
+  const handleEvent = (evt) => {
+    if (evt.session_id) sid = evt.session_id;
+    if (evt.type === 'result') {
+      result = evt.result ?? '';
+      isError = Boolean(evt.is_error);
+      usage = evt.usage ?? usage;
     }
+    try { onEvent(evt); } catch { /* the view must never break the run */ }
+  };
 
-    let err = '';
-    let raw = '';          // full stdout (one-shot mode)
-    let buf = '';          // partial NDJSON line carried across chunks
-    let sid = sessionId;
-    let result = null;
-    let usage = null;
-    let isError = false;
-
-    const handleEvent = (evt) => {
-      if (evt.session_id) sid = evt.session_id;
-      if (evt.type === 'result') {
-        result = evt.result ?? '';
-        isError = Boolean(evt.is_error);
-        usage = evt.usage ?? usage;
-      }
-      try { onEvent(evt); } catch { /* the view must never break the run */ }
-    };
-
-    child.on('error', (e) =>
-      resolve({ ok: false, sessionId: sid, output: err, error: `could not launch ${BIN}: ${e.message}` }));
-    child.stderr.on('data', (d) => (err += d));
-
-    child.stdout.on('data', (d) => {
-      const chunk = String(d);
-      if (!streaming) { raw += chunk; return; }
-      buf += chunk;
-      let nl;
-      while ((nl = buf.indexOf('\n')) !== -1) {          // only parse complete lines
-        const line = buf.slice(0, nl).trim();
-        buf = buf.slice(nl + 1);
-        if (!line) continue;
-        try { handleEvent(JSON.parse(line)); } catch { /* not JSON: ignore */ }
-      }
-    });
-
-    child.on('close', (code) => {
+  return runChildProcess({
+    command: BIN, args, options: spawnOpts, stdin: prompt,
+    mode: streaming ? 'ndjson' : 'text', ...(spawnProcess ? { spawnProcess } : {}),
+    onJSON: handleEvent,
+    onError: (error, { stderr }) => ({
+      ok: false, sessionId: sid, output: stderr, error: `could not launch ${BIN}: ${error.message}`,
+    }),
+    onClose: ({ code, stdout: raw, stderr: err }) => {
       if (streaming) {
-        const tail = buf.trim();
-        if (tail) { try { handleEvent(JSON.parse(tail)); } catch { /* ignore */ } }
         const ok = code === 0 && !isError;
-        return resolve({
+        return {
           ok, sessionId: sid, output: result ?? '',
           error: ok ? null : (err || `claude exited with code ${code}`),
           usage,
-        });
+        };
       }
       let out = raw, ok = code === 0;
       try {
@@ -113,10 +90,7 @@ export async function run({ prompt, sessionId, dryRun, dir, permMode, model, onE
         if (j.is_error) ok = false;
         usage = j.usage ?? usage;
       } catch { /* non-JSON output: leave it raw */ }
-      resolve({ ok, sessionId: sid, output: out, error: ok ? null : (err || `claude exited with code ${code}`), usage });
-    });
-
-    child.stdin.write(prompt);
-    child.stdin.end();
+      return { ok, sessionId: sid, output: out, error: ok ? null : (err || `claude exited with code ${code}`), usage };
+    },
   });
 }

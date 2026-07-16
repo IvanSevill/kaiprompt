@@ -12,19 +12,29 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-inst-'));
 process.env.KAIP_HOME = TMP;
 process.env.CLAUDE_CONFIG_DIR = path.join(TMP, 'claude');   // a make-believe ~/.claude
 
-const { readJSON } = await import('../lib/store.mjs');
+const { readJSON } = await import('../src/storage/json.mjs');
 const {
-  commandFiles, detectBase, install, noteBody, notePath, posix, shellSnippets, uninstall,
+  commandFiles, detectBase, install: installRaw, isKaipromptPluginLoader, noteBody, notePath,
+  opencodePluginBody, opencodePluginPath, posix, shellSnippets, uninstall: uninstallRaw,
 } = await import('../lib/install.mjs');
 
 const ROOT = 'C:/tools/kaiprompt';                          // an example installation
 const CLAUDE = path.join(TMP, 'claude');
+const OPENCODE = path.join(TMP, 'opencode');
+const CLAUDE_USAGE = path.join(TMP, 'claude-usage');
 const settingsFile = path.join(CLAUDE, 'settings.json');
 const cmdFile = (n) => path.join(CLAUDE, 'commands', n);
 const settings = () => readJSON(settingsFile, {});
+const install = (options) => installRaw({
+  opencodeDir: OPENCODE, claudeUsageRoot: CLAUDE_USAGE, ...options,
+});
+const uninstall = (options) => uninstallRaw({
+  opencodeDir: OPENCODE, claudeUsageRoot: CLAUDE_USAGE, ...options,
+});
 
 const reset = () => {
   fs.rmSync(CLAUDE, { recursive: true, force: true });
+  fs.rmSync(OPENCODE, { recursive: true, force: true });
   fs.mkdirSync(CLAUDE, { recursive: true });
 };
 
@@ -103,6 +113,44 @@ test('install: does NOT clobber a projects.json that was already there (it is us
   install({ root, claudeDir: CLAUDE, base: 'C:/something/else' });
 
   assert.deepEqual(readJSON(path.join(root, 'projects.json'), null), { _base: 'C:/mine', alias: 'C:/a' });
+});
+
+test('install: refreshes only a generated OpenCode loader pointing at an old temp clone', () => {
+  reset();
+  const root = fs.mkdtempSync(path.join(TMP, 'root-'));
+  const toolRoot = fs.mkdtempSync(path.join(TMP, 'claude-usage-'));
+  const opencodeDir = path.join(TMP, 'opencode-generated');
+  const loader = opencodePluginPath(opencodeDir);
+  fs.mkdirSync(path.dirname(loader), { recursive: true });
+  fs.writeFileSync(loader, 'export { default } from "file:///C:/Temp/old-clone/kaiprompt/opencode/usage-metrics.mjs";\n');
+  install({ root, claudeDir: CLAUDE, opencodeDir, claudeUsageRoot: toolRoot });
+  assert.equal(fs.readFileSync(loader, 'utf8'), opencodePluginBody(toolRoot));
+  assert.equal(isKaipromptPluginLoader(fs.readFileSync(loader, 'utf8')), true);
+});
+
+test('install: never overwrites a user-owned OpenCode plugin at the loader path', () => {
+  reset();
+  const root = fs.mkdtempSync(path.join(TMP, 'root-'));
+  const opencodeDir = path.join(TMP, 'opencode-user');
+  const loader = opencodePluginPath(opencodeDir);
+  fs.mkdirSync(path.dirname(loader), { recursive: true });
+  fs.writeFileSync(loader, 'export default async () => ({ mine: true });\n');
+  install({ root, claudeDir: CLAUDE, opencodeDir });
+  assert.equal(fs.readFileSync(loader, 'utf8'), 'export default async () => ({ mine: true });\n');
+  assert.equal(isKaipromptPluginLoader(fs.readFileSync(loader, 'utf8')), false);
+});
+
+test('install: does not mistake another one-line usage plugin for a Kaiprompt loader', () => {
+  reset();
+  const root = fs.mkdtempSync(path.join(TMP, 'root-'));
+  const opencodeDir = path.join(TMP, 'opencode-other-loader');
+  const loader = opencodePluginPath(opencodeDir);
+  const body = 'export { default } from "file:///C:/tools/other/opencode/usage-metrics.mjs";\n';
+  fs.mkdirSync(path.dirname(loader), { recursive: true });
+  fs.writeFileSync(loader, body);
+  install({ root, claudeDir: CLAUDE, opencodeDir, claudeUsageRoot: 'C:/tools/claude-usage' });
+  assert.equal(fs.readFileSync(loader, 'utf8'), body);
+  assert.equal(isKaipromptPluginLoader(body), false);
 });
 
 test('install: with no base folder, projects.json is created empty (it does not blow up)', () => {

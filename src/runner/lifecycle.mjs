@@ -9,12 +9,14 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import {
-  ADAPTERS, HOME, historyPath, nowMs, outPath, patchJob, rememberSession, sessionFor,
-} from './store.mjs';
-import { fmt } from './time.mjs';
-import { planRetry, quotaVerdict } from './quota.mjs';
-import { CONTINUATION, isContinuation, jobPreview, resolvePrompt } from './prompt.mjs';
-import { clearLive, emitLive, newAttemptId, recordAdapterEvent } from './live-events.mjs';
+  nowMs, patchJob, rememberSession, sessionFor,
+} from '../storage/repositories.mjs';
+import { ADAPTERS, HOME, historyPath, outPath } from '../storage/paths.mjs';
+import { fmt } from '../core/time.mjs';
+import { planRetry, quotaVerdict } from '../core/quota-retry.mjs';
+import { readUsage } from '../adapters/claude-quota.mjs';
+import { CONTINUATION, isContinuation, jobPreview, resolvePrompt } from '../core/prompt.mjs';
+import { clearLive, emitLive, newAttemptId, recordAdapterEvent } from '../events/live.mjs';
 
 export async function loadAdapter(name) {
   const p = path.join(ADAPTERS, `${name || 'claude'}.mjs`);
@@ -86,6 +88,7 @@ export async function executeJob(job, { dryRun = false, onEvent } = {}) {
     job.sessionId = res.sessionId;
     if (key && !sessionPersistedFromEvent) rememberSession(key, res.sessionId, job.adapter, {
       provider: job.provider ?? null, model: job.model ?? null, dir: job.dir ?? null,
+      conversationId: job.conversationId,
     });
   }
   fs.appendFileSync(historyPath(job.id), JSON.stringify({ type: 'attempt-end', at: nowMs(), ok: res.ok, durationMs: nowMs() - startedAt, engine: job.adapter, provider: job.provider ?? null, model: job.model ?? null, target: job.target ?? null, sessionId: res.sessionId ?? null, usage: res.usage ?? null, cost: res.cost ?? null, error: res.ok ? null : String(res.error ?? '').slice(0, 1000) }) + '\n');
@@ -102,7 +105,9 @@ export async function executeJob(job, { dryRun = false, onEvent } = {}) {
 export function settle(job, res) {
   if (res.ok) return { action: 'done' };
 
-  const plan = planRetry(job, quotaVerdict(`${res.output ?? ''}\n${res.error ?? ''}`, { adapter: job.adapter }));
+  const plan = planRetry(job, quotaVerdict(`${res.output ?? ''}\n${res.error ?? ''}`, {
+    usage: job.adapter === 'claude' ? readUsage() : null,
+  }));
   if (plan.action !== 'requeue') return { action: 'fail', reason: plan.reason ?? res.error };
   return { action: 'requeue', waitUntil: plan.waitUntil, quotaRetries: plan.quotaRetries, kind: plan.kind };
 }

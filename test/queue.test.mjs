@@ -6,10 +6,10 @@ import path from 'node:path';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-queue-'));
 process.env.KAIP_HOME = TMP;
-const { loadQueue, loadSessions, saveProjects, saveQueue, saveSessions } = await import('../lib/store.mjs');
+const { loadQueue, loadSessions, saveProjects, saveQueue, saveSessions } = await import('../src/storage/repositories.mjs');
 const {
   addJob, clearFinished, jobDetails, removeJobs, retryJob, suggestDirs, suggestTargets,
-} = await import('../lib/queue.mjs');
+} = await import('../src/core/jobs.mjs');
 
 // --- suggested conversations --------------------------------------------------
 // Reusing a target is the biggest token saving in the tool: the launch picks up a session that

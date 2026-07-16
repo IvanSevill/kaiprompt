@@ -11,19 +11,19 @@ import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { DATA, ROOT, alive, loadQueue, readJSON, writeJSON } from './store.mjs';
-import { fmt } from './time.mjs';
+import { alive, writeJSON } from '../storage/json.mjs';
+import { DATA, ROOT } from '../storage/paths.mjs';
+import { loadQueue } from '../storage/repositories.mjs';
+import { fmt } from '../core/time.mjs';
 import { LOCK } from './lock.mjs';
-import { runnerStatus } from './runner-status.mjs';
-import { nextScheduledAt } from './schedule.mjs';
+import {
+  clearDaemonState, daemonProcessStatus, DAEMON_STATE, readDaemonState, runnerStatus,
+} from './coordination.mjs';
+import { nextScheduledAt } from '../core/schedule.mjs';
 
-const STATE = path.join(DATA, 'daemon.json');
 export const LOG = path.join(DATA, 'daemon.log');
 const CLI = path.join(ROOT, 'kaip.mjs');
 export const TASK_NAME = 'kaip-daemon';       // Windows Task Scheduler entry
-
-const readState = () => readJSON(STATE, null);
-const clearState = () => { try { fs.rmSync(STATE, { force: true }); } catch { /* already gone */ } };
 
 /**
  * Is it up, since when, and what is it waiting for? Safe to call from anywhere.
@@ -31,16 +31,10 @@ const clearState = () => { try { fs.rmSync(STATE, { force: true }); } catch { /*
  * (that's why the autostart check lives in its own function).
  */
 export function status() {
-  const st = readState();
-  const running = Boolean(st?.pid && alive(st.pid));
-  if (st && !running) clearState();                     // it died: don't keep claiming it's up
-
+  const st = daemonProcessStatus();
   const queue = loadQueue();
   return {
-    running,
-    pid: running ? st.pid : null,
-    startedAt: running ? st.startedAt : null,
-    seq: running ? Boolean(st.seq) : false,
+    ...st,
     pending: queue.filter((j) => j.status === 'pending').length,
     next: nextScheduledAt(queue),
     log: LOG,
@@ -87,17 +81,17 @@ export function start({ seq = false } = {}) {
   });
   child.unref();
 
-  writeJSON(STATE, { pid: child.pid, startedAt: Date.now(), seq: Boolean(seq) });
+  writeJSON(DAEMON_STATE, { pid: child.pid, startedAt: Date.now(), seq: Boolean(seq) });
   return { started: true, pid: child.pid, seq: Boolean(seq), log: LOG };
 }
 
 /** Stop it. The lock goes too, or the next runner would wait 2 minutes for it to go stale. */
 export function stop() {
-  const st = readState();
-  if (!st?.pid || !alive(st.pid)) { clearState(); return { stopped: false, reason: 'not running' }; }
+  const st = readDaemonState();
+  if (!st?.pid || !alive(st.pid)) { clearDaemonState(); return { stopped: false, reason: 'not running' }; }
 
   try { process.kill(st.pid); } catch { /* it went away between the check and the kill */ }
-  clearState();
+  clearDaemonState();
   try { fs.rmSync(LOCK, { force: true }); } catch { /* ignore */ }
   return { stopped: true, pid: st.pid };
 }
@@ -157,7 +151,7 @@ export const unaccounted = (procs, knownPid) =>
 
 /** Live daemons that are NOT the one in daemon.json. Nobody is tracking these. */
 export function orphans() {
-  return unaccounted(daemonProcesses(), readState()?.pid ?? null);
+  return unaccounted(daemonProcesses(), readDaemonState()?.pid ?? null);
 }
 
 /** Kill them. Returns the pids that were swept. */

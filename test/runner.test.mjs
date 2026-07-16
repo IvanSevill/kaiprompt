@@ -6,9 +6,11 @@ import path from 'node:path';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-run-'));
 process.env.KAIP_HOME = TMP;
-const { loadQueue, loadSessions, nid, outPath, rememberSession, saveQueue, saveSessions } = await import('../lib/store.mjs');
-const { executeJob, requeue, runQueue, settle } = await import('../lib/runner.mjs');
-const { liveEvents, recordAdapterEvent } = await import('../lib/live-events.mjs');
+const { nid } = await import('../src/core/identity.mjs');
+const { outPath } = await import('../src/storage/paths.mjs');
+const { loadQueue, loadSessions, rememberSession, saveQueue, saveSessions } = await import('../src/storage/repositories.mjs');
+const { executeJob, requeue, runQueue, settle } = await import('../src/runner/index.mjs');
+const { liveEvents, recordAdapterEvent } = await import('../src/events/live.mjs');
 
 const job = (over = {}) => ({
   id: nid(), prompt: 'do something', target: null, adapter: 'mock', when: null,
@@ -202,6 +204,20 @@ test('runQueue (with no TTY): processes the sequential ones in order', async () 
   assert.ok(q[0].finishedAt <= q[1].finishedAt, 'and in order: the 2nd after the 1st');
 });
 
+test('runQueue parallel trace overlaps independent lanes but serializes one target', async () => {
+  const first = job({ prompt: 'alpha first', target: 'alpha' });
+  const second = job({ prompt: 'alpha second', target: 'alpha' });
+  const independent = job({ prompt: 'beta', target: 'beta' });
+  saveQueue([first, second, independent]);
+
+  await runQueue({ once: true, parallel: 2, plain: true });
+
+  const [alphaFirst, alphaSecond, beta] = loadQueue();
+  assert.ok([alphaFirst, alphaSecond, beta].every((entry) => entry.status === 'done'));
+  assert.ok(beta.startedAt < alphaFirst.finishedAt, 'the independent lane overlaps the first lane');
+  assert.ok(alphaSecond.startedAt >= alphaFirst.finishedAt, 'one target never resumes twice at once');
+});
+
 test('runQueue --once: does NOT wait for jobs scheduled in the future', async () => {
   const future = job({ when: Date.now() + 3600_000 });
   saveQueue([future]);
@@ -239,7 +255,7 @@ test('runQueue: an empty queue does not break it', async () => {
 
 // --- the lock: it stops two runners running the same job twice ----------------
 test('lock: a second runner does nothing while another one is active', async () => {
-  const { lockIsHeld } = await import('../lib/runner.mjs');
+  const { lockIsHeld } = await import('../src/runner/index.mjs');
   const lock = path.join(TMP, 'data', 'runner.lock');
 
   // A LIVE runner. This test used to fake one with pid 999999, which does not exist: the lock
@@ -259,7 +275,7 @@ test('lock: a second runner does nothing while another one is active', async () 
 test('a DEAD runner\'s lock is ignored: you can launch NOW, without waiting for the heartbeat', async () => {
   // What it felt like: you close a `kaip run` and for two minutes the daemon refuses to start
   // because "somebody is already there". Nobody was — only its lock, still warm.
-  const { lockIsHeld } = await import('../lib/runner.mjs');
+  const { lockIsHeld } = await import('../src/runner/index.mjs');
   const lock = path.join(TMP, 'data', 'runner.lock');
 
   fs.writeFileSync(lock, JSON.stringify({ pid: 999999, at: Date.now() }));   // a BRAND NEW heartbeat
@@ -273,7 +289,7 @@ test('a DEAD runner\'s lock is ignored: you can launch NOW, without waiting for 
 test('an expired lock (live runner, but hung) is ignored too', async () => {
   // The heartbeat is still needed: it covers the runner that exists but no longer processes
   // anything.
-  const { lockIsHeld } = await import('../lib/runner.mjs');
+  const { lockIsHeld } = await import('../src/runner/index.mjs');
   const lock = path.join(TMP, 'data', 'runner.lock');
 
   fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now() - 10 * 60_000 }));
@@ -291,7 +307,7 @@ test('lock: it is released on the way out', async () => {
 });
 
 test('lock: acquisition is exclusive and release cannot delete another owner', async () => {
-  const { acquireLock } = await import('../lib/lock.mjs');
+  const { acquireLock } = await import('../src/runner/lock.mjs');
   const lock = path.join(TMP, 'data', 'runner.lock');
   fs.rmSync(lock, { force: true });
 
@@ -310,7 +326,7 @@ test('lock: acquisition is exclusive and release cannot delete another owner', a
 test('reapStale: a job with NO runnerPid (from an older version) is closed out too', async () => {
   // Otherwise it stays "running" forever: nobody can confirm it died.
   // That is exactly what happened to the launch that was cancelled halfway.
-  const { reapStale } = await import('../lib/runner.mjs');
+  const { reapStale } = await import('../src/runner/index.mjs');
   const hung = job({ status: 'running', startedAt: Date.now() - 3600_000 });
   delete hung.runnerPid;
   saveQueue([hung]);
@@ -321,7 +337,7 @@ test('reapStale: a job with NO runnerPid (from an older version) is closed out t
 });
 
 test('reapStale: a job from a LIVE runner is left alone', async () => {
-  const { reapStale } = await import('../lib/runner.mjs');
+  const { reapStale } = await import('../src/runner/index.mjs');
   saveQueue([job({ status: 'running', runnerPid: process.pid })]);   // this process exists
   assert.equal(reapStale(), 0);
   assert.equal(loadQueue()[0].status, 'running');
@@ -332,7 +348,7 @@ test('reapStale: a job from a LIVE runner is left alone', async () => {
 // left from another terminal. It has to pick that up on its own.
 
 test('a run in progress picks up prompts added AFTER it started', async () => {
-  const { addJob } = await import('../lib/queue.mjs');
+  const { addJob } = await import('../src/core/jobs.mjs');
   saveQueue([]);
   const first = job({ prompt: 'the first one' });
   saveQueue([first]);
@@ -356,7 +372,7 @@ test('--watch: an empty queue does NOT end the run; it waits and runs whatever a
   // This is THE case: you leave a run up and keep feeding it work. It is spawned as a separate
   // process because --watch, deliberately, never finishes: it has to be killed.
   const { spawn } = await import('node:child_process');
-  const { addJob } = await import('../lib/queue.mjs');
+  const { addJob } = await import('../src/core/jobs.mjs');
   saveQueue([]);
 
   const cli = path.join(path.dirname(new URL(import.meta.url).pathname).replace(/^\//, ''), '..', 'kaip.mjs');

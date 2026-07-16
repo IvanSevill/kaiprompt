@@ -7,9 +7,10 @@ import path from 'node:path';
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-prio-'));
 process.env.KAIP_HOME = TMP;
 
-const { nid, saveQueue } = await import('../lib/store.mjs');
-const { isPriority, nextUp, reapMissed, startable } = await import('../lib/schedule.mjs');
-const { addJob } = await import('../lib/queue.mjs');
+const { nid } = await import('../src/core/identity.mjs');
+const { saveQueue } = await import('../src/storage/repositories.mjs');
+const { isPriority, nextUp, reapMissed, startable } = await import('../src/core/schedule.mjs');
+const { addJob } = await import('../src/core/jobs.mjs');
 
 const T = Date.UTC(2026, 6, 13, 12, 0, 0);
 const MIN = 60_000;

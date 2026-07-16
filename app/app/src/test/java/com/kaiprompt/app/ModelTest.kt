@@ -15,6 +15,32 @@ import org.junit.Test
  */
 class ModelTest {
 
+    @Test
+    fun `quota canonico conserva limites arbitrarios y desconocidos como null`() {
+        val quota = ProviderQuota.parse(
+            """{"provider":"codex","status":"available","source":{"kind":"app-server","official":true},"freshness":{"observedAt":"2026-07-15T10:00:00Z","stale":false},"limits":{"requests":{"id":"requests","primary":{"remainingPercent":null,"resetAt":"2026-07-15T12:00:00Z"},"secondary":{"remainingPercent":37.5,"resetAt":null}},"tokens-special":{"id":"tokens-special","primary":{"remainingPercent":9}}},"plan":"plus","credits":{"balance":null,"hasCredits":false,"unlimited":null},"error":null}""",
+        )
+        assertEquals("codex", quota.provider)
+        assertEquals(listOf("requests", "tokens-special"), quota.limits.map { it.id })
+        assertNull(quota.limits.first().primary?.remainingPercent)
+        assertEquals(37.5, quota.limits.first().secondary?.remainingPercent)
+        assertEquals("plus", quota.plan)
+        assertEquals(false, quota.credits?.hasCredits)
+        assertNull(quota.credits?.balance)
+        assertNull(quota.error)
+    }
+
+    @Test
+    fun `quota no disponible conserva error y frescura desconocida`() {
+        val quota = ProviderQuota.parse(
+            """{"provider":"claude","status":"unavailable","source":{"kind":null,"official":null},"freshness":{"observedAt":null,"stale":null},"limits":{},"error":{"code":"auth-unavailable","message":null}}""",
+        )
+        assertEquals("unavailable", quota.status)
+        assertNull(quota.freshness.stale)
+        assertEquals("auth-unavailable", quota.error?.code)
+        assertTrue(quota.limits.isEmpty())
+    }
+
     // --- emparejamiento -----------------------------------------------------------
     @Test
     fun `el QR de emparejamiento se lee entero`() {
@@ -63,6 +89,24 @@ class ModelTest {
         assertEquals(73, s.quota?.freePct)
         assertEquals(61, s.quota?.freePctWeek)
         assertEquals(1700503600000L, s.quota?.resetsAtWeek)
+    }
+
+    @Test
+    fun `job y chat aceptan conversationId aditivo`() {
+        val job = State.parse("""{"jobs":[{"id":"j","conversationId":"c-1"}]}""").jobs.single()
+        val chat = Chat.parse("""{"sessionId":"s","conversationId":"c-1","turns":[]}""")
+        assertEquals("c-1", job.conversationId)
+        assertEquals("c-1", chat.conversationId)
+    }
+
+    @Test
+    fun `snapshot parsea estado y visibilidad en una sola respuesta`() {
+        val snapshot = Snapshot.parse(
+            """{"state":{"host":"PC","jobs":[{"id":"j","status":"done","conversationId":"c"}]},"conversations":[{"conversationId":"c","ref":"j","status":"done","hidden":true,"jobs":["j"]}]}""",
+        )
+        assertEquals("PC", snapshot.state.host)
+        assertEquals("c", snapshot.conversations.single().conversationId)
+        assertTrue(snapshot.conversations.single().hidden)
     }
 
     @Test
@@ -146,6 +190,7 @@ class ModelTest {
         assertEquals("lib/ui.mjs", tool.arg)
         assertEquals(1, chat.turns[1].diffs.size)
         assertEquals(2, chat.turns[1].diffs[0].added)
+        assertEquals(listOf("-old", "+new"), chat.turns[1].diffs[0].lines)
     }
 
     @Test
@@ -397,5 +442,23 @@ class ModelTest {
         )
 
         assertEquals(setOf("a", "b"), chat.eventIds)
+    }
+
+    @Test
+    fun `diff-only turns and live canonical diffs retain signs and truncation`() {
+        val chat = Chat.parse(
+            """{"sessionId":"s","turns":[{"role":"assistant","live":true,"blocks":[],"diffs":[{"id":"d1","file":"a.kt","added":1,"removed":1,"lines":["-old","+new"],"truncated":true,"truncationReason":"line-limit","eventId":"e1"}]}]}""",
+        )
+        val diff = chat.turns.single().diffs.single()
+        assertEquals(listOf("-old", "+new"), diff.lines)
+        assertTrue(diff.truncated)
+        assertEquals("line-limit", diff.truncationReason)
+        assertTrue("e1" in chat.eventIds)
+
+        val event = LiveEvent.parse(
+            """{"id":"e2","jobId":"j","kind":"diff","diff":{"id":"d2","file":"b.kt","added":1,"removed":1,"lines":["-gone","+here"]}}""",
+        )
+        assertEquals(listOf("-gone", "+here"), event.diff?.lines)
+        assertEquals("e2", event.diff?.eventId)
     }
 }

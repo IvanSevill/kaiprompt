@@ -4,8 +4,65 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+import kotlinx.coroutines.CancellationException
 
 class UiLogicTest {
+    @Test
+    fun `failover is limited to connection failures and never cancellation or semantic errors`() {
+        assertTrue(isFailoverFailure(ConnectException("refused")))
+        assertTrue(isFailoverFailure(SocketTimeoutException("timed out")))
+        assertFalse(isFailoverFailure(IllegalArgumentException("bad sealed payload")))
+        assertFalse(isFailoverFailure(CancellationException("cancelled")))
+    }
+
+    @Test
+    fun `pairing URLs accept only bounded HTTP origins`() {
+        assertEquals("https://example.com:8443", normalizeHttpBase(" https://example.com:8443/ "))
+        listOf("ftp://example.com", "https://user@example.com", "https://example.com/path", "not a url").forEach {
+            assertTrue(runCatching { normalizeHttpBase(it) }.isFailure)
+        }
+    }
+
+    @Test
+    fun `notification retention is newest first deduplicated and bounded`() {
+        assertEquals(listOf("new", "same", "old"), newestNotificationIds(
+            existing = listOf("same", "old"), fresh = listOf("new", "same"), limit = 3,
+        ))
+    }
+
+    @Test
+    fun `delete response decides from this device rather than global pairing mode`() {
+        val state = PairingState.parse(
+            """{"registered":false,"mode":"connected","protocol":2,"devices":1}""",
+        )
+        assertFalse(state.registered)
+        assertEquals("connected", state.mode)
+    }
+
+    private fun quota(status: String = "available", stale: Boolean? = false) = ProviderQuota(
+        provider = "claude", status = status, source = QuotaSource(null, null),
+        freshness = QuotaFreshness(null, stale), limits = emptyList(), plan = null,
+        credits = null, error = null,
+    )
+
+    @Test
+    fun `quota distingue disponible stale no disponible y error`() {
+        assertEquals(QuotaDisplayKind.AVAILABLE, quotaDisplayKind(quota()))
+        assertEquals(QuotaDisplayKind.STALE, quotaDisplayKind(quota(stale = true)))
+        assertEquals(QuotaDisplayKind.UNAVAILABLE, quotaDisplayKind(quota(status = "unavailable", stale = null)))
+        assertEquals(QuotaDisplayKind.ERROR, quotaDisplayKind(quota(status = "error", stale = null)))
+    }
+
+    @Test
+    fun `porcentaje desconocido no se convierte en cero ni cien`() {
+        assertEquals(null, quotaNumber(null))
+        assertEquals(null, quotaNumber(Double.NaN))
+        assertEquals("0", quotaNumber(0.0))
+        assertEquals("37.5", quotaNumber(37.5))
+    }
+
     private fun job(id: String = "j1", prompt: String? = null, preview: String = "") = Job(
         id = id, status = "pending", prompt = prompt, promptFile = null, promptError = null,
         preview = preview, target = null, sessionId = null, dir = null, whenAt = null,
@@ -119,6 +176,85 @@ class UiLogicTest {
         assertEquals("running", legacy.status)
         assertEquals("ses", legacy.ref)
         assertEquals(legacy.copy(updatedAt = derived.updatedAt), derived)
+    }
+
+    @Test
+    fun `live diff merges into active assistant and dedupes event and diff replay`() {
+        val empty = Chat("s", null, "claude", null, null, null, emptyList())
+        val diff = Diff("d1", "a.kt", 1, 1, listOf("-old", "+new"))
+        val withText = mergeLiveEvent(empty, LiveEvent("e1", "j", "text", text = "working"))
+        val once = mergeLiveEvent(withText, LiveEvent("e2", "j", "diff", diff = diff))
+        assertEquals(1, once.turns.size)
+        assertEquals(listOf("-old", "+new"), once.turns.single().diffs.single().lines)
+        assertEquals(once, mergeLiveEvent(once, LiveEvent("e2", "j", "diff", diff = diff)))
+
+        val replayedWithNewEvent = mergeLiveEvent(once, LiveEvent("e3", "j", "diff", diff = diff))
+        assertEquals(1, replayedWithNewEvent.turns.single().diffs.size)
+        assertTrue("e3" in replayedWithNewEvent.eventIds)
+    }
+
+    @Test
+    fun `diff-only live event creates a visible turn and display data preserves signs`() {
+        val empty = Chat("s", null, "claude", null, null, null, emptyList())
+        val lines = listOf("-removed", "+added") + (1..130).map { " context $it" }
+        val diff = Diff("d", "file.kt", 1, 1, lines, truncated = true, truncationReason = "line-limit")
+        val merged = mergeLiveEvent(empty, LiveEvent("e", "j", "diff", diff = diff))
+        assertTrue(merged.turns.single().blocks.isEmpty())
+        assertEquals(listOf("-removed", "+added"), diffDisplayLines(diff, expanded = false).take(2))
+        assertEquals(120, diffDisplayLines(diff, expanded = true).size)
+    }
+
+    @Test
+    fun `terminal snapshot merge dedupes canonical diffs and preserves unrepresented live ones`() {
+        val first = Diff("same", "a.kt", 1, 1, listOf("-a", "+b"), eventId = "e1")
+        val extra = Diff("extra", "b.kt", 1, 0, listOf("+new"), eventId = "e2")
+        val current = Chat("s", null, "claude", null, null, null, listOf(
+            Turn("assistant", null, emptyList(), listOf(first, extra), live = true),
+        ), eventIds = setOf("e1", "e2"))
+        val fresh = Chat("s", null, "claude", null, null, null, listOf(
+            Turn("assistant", null, emptyList(), listOf(first), live = false),
+        ), eventIds = setOf("e1"), terminal = true)
+        val merged = mergeChatSnapshot(current, fresh)
+        assertEquals(setOf("same", "extra"), merged.turns.flatMap(Turn::diffs).map(Diff::id).toSet())
+        assertEquals(2, merged.turns.flatMap(Turn::diffs).size)
+        assertEquals(setOf("e1", "e2"), merged.eventIds)
+        assertTrue(merged.terminal)
+    }
+
+    @Test
+    fun `two old rows sharing ref still have distinct stable identities`() {
+        val jobs = listOf(
+            job("a").copy(target = "one", sessionId = "same", adapter = "claude"),
+            job("b").copy(target = "two", sessionId = "same", adapter = "claude"),
+        )
+        val parsed = ConversationSummary.parse(
+            """[{"ref":"same","target":"one","adapter":"claude","sessionId":"same","jobs":["a"]},{"ref":"same","target":"two","adapter":"claude","sessionId":"same","jobs":["b"]}]""",
+            state(jobs),
+        )
+        assertEquals(2, parsed.map { it.conversationId }.toSet().size)
+        assertEquals(parsed.map { it.conversationId }, ConversationSummary.parse(
+            """[{"ref":"same","target":"one","adapter":"claude","sessionId":"same","jobs":["a"]},{"ref":"same","target":"two","adapter":"claude","sessionId":"same","jobs":["b"]}]""",
+            state(jobs),
+        ).map { it.conversationId })
+    }
+
+    @Test
+    fun `server conversation id wins and old server fallback includes engine`() {
+        val claude = job("a").copy(target = "same", adapter = "claude")
+        val codex = job("b").copy(target = "same", adapter = "codex")
+        val modern = ConversationSummary.parse(
+            """[{"conversationId":"conv-1","ref":"same","target":"same","adapter":"claude","jobs":["a"]}]""",
+            state(listOf(claude)),
+        ).single()
+        val old = ConversationSummary.derive(state(listOf(claude, codex)))
+        assertEquals("conv-1", modern.conversationId)
+        assertEquals(2, old.map { it.conversationId }.toSet().size)
+    }
+
+    @Test
+    fun `stale refresh cannot overwrite a newer hide generation`() {
+        assertTrue(acceptsRefresh(3, 3))
+        assertFalse(acceptsRefresh(2, 3))
     }
 
     @Test

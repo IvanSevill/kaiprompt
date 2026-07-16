@@ -2,6 +2,7 @@ package com.kaiprompt.app
 
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.URI
 
 internal val TOOL_ARG_KEYS = listOf("file_path", "command", "pattern", "path", "url", "query")
 
@@ -65,8 +66,8 @@ data class Pairing(
                 ?: throw IllegalArgumentException("al QR le falta la clave")
 
             return Pairing(
-                url = url.trimEnd('/'),
-                lan = (j.optStringOrNull("l") ?: j.optStringOrNull("lan"))?.trimEnd('/'),
+                url = normalizeHttpBase(url),
+                lan = (j.optStringOrNull("l") ?: j.optStringOrNull("lan"))?.let(::normalizeHttpBase),
                 token = token,
                 key = key,
                 // Not sent any more: a tunnel is exactly an https address. Derive it.
@@ -85,6 +86,7 @@ data class Job(
     val preview: String,
     val target: String?,
     val sessionId: String?,
+    val conversationId: String? = null,
     val adapter: String? = null,
     val provider: String? = null,
     val model: String? = null,
@@ -114,6 +116,7 @@ data class Job(
             preview = j.optString("preview", ""),
             target = j.optStringOrNull("target"),
             sessionId = j.optStringOrNull("sessionId"),
+            conversationId = j.optStringOrNull("conversationId"),
             adapter = j.optStringOrNull("adapter"),
             provider = j.optStringOrNull("provider"),
             model = j.optStringOrNull("model"),
@@ -142,6 +145,8 @@ data class ConversationSummary(
     val jobIds: List<String>,
     val target: String?,
     val sessionId: String?,
+    val conversationId: String,
+    val hidden: Boolean = false,
 ) {
     companion object {
         fun parse(body: String, state: State): List<ConversationSummary> {
@@ -183,6 +188,7 @@ data class ConversationSummary(
             val sessionId = row.optStringOrNull("sessionId")
             val ref = row.optStringOrNull("ref") ?: sessionId ?: target ?: current?.id ?: return null
             val adapter = row.optStringOrNull("adapter") ?: current?.adapter
+            val serverConversationId = row.optStringOrNull("conversationId")
             return ConversationSummary(
                 ref = ref,
                 concept = row.optStringOrNull("concept") ?: target,
@@ -198,6 +204,10 @@ data class ConversationSummary(
                 jobIds = row.optJSONArray("jobs").strings(),
                 target = target,
                 sessionId = sessionId,
+                conversationId = serverConversationId ?: legacyConversationIdentity(
+                    ref, target, adapter, sessionId, jobs.map(Job::id),
+                ),
+                hidden = row.optBoolean("hidden", false),
             )
         }
 
@@ -218,6 +228,10 @@ data class ConversationSummary(
                 jobIds = jobs.map(Job::id),
                 target = current.target,
                 sessionId = sessionId,
+                conversationId = current.conversationId ?: legacyConversationIdentity(
+                    sessionId ?: current.target ?: jobs.first().id,
+                    current.target, current.adapter, sessionId, jobs.map(Job::id),
+                ),
             )
         }
     }
@@ -320,6 +334,90 @@ data class Quota(
     val freePctWeek: Int?,
     val resetsAtWeek: Long?,
 )
+
+data class QuotaWindow(
+    val remainingPercent: Double?,
+    val resetAt: String?,
+    val durationMinutes: Double?,
+)
+data class QuotaLimit(val id: String, val primary: QuotaWindow?, val secondary: QuotaWindow?)
+data class QuotaSource(val kind: String?, val official: Boolean?)
+data class QuotaFreshness(val observedAt: String?, val stale: Boolean?)
+data class QuotaCredits(
+    val balance: Double?, val hasCredits: Boolean?, val unlimited: Boolean?, val resetAt: String?,
+    val spendRemainingPercent: Double?,
+)
+data class QuotaError(val code: String, val message: String?)
+data class ProviderQuota(
+    val provider: String,
+    val status: String,
+    val source: QuotaSource,
+    val freshness: QuotaFreshness,
+    val limits: List<QuotaLimit>,
+    val plan: String?,
+    val credits: QuotaCredits?,
+    val error: QuotaError?,
+) {
+    companion object {
+        private fun number(j: JSONObject?, key: String): Double? =
+            if (j == null || !j.has(key) || j.isNull(key)) null else j.optDouble(key).takeIf { it.isFinite() }
+
+        private fun window(j: JSONObject?): QuotaWindow? = j?.let {
+            QuotaWindow(number(it, "remainingPercent"), it.optStringOrNull("resetAt"), number(it, "durationMinutes"))
+        }
+
+        fun parse(body: String): ProviderQuota {
+            val j = JSONObject(body)
+            val source = j.optJSONObject("source")
+            val freshness = j.optJSONObject("freshness")
+            val rawLimits = j.optJSONObject("limits") ?: JSONObject()
+            val limits = rawLimits.keys().asSequence().toList().sorted().mapNotNull { id ->
+                rawLimits.optJSONObject(id)?.let { limit ->
+                    QuotaLimit(limit.optStringOrNull("id") ?: id, window(limit.optJSONObject("primary")), window(limit.optJSONObject("secondary")))
+                }
+            }.toList()
+            val rawCredits = j.optJSONObject("credits")
+            val credits = rawCredits?.let {
+                val spend = it.optJSONObject("spendControl")
+                QuotaCredits(
+                    number(it, "balance"),
+                    if (it.has("hasCredits") && !it.isNull("hasCredits")) it.optBoolean("hasCredits") else null,
+                    if (it.has("unlimited") && !it.isNull("unlimited")) it.optBoolean("unlimited") else null,
+                    it.optStringOrNull("resetAt"),
+                    number(spend, "remainingPercent"),
+                )
+            }
+            val rawError = j.optJSONObject("error")
+            return ProviderQuota(
+                provider = j.optString("provider"),
+                status = j.optString("status", "error"),
+                source = QuotaSource(source?.optStringOrNull("kind"), source?.let {
+                    if (it.has("official") && !it.isNull("official")) it.optBoolean("official") else null
+                }),
+                freshness = QuotaFreshness(
+                    freshness?.optStringOrNull("observedAt"),
+                    freshness?.let { if (it.has("stale") && !it.isNull("stale")) it.optBoolean("stale") else null },
+                ),
+                limits = limits,
+                plan = j.optStringOrNull("plan"),
+                credits = credits,
+                error = rawError?.optStringOrNull("code")?.let { QuotaError(it, rawError.optStringOrNull("message")) },
+            )
+        }
+    }
+}
+
+internal fun normalizeHttpBase(value: String): String {
+    require(value.length <= 2048) { "dirección demasiado larga" }
+    val uri = runCatching { URI(value.trim()) }.getOrElse { throw IllegalArgumentException("dirección inválida") }
+    require(uri.scheme?.lowercase() in setOf("http", "https")) { "la dirección debe usar http o https" }
+    require(!uri.host.isNullOrBlank() && uri.userInfo == null && uri.query == null && uri.fragment == null) {
+        "dirección inválida"
+    }
+    require(uri.port in -1..65535) { "puerto inválido" }
+    require(uri.path.isNullOrBlank() || uri.path == "/") { "la dirección no puede incluir una ruta" }
+    return URI(uri.scheme.lowercase(), null, uri.host, uri.port, null, null, null).toString().trimEnd('/')
+}
 
 /** Historical usage is deliberately distinct from quota: no made-up limits or percentages. */
 data class UsageValue(val value: Long, val partial: Boolean)
@@ -451,8 +549,17 @@ data class State(
     }
 }
 
-/** One turn of a conversation, flattened into what a phone screen can actually show. */
-data class Diff(val file: String, val added: Int, val removed: Int, val diff: String)
+/** Bounded canonical diff. Lines retain their literal unified-diff prefixes. */
+data class Diff(
+    val id: String,
+    val file: String,
+    val added: Int,
+    val removed: Int,
+    val lines: List<String>,
+    val truncated: Boolean = false,
+    val truncationReason: String? = null,
+    val eventId: String? = null,
+)
 
 data class Turn(val role: String, val at: String?, val blocks: List<Block>, val diffs: List<Diff>, val live: Boolean = false)
 
@@ -477,6 +584,7 @@ data class Chat(
     val eventIds: Set<String> = emptySet(),
     val status: String? = null,
     val terminal: Boolean = false,
+    val conversationId: String? = null,
 ) {
     val assistantLabel: String?
         get() = when (adapter?.lowercase()) {
@@ -508,13 +616,9 @@ data class Chat(
                     }
                 }
                 val diffs = t.optJSONArray("diffs") ?: JSONArray()
-                val parsedDiffs = (0 until diffs.length()).mapNotNull { k ->
-                    val d = diffs.optJSONObject(k) ?: return@mapNotNull null
-                    d.optStringOrNull("file")?.let { file ->
-                        Diff(file, d.optInt("added"), d.optInt("removed"), d.optString("diff", ""))
-                    }
-                }
-                if (blocks.isEmpty()) null else Turn(t.optString("role"), t.optStringOrNull("at"), blocks, parsedDiffs, t.optBoolean("live"))
+                val parsedDiffs = (0 until diffs.length()).mapNotNull { k -> diffs.optJSONObject(k)?.canonicalDiff() }
+                if (blocks.isEmpty() && parsedDiffs.isEmpty()) null
+                else Turn(t.optString("role"), t.optStringOrNull("at"), blocks, parsedDiffs, t.optBoolean("live"))
             }
 
             return Chat(
@@ -525,18 +629,31 @@ data class Chat(
                 model = j.optStringOrNull("model"),
                 dir = j.optStringOrNull("dir"),
                 cursor = j.optStringOrNull("cursor"),
-                eventIds = j.optJSONArray("eventIds").strings().toSet() + turns.flatMap { turn -> turn.blocks.mapNotNull { block ->
-                    when (block) {
+                eventIds = j.optJSONArray("eventIds").strings().toSet() + turns.flatMap { turn ->
+                    turn.blocks.mapNotNull { block -> when (block) {
                         is Block.Text -> block.eventId
                         is Block.Tool -> block.eventId
                         is Block.Todos -> block.eventId
                         is Block.Thinking -> block.eventId
-                    }
-                } }.toSet(),
+                    } } + turn.diffs.mapNotNull(Diff::eventId)
+                }.toSet(),
                 status = j.optStringOrNull("status"),
                 terminal = j.optBoolean("terminal"),
+                conversationId = j.optStringOrNull("conversationId"),
                 turns = turns,
             )
+        }
+    }
+}
+
+data class Snapshot(val state: State, val conversations: List<ConversationSummary>) {
+    companion object {
+        fun parse(body: String): Snapshot {
+            val json = JSONObject(body)
+            val state = State.parse(json.getJSONObject("state").toString())
+            return Snapshot(state, ConversationSummary.parse(
+                (json.optJSONArray("conversations") ?: JSONArray()).toString(), state,
+            ))
         }
     }
 }
@@ -544,7 +661,7 @@ data class Chat(
 data class LiveEvent(
     val id: String?, val jobId: String?, val kind: String, val text: String? = null,
     val name: String? = null, val arg: String = "", val todos: List<TodoItem> = emptyList(),
-    val status: String? = null,
+    val status: String? = null, val diff: Diff? = null,
 ) {
     companion object {
         fun parse(body: String): LiveEvent {
@@ -556,6 +673,7 @@ data class LiveEvent(
                 arg = j.toolArg(),
                 todos = j.todos(),
                 status = j.optStringOrNull("status"),
+                diff = j.optJSONObject("diff")?.canonicalDiff(j.eventId("id")),
             )
         }
     }
@@ -565,7 +683,8 @@ data class PairingState(val mode: String, val registered: Boolean, val protocol:
     companion object {
         fun parse(body: String): PairingState {
             val j = JSONObject(body)
-            return PairingState(j.optString("mode"), j.optBoolean("registered"), j.optInt("protocol"))
+            val registered = if (j.has("registered")) j.optBoolean("registered") else j.optInt("removed") == 0
+            return PairingState(j.optString("mode"), registered, j.optInt("protocol"))
         }
     }
 }
@@ -602,4 +721,23 @@ private fun JSONObject.todos(): List<TodoItem> {
             )
         }
     }
+}
+
+private fun JSONObject.canonicalDiff(fallbackEventId: String? = null): Diff? {
+    val file = optStringOrNull("file") ?: return null
+    val array = optJSONArray("lines")
+    val lines = if (array != null) (0 until array.length()).mapNotNull { array.opt(it) as? String }
+    else optStringOrNull("diff")?.split("\n").orEmpty()
+    if (lines.isEmpty()) return null
+    val id = optStringOrNull("id") ?: "legacy:${file}:${lines.joinToString("\n").hashCode()}"
+    return Diff(
+        id = id,
+        file = file,
+        added = optInt("added", lines.count { it.startsWith("+") }),
+        removed = optInt("removed", lines.count { it.startsWith("-") }),
+        lines = lines,
+        truncated = optBoolean("truncated", false),
+        truncationReason = optStringOrNull("truncationReason") ?: optStringOrNull("truncated_reason"),
+        eventId = optStringOrNull("eventId") ?: fallbackEventId,
+    )
 }

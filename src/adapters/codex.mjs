@@ -2,8 +2,8 @@
 // the adapter returns the final answer plus the persisted thread id for a later resume.
 // Codex's `--json` output is JSONL, so it also gives the runner a live event stream.
 
-import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import { runChildProcess } from './child-process.mjs';
 
 export const name = 'codex';
 const BIN = process.platform === 'win32' ? 'codex.cmd' : 'codex';
@@ -23,7 +23,7 @@ function eventResult(evt) {
   return {};
 }
 
-export async function run({ prompt, sessionId, dryRun, dir, model, onEvent }) {
+export async function run({ prompt, sessionId, dryRun, dir, model, onEvent, spawnProcess }) {
   const args = buildArgs({ sessionId, model });
   const cwd = dir && fs.existsSync(dir) ? dir : null;
   const shown = `${BIN} ${args.join(' ')}`
@@ -35,39 +35,23 @@ export async function run({ prompt, sessionId, dryRun, dir, model, onEvent }) {
   const spawnOpts = { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true };
   if (cwd) spawnOpts.cwd = cwd;
 
-  return await new Promise((resolve) => {
-    let child;
-    try { child = spawn(BIN, args, spawnOpts); }
-    catch (e) { return resolve({ ok: false, sessionId, output: '', error: `could not launch ${BIN}: ${e.message}` }); }
-
-    let stderr = ''; let buffer = ''; let sid = sessionId; let output = '';
-    const handle = (evt) => {
+  let sid = sessionId;
+  let output = '';
+  return runChildProcess({
+    command: BIN, args, options: spawnOpts, stdin: prompt,
+    ...(spawnProcess ? { spawnProcess } : {}),
+    onJSON: (evt) => {
       const found = eventResult(evt);
       if (found.sessionId) sid = found.sessionId;
       if (found.output) output = found.output;
       try { onEvent?.(evt); } catch { /* a live view must not break a launch */ }
-    };
-
-    child.on('error', (e) =>
-      resolve({ ok: false, sessionId: sid, output, error: `could not launch ${BIN}: ${e.message}` }));
-    child.stderr.on('data', (d) => (stderr += d));
-    child.stdout.on('data', (d) => {
-      buffer += String(d);
-      let nl;
-      while ((nl = buffer.indexOf('\n')) !== -1) {
-        const line = buffer.slice(0, nl).trim(); buffer = buffer.slice(nl + 1);
-        if (!line) continue;
-        try { handle(JSON.parse(line)); } catch { /* keep going: diagnostics can be non-JSON */ }
-      }
-    });
-    child.on('close', (code) => {
-      const tail = buffer.trim();
-      if (tail) { try { handle(JSON.parse(tail)); } catch { /* ignored */ } }
+    },
+    onError: (error) => ({
+      ok: false, sessionId: sid, output, error: `could not launch ${BIN}: ${error.message}`,
+    }),
+    onClose: ({ code, stderr }) => {
       const ok = code === 0;
-      resolve({ ok, sessionId: sid, output, error: ok ? null : (stderr || `codex exited with code ${code}`) });
-    });
-
-    child.stdin.write(prompt);
-    child.stdin.end();
+      return { ok, sessionId: sid, output, error: ok ? null : (stderr || `codex exited with code ${code}`) };
+    },
   });
 }

@@ -21,9 +21,17 @@ enum class LiveStreamEnd { EOF, TERMINAL }
  * Every call asks for a sealed answer (`x-kaip-enc: 1`), so what crosses Cloudflare is an
  * envelope they have no key to. The unsealing happens here, at the edge of the app.
  */
-class Api(private val pairing: Pairing, private val context: Context) {
+class Api(
+    private val pairing: Pairing,
+    private val context: Context,
+    private val connectionFactory: (URL) -> HttpURLConnection = { it.openConnection() as HttpURLConnection },
+) {
 
-    class Down(message: String, val statusCode: Int? = null) : Exception(message)
+    class Down(
+        message: String,
+        val statusCode: Int? = null,
+        val responseBody: String? = null,
+    ) : Exception(message)
     class Unauthorized(context: Context) : Exception(context.getString(R.string.api_unauthorized))
 
     /**
@@ -34,9 +42,18 @@ class Api(private val pairing: Pairing, private val context: Context) {
      * address is unreachable the moment you leave the house. Trying both means the app keeps
      * working in the case the other one would have broken.
      */
-    private val bases: List<String> = listOfNotNull(pairing.url, pairing.lan).distinct()
+    private val bases: List<String> = listOfNotNull(pairing.url, pairing.lan)
+        .map(::normalizeHttpBase).distinct()
 
     fun state(): State = State.parse(get("/api/state"))
+
+    fun snapshot(): Snapshot = try {
+        Snapshot.parse(get("/api/snapshot"))
+    } catch (cause: Down) {
+        if (cause.statusCode != 404) throw cause
+        val state = state()
+        Snapshot(state, conversations(state))
+    }
 
     /** New servers enrich /api/targets; a missing endpoint falls back to the state snapshot. */
     fun conversations(state: State): List<ConversationSummary> = try {
@@ -48,9 +65,19 @@ class Api(private val pairing: Pairing, private val context: Context) {
     /** Optional historical telemetry. Older PCs do not have this endpoint yet. */
     fun usage(): Usage = Usage.parse(get("/api/usage"))
 
+    fun quota(provider: String): ProviderQuota = ProviderQuota.parse(
+        get("/api/quota?provider=${URLEncoder.encode(provider, "UTF-8")}"),
+    )
+
     fun job(id: String): String = get("/api/job/$id")
 
     fun chat(ref: String): Chat = Chat.parse(get("/api/chat/${URLEncoder.encode(ref, "UTF-8").replace("+", "%20")}"))
+
+    fun conversation(summary: ConversationSummary): Chat = try {
+        Chat.parse(get("/api/conversations/${URLEncoder.encode(summary.conversationId, "UTF-8").replace("+", "%20")}"))
+    } catch (cause: Down) {
+        if (cause.statusCode == 404) chat(summary.ref) else throw cause
+    }
 
     /**
      * Introduce this phone to the PC: its NAME, and — if we have one — where to knock.
@@ -75,22 +102,14 @@ class Api(private val pairing: Pairing, private val context: Context) {
 
     fun pairingState(id: String): PairingState = PairingState.parse(get("/api/pairing/${URLEncoder.encode(id, "UTF-8")}"))
 
-    /** Wipe everything that has already run. The one destructive thing the phone can do. */
-    fun clearFinished() {
-        attempt { base ->
-            val c = open("$base/api/finished")
-            c.requestMethod = "DELETE"
-            readBody(c)
-        }
-    }
+    /** Hide terminal conversations. Provider transcripts and Kaiprompt history stay intact. */
+    fun hideFinished(): String = post("/api/conversations/hide-finished", "{}")
 
     /** Is the PC even on? The only call that needs no token. */
     fun ping(): Boolean = try {
-        bases.any { base ->
+        attempt { base ->
             open("$base/api/ping", auth = false).let { c ->
-                val ok = c.responseCode == 200
-                c.disconnect()
-                ok
+                try { c.responseCode == 200 } finally { c.disconnect() }
             }
         }
     } catch (_: Exception) {
@@ -118,16 +137,17 @@ class Api(private val pairing: Pairing, private val context: Context) {
         readBody(c)
     }
 
-    /** Try each address in turn; only give up when they have all failed. */
+    /** Try another address only when this one could not establish or keep a connection. */
     private fun <T> attempt(block: (String) -> T): T {
-        var last: Exception? = null
+        var last: Throwable? = null
         for (base in bases) {
             try {
                 return block(base)
-            } catch (e: Unauthorized) {
-                throw e                       // a bad token will be bad on every address
-            } catch (e: Exception) {
-                last = e
+            } catch (cause: CancellationException) {
+                throw cause
+            } catch (cause: Throwable) {
+                if (!isFailoverFailure(cause)) throw cause
+                last = cause
             }
         }
 
@@ -151,7 +171,7 @@ class Api(private val pairing: Pairing, private val context: Context) {
     }
 
     private fun open(url: String, auth: Boolean = true): HttpURLConnection =
-        (URL(url).openConnection() as HttpURLConnection).apply {
+        connectionFactory(URL(url)).apply {
             connectTimeout = 8000
             readTimeout = 15000
             if (auth) {
@@ -161,20 +181,23 @@ class Api(private val pairing: Pairing, private val context: Context) {
         }
 
     private fun readBody(c: HttpURLConnection): String {
-        val code = c.responseCode
-        if (code == 401) throw Unauthorized(context)
+        try {
+            val code = c.responseCode
+            if (code == 401) throw Unauthorized(context)
 
-        val stream = if (code in 200..299) c.inputStream else c.errorStream
-        val body = stream?.bufferedReader()?.use(BufferedReader::readText).orEmpty()
-        c.disconnect()
+            val stream = if (code in 200..299) c.inputStream else c.errorStream
+            val body = stream?.bufferedReader(Charsets.UTF_8)?.use(BufferedReader::readText).orEmpty()
+            val decoded = if (Crypto.isSealed(body)) Crypto.open(body, pairing.key) else body
+            if (code !in 200..299) {
+                throw Down(context.getString(R.string.api_response_error, code, decoded.take(200)), code, decoded)
+            }
 
-        if (code !in 200..299) {
-            throw Down(context.getString(R.string.api_response_error, code, body.take(200)), code)
+            // The 401 above is deliberately NOT sealed by the server, so the reason is readable.
+            // Everything else is, and this is where it stops being Cloudflare's business.
+            return decoded
+        } finally {
+            c.disconnect()
         }
-
-        // The 401 above is deliberately NOT sealed by the server, so the reason is readable.
-        // Everything else is, and this is where it stops being Cloudflare's business.
-        return if (Crypto.isSealed(body)) Crypto.open(body, pairing.key) else body
     }
 
     /**
@@ -187,22 +210,31 @@ class Api(private val pairing: Pairing, private val context: Context) {
         onConnected: () -> Unit = {},
         onEvent: (LiveEvent) -> Unit,
     ): LiveStreamEnd {
-        var last: Exception? = null
+        var last: Throwable? = null
         for (base in bases) {
             currentCoroutineContext().ensureActive()
             val query = buildString {
                 append("?job=").append(URLEncoder.encode(jobId, "UTF-8"))
                 if (since != null) append("&since=").append(URLEncoder.encode(since, "UTF-8"))
             }
-            val c = open("$base/api/events$query")
+            val c = try {
+                open("$base/api/events$query")
+            } catch (cause: CancellationException) {
+                throw cause
+            } catch (cause: Throwable) {
+                if (!isFailoverFailure(cause)) throw cause
+                last = cause
+                continue
+            }
             c.readTimeout = 45_000
             val cancellation = currentCoroutineContext().job.invokeOnCompletion { c.disconnect() }
             try {
                 val code = c.responseCode
                 if (code == 401) throw Unauthorized(context)
                 if (code !in 200..299) {
-                    val body = c.errorStream?.bufferedReader()?.use(BufferedReader::readText).orEmpty()
-                    throw Down(context.getString(R.string.api_response_error, code, body.take(200)), code)
+                    val body = c.errorStream?.bufferedReader(Charsets.UTF_8)?.use(BufferedReader::readText).orEmpty()
+                    val decoded = if (Crypto.isSealed(body)) Crypto.open(body, pairing.key) else body
+                    throw Down(context.getString(R.string.api_response_error, code, decoded.take(200)), code, decoded)
                 }
                 onConnected()
                 var eventId: String? = null
@@ -222,12 +254,11 @@ class Api(private val pairing: Pairing, private val context: Context) {
                     }
                 }
                 return LiveStreamEnd.EOF
-            } catch (cause: Unauthorized) {
-                throw cause
             } catch (cause: CancellationException) {
                 throw cause
-            } catch (cause: Exception) {
+            } catch (cause: Throwable) {
                 currentCoroutineContext().ensureActive()
+                if (!isFailoverFailure(cause)) throw cause
                 last = cause
             } finally {
                 cancellation.dispose()

@@ -1,8 +1,8 @@
-import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { normalizeSelection, qualifiedModel } from '../lib/engines.mjs';
-import { normalizeOpenCodePart } from '../lib/opencode-normalize.mjs';
+import { normalizeSelection, qualifiedModel } from '../core/engines.mjs';
+import { runChildProcess } from './child-process.mjs';
+import { normalizeOpenCodePart } from './opencode-normalize.mjs';
 
 export const name = 'opencode';
 // npm's Windows shim forwards through cmd.exe, which both interprets prompt characters and
@@ -37,25 +37,28 @@ export function liveEvent(evt, sessionId) {
   return block ? { type: 'assistant', session_id: sessionId, message: { content: [block] } } : null;
 }
 
-export async function run({ prompt, sessionId, dryRun, dir, provider, model, onEvent, spawnProcess = spawn }) {
+export async function run({ prompt, sessionId, dryRun, dir, provider, model, onEvent, spawnProcess }) {
   const args = buildArgs({ sessionId, provider, model, dir: dir && fs.existsSync(dir) ? dir : null });
   const unattended = `${prompt}\n\n---\nUNATTENDED LAUNCH: nobody can answer questions. Do not ask for confirmation, offer choices, or wait. Make the safest reversible decision, continue, and record assumptions in your final answer. If blocked by a secret, external access, or an irreversible decision, complete everything else and report the blocker without waiting.`;
   const shown = `${BIN} ${args.join(' ')} ${JSON.stringify(unattended)}`;
   if (dryRun) return { ok: true, sessionId, output: `[dry-run] ${shown}` };
-  return new Promise((resolve) => {
-    let child;
-    try {
-      child = spawnProcess(SHELL ? 'opencode.cmd' : BIN, [...args, unattended], {
+  let sid = sessionId;
+  let output = '';
+  let usage = null;
+  let cost = null;
+  let sawError = false;
+  let eventError = null;
+  const seenTools = new Set();
+  return runChildProcess({
+    command: SHELL ? 'opencode.cmd' : BIN,
+    args: [...args, unattended],
+    options: {
         stdio: ['ignore', 'pipe', 'pipe'], shell: SHELL,
         windowsHide: true,
         env: { ...process.env, OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: '1' },
-      });
-    }
-    catch (e) { resolve({ ok: false, sessionId, output: '', error: `could not launch ${BIN}: ${e.message}` }); return; }
-    let stderr = '', buffer = '', sid = sessionId, output = '';
-    let usage = null, cost = null, sawError = false, eventError = null;
-    const seenTools = new Set();
-    const handle = (evt) => {
+    },
+    ...(spawnProcess ? { spawnProcess } : {}),
+    onJSON: (evt) => {
       const eventSession = evt.sessionID ?? evt.sessionId ?? evt.session_id ?? evt.part?.sessionID;
       if (eventSession && eventSession !== sid) {
         sid = eventSession;
@@ -82,17 +85,13 @@ export async function run({ prompt, sessionId, dryRun, dir, provider, model, onE
         if (t) usage = { input: t.input ?? null, output: t.output ?? null, reasoning: t.reasoning ?? null, total: t.total ?? null, cacheRead: t.cache?.read ?? null, cacheWrite: t.cache?.write ?? null };
         if (Number.isFinite(evt.part?.cost)) cost = evt.part.cost;
       }
-    };
-    child.stderr.on('data', (d) => { stderr += d; });
-    child.stdout.on('data', (d) => {
-      buffer += String(d); let nl;
-      while ((nl = buffer.indexOf('\n')) !== -1) { const line = buffer.slice(0, nl).trim(); buffer = buffer.slice(nl + 1); if (line) { try { handle(JSON.parse(line)); } catch { /* diagnostic line */ } } }
-    });
-    child.on('error', (e) => resolve({ ok: false, sessionId: sid, output, error: `could not launch ${BIN}: ${e.message}`, usage, cost }));
-    child.on('close', (code) => {
-      if (buffer.trim()) { try { handle(JSON.parse(buffer)); } catch { /* ignored */ } }
+    },
+    onError: (error) => ({
+      ok: false, sessionId: sid, output, error: `could not launch ${BIN}: ${error.message}`, usage, cost,
+    }),
+    onClose: ({ code, stderr }) => {
       const ok = code === 0 && !sawError;
-      resolve({ ok, sessionId: sid, output, error: ok ? null : (eventError || stderr || `opencode exited with code ${code}`), usage, cost });
-    });
+      return { ok, sessionId: sid, output, error: ok ? null : (eventError || stderr || `opencode exited with code ${code}`), usage, cost };
+    },
   });
 }

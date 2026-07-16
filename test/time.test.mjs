@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { ago, hhmmss, humanDur, parseWhen } from '../lib/time.mjs';
+import { ago, hhmmss, humanDur, parseWhen } from '../src/core/time.mjs';
 
 test('parseWhen: no value → null (a sequential job)', () => {
   assert.equal(parseWhen(null), null);
